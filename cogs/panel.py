@@ -210,6 +210,23 @@ class AdminPanel(commands.Cog):
             file=discord.File(buf, "leaderboard.png"), ephemeral=True
         )
 
+    @panel_group.command(name="rakeback", description="Manage rakeback tiers.")
+    async def panel_rakeback(self, interaction: discord.Interaction):
+        if not self._is_admin(interaction):
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Admins only."), ephemeral=True
+            )
+        tiers = await db.get_rakeback_tiers()
+        embed = discord.Embed(title="♻️ Rakeback Tiers", color=0xA855F7)
+        lines = [
+            f"**{t['name']}** — min wager: `{utils.fmt_pts(t['min_wagered'])} pts` — rate: `{int(t['rate']*100)}%`"
+            for t in tiers
+        ]
+        embed.description = "\n".join(lines) or "No tiers configured."
+        embed.set_footer(text="Use the buttons below to manage tiers.")
+        view = _RakebackTierView(interaction.user)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 
 class _AdminUserView(discord.ui.View):
     def __init__(self, target: discord.Member, admin: discord.Member):
@@ -266,6 +283,94 @@ class _BalanceModal(discord.ui.Modal):
                 f"New balance: **{utils.fmt_pts(new_bal)} pts**"
             ),
             ephemeral=True,
+        )
+
+
+# ── Rakeback tier management views ─────────────────────────────────────────────
+
+class _RakebackTierView(discord.ui.View):
+    def __init__(self, admin: discord.Member | discord.User):
+        super().__init__(timeout=180)
+        self.admin = admin
+
+    def _check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.admin.id
+
+    @discord.ui.button(label="Add / Edit Tier", style=discord.ButtonStyle.success, emoji="➕")
+    async def add_tier(self, interaction: discord.Interaction, _):
+        if not self._check(interaction):
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        await interaction.response.send_modal(_TierUpsertModal())
+
+    @discord.ui.button(label="Delete Tier", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def del_tier(self, interaction: discord.Interaction, _):
+        if not self._check(interaction):
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        await interaction.response.send_modal(_TierDeleteModal())
+
+    @discord.ui.button(label="Refresh List", style=discord.ButtonStyle.secondary, emoji="🔄")
+    async def refresh(self, interaction: discord.Interaction, _):
+        if not self._check(interaction):
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        tiers = await db.get_rakeback_tiers()
+        lines = [
+            f"**{t['name']}** — min wager: `{utils.fmt_pts(t['min_wagered'])} pts` — rate: `{int(t['rate']*100)}%`"
+            for t in tiers
+        ]
+        embed = discord.Embed(
+            title="♻️ Rakeback Tiers",
+            description="\n".join(lines) or "No tiers configured.",
+            color=0xA855F7,
+        )
+        embed.set_footer(text="Use the buttons below to manage tiers.")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+class _TierUpsertModal(discord.ui.Modal, title="Add / Edit Rakeback Tier"):
+    name_input = discord.ui.TextInput(label="Tier Name", placeholder="e.g. Gold", max_length=32)
+    min_input  = discord.ui.TextInput(label="Min Wagered (pts)", placeholder="e.g. 25000")
+    rate_input = discord.ui.TextInput(label="Rate (%)", placeholder="e.g. 8  →  means 8%")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            min_w = float(self.min_input.value.replace(",", "").replace("_", ""))
+            rate  = float(self.rate_input.value.strip().rstrip("%")) / 100
+        except ValueError:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Invalid number. Min wagered and rate must be numbers."),
+                ephemeral=True,
+            )
+        if not (0 < rate <= 1):
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Rate must be between 0% and 100%."), ephemeral=True
+            )
+        name = self.name_input.value.strip()
+        await db.upsert_rakeback_tier(name, min_w, rate)
+        await utils.refresh_tier_cache()
+        await interaction.response.send_message(
+            embed=utils.success_embed(
+                f"Tier **{name}** saved — min: `{utils.fmt_pts(min_w)} pts`, rate: `{int(rate*100)}%`"
+            ),
+            ephemeral=True,
+        )
+
+
+class _TierDeleteModal(discord.ui.Modal, title="Delete Rakeback Tier"):
+    name_input = discord.ui.TextInput(label="Tier Name to Delete", placeholder="e.g. Silver", max_length=32)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        name = self.name_input.value.strip()
+        try:
+            await db.delete_rakeback_tier(name)
+        except ValueError as e:
+            return await interaction.response.send_message(embed=utils.error_embed(str(e)), ephemeral=True)
+        except Exception:
+            return await interaction.response.send_message(
+                embed=utils.error_embed(f"Tier `{name}` not found."), ephemeral=True
+            )
+        await utils.refresh_tier_cache()
+        await interaction.response.send_message(
+            embed=utils.success_embed(f"Tier **{name}** deleted."), ephemeral=True
         )
 
 

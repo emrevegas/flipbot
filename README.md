@@ -44,6 +44,6 @@ Without fonts the bot uses Pillow's built-in default font.
 | PREFIX | `.` | Command prefix |
 | OWNER_ID | — | Your Discord user ID (comma-separated for multiple) |
 | POINTS_PER_USD | 100 | Points per $1 USD |
-| RAKEBACK_RATE | 0.05 | Default rakeback rate |
-| AFFILIATE_FTD_RATE | 0.10 | First-deposit commission rate |
-| AFFILIATE_EDGE_RATE | 0.25 | Lifetime house-edge commission rate |
+
+> **Rakeback tiers** are managed live via `/panel rakeback` (stored in DB, Bronze→Diamond by default).
+> **Affiliate rate** is fixed at 10% of each referred user's daily net deposits — no .env var needed.

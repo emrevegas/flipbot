@@ -77,6 +77,14 @@ async def _init_tables():
             UNIQUE(affiliate_id, referred_id, date_str)
         );
 
+        CREATE TABLE IF NOT EXISTS rakeback_tiers (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL UNIQUE,
+            min_wagered REAL NOT NULL DEFAULT 0,
+            rate        REAL NOT NULL DEFAULT 0.03,
+            sort_order  INTEGER NOT NULL DEFAULT 0
+        );
+
         CREATE TABLE IF NOT EXISTS promo_codes (
             code        TEXT PRIMARY KEY,
             reward      REAL NOT NULL,
@@ -263,6 +271,49 @@ async def _init_tables():
             ('slots',     'Slots',      1, 10, 100000, 0.05, 0.02),
             ('crash',     'Crash',      1, 10, 100000, 0.05, 0.02);
     """)
+    # Seed default rakeback tiers if none exist
+    count = (await (await db.execute("SELECT COUNT(*) FROM rakeback_tiers")).fetchone())[0]
+    if count == 0:
+        await db.executemany(
+            "INSERT OR IGNORE INTO rakeback_tiers (name, min_wagered, rate, sort_order) VALUES (?,?,?,?)",
+            [
+                ("Bronze",   0,        0.03, 0),
+                ("Silver",   5_000,    0.05, 1),
+                ("Gold",     25_000,   0.08, 2),
+                ("Platinum", 100_000,  0.12, 3),
+                ("Diamond",  500_000,  0.18, 4),
+            ],
+        )
+    await db.commit()
+
+
+# ── Rakeback tier helpers ──────────────────────────────────────────────────────
+
+async def get_rakeback_tiers() -> list[dict]:
+    db = await get_db()
+    rows = await (await db.execute(
+        "SELECT * FROM rakeback_tiers ORDER BY min_wagered ASC"
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def upsert_rakeback_tier(name: str, min_wagered: float, rate: float) -> None:
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO rakeback_tiers (name, min_wagered, rate, sort_order)
+           VALUES (?,?,?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM rakeback_tiers))
+           ON CONFLICT(name) DO UPDATE SET min_wagered=excluded.min_wagered, rate=excluded.rate""",
+        (name, min_wagered, rate),
+    )
+    await db.commit()
+
+
+async def delete_rakeback_tier(name: str) -> None:
+    db = await get_db()
+    count = (await (await db.execute("SELECT COUNT(*) FROM rakeback_tiers")).fetchone())[0]
+    if count <= 1:
+        raise ValueError("Cannot delete the last tier.")
+    await db.execute("DELETE FROM rakeback_tiers WHERE name=?", (name,))
     await db.commit()
 
 

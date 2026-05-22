@@ -52,8 +52,10 @@ class FlipBot(commands.Bot):
         )
 
     async def setup_hook(self):
-        # Init DB
+        # Init DB + caches
         await db.get_db()
+        from modules import utils as _utils
+        await _utils.refresh_tier_cache()
         # Load cogs
         for cog in COGS:
             try:

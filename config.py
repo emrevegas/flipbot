@@ -8,15 +8,8 @@ PREFIX       = os.getenv("PREFIX", ".")
 OWNER_IDS    = [int(x) for x in os.getenv("OWNER_ID", "0").split(",") if x.strip()]
 
 POINTS_PER_USD       = float(os.getenv("POINTS_PER_USD", "100"))
-RAKEBACK_RATE        = float(os.getenv("RAKEBACK_RATE", "0.05"))       # 5% of wagered
+# Rakeback tiers are managed in the database via /panel rakeback — not in .env
 RAKEBACK_MIN_CLAIM   = float(os.getenv("RAKEBACK_MIN_CLAIM", "10"))
-RAKEBACK_TIERS = [
-    {"name": "Bronze",   "min_wagered": 0,       "rate": 0.03},
-    {"name": "Silver",   "min_wagered": 5_000,   "rate": 0.05},
-    {"name": "Gold",     "min_wagered": 25_000,  "rate": 0.08},
-    {"name": "Platinum", "min_wagered": 100_000, "rate": 0.12},
-    {"name": "Diamond",  "min_wagered": 500_000, "rate": 0.18},
-]
 
 # Affiliate: referrer earns 10% of (daily deposits − daily withdrawals) of each referred user
 AFFILIATE_NET_RATE   = 0.10

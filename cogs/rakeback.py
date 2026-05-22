@@ -6,7 +6,7 @@ from discord.ext import commands
 
 from database import db
 from modules import image_gen, utils
-import config
+import config  # for RAKEBACK_MIN_CLAIM
 
 
 class Rakeback(commands.Cog):
@@ -71,7 +71,7 @@ class Rakeback(commands.Cog):
         current_tier = utils.get_rakeback_tier(total_wagered)
 
         lines = []
-        for tier in config.RAKEBACK_TIERS:
+        for tier in utils.get_all_tiers():
             active = tier["name"] == current_tier["name"]
             marker = "▶ " if active else "  "
             lines.append(
