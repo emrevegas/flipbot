@@ -18,8 +18,8 @@ RAKEBACK_TIERS = [
     {"name": "Diamond",  "min_wagered": 500_000, "rate": 0.18},
 ]
 
-AFFILIATE_FTD_RATE   = float(os.getenv("AFFILIATE_FTD_RATE", "0.10"))   # 10% of first deposit
-AFFILIATE_EDGE_RATE  = float(os.getenv("AFFILIATE_EDGE_RATE", "0.25"))  # 25% of house edge lifetime
+# Affiliate: referrer earns 10% of (daily deposits − daily withdrawals) of each referred user
+AFFILIATE_NET_RATE   = 0.10
 AFFILIATE_MIN_CLAIM  = float(os.getenv("AFFILIATE_MIN_CLAIM", "10"))
 
 # Card styling

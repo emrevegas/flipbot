@@ -117,16 +117,18 @@ class _UserPanelView(discord.ui.View):
                 ephemeral=True,
             )
         refs = await db.get_affiliate_refs(self.member.id)
-        ftd_count = sum(1 for r in refs if r["ftd_paid"])
+        today_earning = 0.0
+        for ref in refs:
+            t = await db.get_affiliate_today_net(ref["referred_id"])
+            today_earning += t["earned_today"]
         buf = await image_gen.render_affiliate_card(
             username=self.member.display_name,
             code=self.aff["code"],
             referrals=len(refs),
-            ftd=ftd_count,
-            ftd_earnings=float(self.aff["ftd_earnings"]),
-            edge_earnings=float(self.aff["edge_earnings"]),
+            net_earnings=float(self.aff.get("net_earnings", 0)),
             claimable=float(self.aff["claimable"]),
             total_claimed=float(self.aff["total_claimed"]),
+            today_earning=today_earning,
         )
         await interaction.response.send_message(
             file=discord.File(buf, "affiliate.png"), ephemeral=True

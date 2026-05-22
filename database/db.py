@@ -50,8 +50,7 @@ async def _init_tables():
         CREATE TABLE IF NOT EXISTS affiliates (
             user_id         TEXT PRIMARY KEY,
             code            TEXT UNIQUE NOT NULL,
-            ftd_earnings    REAL NOT NULL DEFAULT 0,
-            edge_earnings   REAL NOT NULL DEFAULT 0,
+            net_earnings    REAL NOT NULL DEFAULT 0,
             total_claimed   REAL NOT NULL DEFAULT 0,
             claimable       REAL NOT NULL DEFAULT 0,
             created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
@@ -61,10 +60,21 @@ async def _init_tables():
             ref_id          INTEGER PRIMARY KEY AUTOINCREMENT,
             affiliate_id    TEXT NOT NULL,
             referred_id     TEXT NOT NULL,
-            ftd_paid        INTEGER NOT NULL DEFAULT 0,
-            first_deposit   REAL NOT NULL DEFAULT 0,
             created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
             UNIQUE(affiliate_id, referred_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS affiliate_daily_settlements (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            affiliate_id    TEXT NOT NULL,
+            referred_id     TEXT NOT NULL,
+            date_str        TEXT NOT NULL,
+            deposits        REAL NOT NULL DEFAULT 0,
+            withdrawals     REAL NOT NULL DEFAULT 0,
+            net             REAL NOT NULL DEFAULT 0,
+            earned          REAL NOT NULL DEFAULT 0,
+            settled_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            UNIQUE(affiliate_id, referred_id, date_str)
         );
 
         CREATE TABLE IF NOT EXISTS promo_codes (
@@ -428,14 +438,112 @@ async def get_affiliate_refs(affiliate_id: int | str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def add_affiliate_earnings(affiliate_id: int | str, ftd: float = 0, edge: float = 0) -> None:
+async def add_affiliate_net_earnings(affiliate_id: int | str, amount: float) -> None:
+    """Credit `amount` points to an affiliate's claimable balance (net-deposit commission)."""
     db = await get_db()
     uid = str(affiliate_id)
     await db.execute(
-        "UPDATE affiliates SET ftd_earnings=ftd_earnings+?, edge_earnings=edge_earnings+?, claimable=claimable+? WHERE user_id=?",
-        (ftd, edge, ftd + edge, uid),
+        "UPDATE affiliates SET net_earnings=net_earnings+?, claimable=claimable+? WHERE user_id=?",
+        (amount, amount, uid),
     )
     await db.commit()
+
+
+async def settle_affiliate_daily(date_str: str) -> list[dict]:
+    """Settle affiliate commissions for `date_str` (YYYY-MM-DD).
+    For every referred user: net = approved deposits − approved withdrawals on that day.
+    Referrer earns AFFILIATE_NET_RATE * max(net, 0).
+    Returns list of settlement rows that were actually created.
+    """
+    import config as _cfg
+    db = await get_db()
+
+    # Get all affiliate → referred pairs
+    refs = await (await db.execute("SELECT affiliate_id, referred_id FROM affiliate_refs")).fetchall()
+
+    # Day boundaries (UTC) from date_str
+    import datetime
+    day_start = int(datetime.datetime.strptime(date_str, "%Y-%m-%d").replace(
+        tzinfo=datetime.timezone.utc).timestamp())
+    day_end = day_start + 86400
+
+    settled = []
+    for ref in refs:
+        aff_id = ref["affiliate_id"]
+        ref_id = ref["referred_id"]
+
+        # Skip already-settled
+        existing = await (await db.execute(
+            "SELECT 1 FROM affiliate_daily_settlements WHERE affiliate_id=? AND referred_id=? AND date_str=?",
+            (aff_id, ref_id, date_str),
+        )).fetchone()
+        if existing:
+            continue
+
+        # Sum approved deposits for that day
+        dep_row = await (await db.execute(
+            "SELECT COALESCE(SUM(amount),0) AS total FROM deposit_requests "
+            "WHERE user_id=? AND status='approved' AND created_at>=? AND created_at<?",
+            (ref_id, day_start, day_end),
+        )).fetchone()
+        wd_row = await (await db.execute(
+            "SELECT COALESCE(SUM(amount),0) AS total FROM withdrawal_requests "
+            "WHERE user_id=? AND status='approved' AND created_at>=? AND created_at<?",
+            (ref_id, day_start, day_end),
+        )).fetchone()
+
+        deposits = float(dep_row["total"]) if dep_row else 0.0
+        withdrawals = float(wd_row["total"]) if wd_row else 0.0
+        net = deposits - withdrawals
+        earned = max(net, 0.0) * _cfg.AFFILIATE_NET_RATE
+
+        await db.execute(
+            """INSERT OR IGNORE INTO affiliate_daily_settlements
+               (affiliate_id, referred_id, date_str, deposits, withdrawals, net, earned)
+               VALUES (?,?,?,?,?,?,?)""",
+            (aff_id, ref_id, date_str, deposits, withdrawals, net, earned),
+        )
+
+        if earned > 0:
+            await db.execute(
+                "UPDATE affiliates SET net_earnings=net_earnings+?, claimable=claimable+? WHERE user_id=?",
+                (earned, earned, aff_id),
+            )
+            settled.append({
+                "affiliate_id": aff_id, "referred_id": ref_id,
+                "date_str": date_str, "earned": earned, "net": net,
+            })
+
+    await db.commit()
+    return settled
+
+
+async def get_affiliate_today_net(referred_id: int | str) -> dict:
+    """Return today's deposits/withdrawals/net for a referred user (live, unsettled)."""
+    import datetime, config as _cfg
+    db = await get_db()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    date_str = now.strftime("%Y-%m-%d")
+    day_start = int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    day_end = day_start + 86400
+    uid = str(referred_id)
+
+    dep_row = await (await db.execute(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM deposit_requests "
+        "WHERE user_id=? AND status='approved' AND created_at>=? AND created_at<?",
+        (uid, day_start, day_end),
+    )).fetchone()
+    wd_row = await (await db.execute(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM withdrawal_requests "
+        "WHERE user_id=? AND status='approved' AND created_at>=? AND created_at<?",
+        (uid, day_start, day_end),
+    )).fetchone()
+
+    deposits = float(dep_row["total"]) if dep_row else 0.0
+    withdrawals = float(wd_row["total"]) if wd_row else 0.0
+    net = deposits - withdrawals
+    return {"deposits": deposits, "withdrawals": withdrawals, "net": net,
+            "earned_today": max(net, 0.0) * _cfg.AFFILIATE_NET_RATE, "date_str": date_str}
 
 
 async def claim_affiliate(user_id: int | str) -> float:

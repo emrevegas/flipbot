@@ -182,13 +182,13 @@ async def render_affiliate_card(
     username: str,
     code: str,
     referrals: int,
-    ftd: int,
-    ftd_earnings: float,
-    edge_earnings: float,
+    net_earnings: float,
     claimable: float,
     total_claimed: float,
+    today_earning: float = 0.0,
 ) -> io.BytesIO:
-    W, H = 560, 300
+    """Affiliate card — commission = 10% of (daily deposits − withdrawals) per referred user."""
+    W, H = 560, 310
     RADIUS = 18
     BG = config.CARD_BG_COLOR
     BORDER = config.CARD_BORDER
@@ -201,67 +201,64 @@ async def render_affiliate_card(
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # main card bg with gold border
+    # card bg + gold border
     _rounded_rect(draw, (0, 0, W - 1, H - 1), RADIUS, BG, GOLD, 2)
 
     # header band
     _rounded_rect(draw, (0, 0, W - 1, 52), RADIUS, (20, 18, 8), None)
-    # round bottom corners of header back to flat
     draw.rectangle([0, RADIUS, W, 52], fill=(20, 18, 8))
-
     draw.text((22, 14), "AFFILIATE PROGRAM", font=_font(17, bold=True), fill=GOLD)
+
+    # username right-aligned in header
+    un_w = draw.textlength(username, font=_font(13))
+    draw.text((W - 22 - un_w, 18), username, font=_font(13), fill=MUTED)
 
     # code badge
     code_upper = code.upper()
     badge_x = 22
-    draw.text((badge_x, 66), "YOUR CODE", font=_font(11), fill=MUTED)
-
-    # code highlight box
+    draw.text((badge_x, 64), "YOUR CODE", font=_font(10), fill=MUTED)
     cw = draw.textlength(code_upper, font=_font(22, bold=True)) + 28
-    _rounded_rect(draw, (badge_x - 4, 82, badge_x + cw, 116), 8, (20, 30, 50), BLUE, 1)
-    draw.text((badge_x + 10, 86), code_upper, font=_font(22, bold=True), fill=BLUE)
+    _rounded_rect(draw, (badge_x - 4, 80, badge_x + cw, 114), 8, (20, 30, 50), BLUE, 1)
+    draw.text((badge_x + 10, 84), code_upper, font=_font(22, bold=True), fill=BLUE)
 
-    # 3-col stat row 1
-    stats1 = [
-        ("REFERRALS", str(referrals), WHITE),
-        ("FTD", str(ftd), WHITE),
-        ("CONV. RATE", f"{(ftd / referrals * 100) if referrals else 0:.1f}%", GOLD),
-    ]
-    col_w = (W - 44) // 3
-    row1_y = 128
-    for i, (label, val, color) in enumerate(stats1):
-        cx = 22 + i * col_w
-        # mini box
-        _rounded_rect(draw, (cx, row1_y, cx + col_w - 8, row1_y + 46), 8, (18, 25, 40), BORDER, 1)
-        draw.text((cx + 10, row1_y + 7), label, font=_font(10), fill=MUTED)
-        draw.text((cx + 10, row1_y + 22), val, font=_font(16, bold=True), fill=color)
+    # rate label
+    rate_pct = int(config.AFFILIATE_NET_RATE * 100)
+    rate_txt = f"{rate_pct}% of (daily dep − wd)"
+    draw.text((badge_x + cw + 14, 90), rate_txt, font=_font(11), fill=MUTED)
 
-    # 2-col stat row 2
-    ftd_rate_pct = int(config.AFFILIATE_FTD_RATE * 100)
-    edge_rate_pct = int(config.AFFILIATE_EDGE_RATE * 100)
-    stats2 = [
-        (f"FTD EARNINGS ({ftd_rate_pct}%)", f"{_fmt(ftd_earnings)} pts", GREEN),
-        (f"LIFETIME ({edge_rate_pct}% EDGE)", f"{_fmt(edge_earnings)} pts", GREEN),
-    ]
+    # row 1: referrals / today's earning
     col2_w = (W - 44) // 2
-    row2_y = 184
+    row1_y = 126
+    stats1 = [
+        ("REFERRED USERS", str(referrals), WHITE),
+        ("TODAY'S EARN (UNSETTLED)", f"+{_fmt(today_earning)} pts", GREEN),
+    ]
+    for i, (label, val, color) in enumerate(stats1):
+        cx = 22 + i * col2_w
+        _rounded_rect(draw, (cx, row1_y, cx + col2_w - 8, row1_y + 50), 8, (18, 25, 40), BORDER, 1)
+        draw.text((cx + 10, row1_y + 7), label, font=_font(10), fill=MUTED)
+        draw.text((cx + 10, row1_y + 23), val, font=_font(17, bold=True), fill=color)
+
+    # row 2: net earnings / claimable
+    row2_y = 186
+    stats2 = [
+        (f"NET EARNINGS ({rate_pct}%)", f"{_fmt(net_earnings)} pts", GREEN),
+        ("CLAIMABLE NOW", f"{_fmt(claimable)} pts", GOLD),
+    ]
     for i, (label, val, color) in enumerate(stats2):
         cx = 22 + i * col2_w
-        _rounded_rect(draw, (cx, row2_y, cx + col2_w - 8, row2_y + 46), 8, (18, 25, 40), BORDER, 1)
+        _rounded_rect(draw, (cx, row2_y, cx + col2_w - 8, row2_y + 50), 8, (18, 25, 40), BORDER, 1)
         draw.text((cx + 10, row2_y + 7), label, font=_font(10), fill=MUTED)
-        draw.text((cx + 10, row2_y + 22), val, font=_font(16, bold=True), fill=color)
+        draw.text((cx + 10, row2_y + 23), val, font=_font(17, bold=True), fill=color)
 
-    # 2-col stat row 3
-    stats3 = [
-        ("CLAIMABLE", f"{_fmt(claimable)} pts", WHITE),
-        ("TOTAL CLAIMED", f"{_fmt(total_claimed)} pts", WHITE),
-    ]
-    row3_y = 240
-    for i, (label, val, color) in enumerate(stats3):
-        cx = 22 + i * col2_w
-        _rounded_rect(draw, (cx, row3_y, cx + col2_w - 8, row3_y + 46), 8, (18, 25, 40), BORDER, 1)
-        draw.text((cx + 10, row3_y + 7), label, font=_font(10), fill=MUTED)
-        draw.text((cx + 10, row3_y + 22), val, font=_font(16, bold=True), fill=color)
+    # row 3: total claimed (full width)
+    row3_y = 246
+    _rounded_rect(draw, (22, row3_y, W - 22, row3_y + 50), 8, (18, 25, 40), BORDER, 1)
+    draw.text((32, row3_y + 7), "TOTAL CLAIMED", font=_font(10), fill=MUTED)
+    draw.text((32, row3_y + 23), f"{_fmt(total_claimed)} pts", font=_font(17, bold=True), fill=WHITE)
+    settle_note = "Settled daily 00:00 UTC"
+    sn_w = draw.textlength(settle_note, font=_font(10))
+    draw.text((W - 22 - sn_w, row3_y + 30), settle_note, font=_font(10), fill=MUTED)
 
     buf = io.BytesIO()
     img.save(buf, "PNG")
