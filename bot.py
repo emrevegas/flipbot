@@ -21,12 +21,21 @@ logging.basicConfig(
 log = logging.getLogger("flipbot")
 
 COGS = [
+    "cogs.registration",   # auto-register + .register — load first
     "cogs.economy",
     "cogs.admin",
     "cogs.promo",
     "cogs.affiliate",
     "cogs.rakeback",
     "cogs.panel",
+    "cogs.games",
+    "cogs.cases",
+    "cogs.deposit",
+    "cogs.bonus",
+    "cogs.giveaway",
+    "cogs.races",
+    "cogs.stats",
+    "cogs.wallet",
 ]
 
 

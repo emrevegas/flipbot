@@ -1,6 +1,7 @@
-"""Admin commands: .add .remove .set .reset .promo"""
+"""Admin commands: .add .remove .set .reset .promo .ban .unban .mute .broadcast .setgame .setcap"""
 from __future__ import annotations
 
+import asyncio
 import time
 
 import discord
@@ -178,6 +179,182 @@ class Admin(commands.Cog):
             description="\n".join(lines),
             color=0x5865F2,
         )
+        await ctx.send(embed=embed)
+
+
+    # ── User moderation ────────────────────────────────────────────────────────
+
+    @commands.command(name="ban")
+    @admin_only()
+    async def ban_user(self, ctx: commands.Context, member: discord.Member, *, reason: str = ""):
+        """Ban a user from using the bot. .ban @user [reason]"""
+        await db.ensure_user(member.id, member.name)
+        await db.ban_user(member.id, reason, str(ctx.author.id))
+        embed = discord.Embed(color=0xE74C3C)
+        embed.add_field(name="🔨 Banned", value=member.mention, inline=True)
+        if reason:
+            embed.add_field(name="Reason", value=reason, inline=False)
+        await ctx.send(embed=embed)
+        try:
+            await member.send(embed=discord.Embed(
+                description=f"You have been banned from FlipBot. Reason: {reason or 'No reason given'}",
+                color=0xE74C3C,
+            ))
+        except Exception:
+            pass
+
+    @commands.command(name="unban")
+    @admin_only()
+    async def unban_user(self, ctx: commands.Context, member: discord.Member):
+        """Unban a user. .unban @user"""
+        await db.unban_user(member.id)
+        await ctx.send(embed=utils.success_embed(f"Unbanned {member.mention}."))
+
+    @commands.command(name="mute")
+    @admin_only()
+    async def mute_user(self, ctx: commands.Context, member: discord.Member):
+        """Mute a user from games. .mute @user"""
+        await db.mute_user(member.id, str(ctx.author.id))
+        await ctx.send(embed=utils.success_embed(f"Muted {member.mention} from games."))
+
+    @commands.command(name="unmute")
+    @admin_only()
+    async def unmute_user(self, ctx: commands.Context, member: discord.Member):
+        """Unmute a user. .unmute @user"""
+        await db.unmute_user(member.id)
+        await ctx.send(embed=utils.success_embed(f"Unmuted {member.mention}."))
+
+    # ── Broadcast ──────────────────────────────────────────────────────────────
+
+    @commands.command(name="broadcast")
+    @admin_only()
+    async def broadcast(self, ctx: commands.Context, *, message: str):
+        """DM all registered users. .broadcast <message>"""
+        user_ids = await db.get_all_user_ids()
+        sent, failed = 0, 0
+        status_msg = await ctx.send(embed=utils.info_embed("Broadcast", f"Sending to {len(user_ids)} users..."))
+        for uid in user_ids:
+            try:
+                user = await self.bot.fetch_user(int(uid))
+                if user:
+                    await user.send(embed=discord.Embed(
+                        title="📢 FlipBot Announcement",
+                        description=message,
+                        color=0x5865F2,
+                    ))
+                    sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.3)  # rate limit protection
+        await status_msg.edit(embed=utils.success_embed(
+            f"Broadcast complete. Sent: {sent} | Failed: {failed}"
+        ))
+
+    # ── Game management ────────────────────────────────────────────────────────
+
+    @commands.group(name="setgame", invoke_without_command=True)
+    @admin_only()
+    async def setgame(self, ctx: commands.Context, game_id: str, setting: str, value: str):
+        """Manage game settings. .setgame blackjack enabled/disabled / minbet / maxbet / rigged"""
+        dbc = await db.get_db()
+        game = await db.get_game_config(game_id)
+        if not game:
+            return await ctx.send(embed=utils.error_embed(f"Game `{game_id}` not found."))
+
+        setting = setting.lower()
+        if setting == "enabled":
+            await dbc.execute("UPDATE games SET enabled=1 WHERE id=?", (game_id,))
+            msg = f"Game `{game_id}` enabled."
+        elif setting == "disabled":
+            await dbc.execute("UPDATE games SET enabled=0 WHERE id=?", (game_id,))
+            msg = f"Game `{game_id}` disabled."
+        elif setting == "minbet":
+            await dbc.execute("UPDATE games SET min_bet=? WHERE id=?", (float(value), game_id))
+            msg = f"Min bet for `{game_id}` set to {utils.fmt_pts(float(value))} pts."
+        elif setting == "maxbet":
+            await dbc.execute("UPDATE games SET max_bet=? WHERE id=?", (float(value), game_id))
+            msg = f"Max bet for `{game_id}` set to {utils.fmt_pts(float(value))} pts."
+        elif setting == "rigged":
+            pct = float(value)
+            if not 0 <= pct <= 100:
+                return await ctx.send(embed=utils.error_embed("Rigged chance must be 0-100."))
+            await dbc.execute("UPDATE games SET rigged_chance=? WHERE id=?", (pct / 100, game_id))
+            msg = f"Rigged chance for `{game_id}` set to {pct}%."
+        else:
+            return await ctx.send(embed=utils.error_embed(
+                "Invalid setting. Use: `enabled`, `disabled`, `minbet`, `maxbet`, `rigged`"
+            ))
+        await dbc.commit()
+        await ctx.send(embed=utils.success_embed(msg))
+
+    @commands.command(name="games")
+    @admin_only()
+    async def list_games(self, ctx: commands.Context):
+        """List all game configs. .games"""
+        games = await db.get_all_games()
+        if not games:
+            return await ctx.send(embed=utils.info_embed("Games", "No games found."))
+        lines = []
+        for g in games:
+            status = "✅" if g["enabled"] else "❌"
+            lines.append(
+                f"{status} `{g['id']}` — min:{utils.fmt_pts(g['min_bet'])} "
+                f"max:{utils.fmt_pts(g['max_bet'])} "
+                f"rigged:{int(g['rigged_chance']*100)}%"
+            )
+        embed = discord.Embed(title="🎮 Game Configs", description="\n".join(lines), color=0x5865F2)
+        await ctx.send(embed=embed)
+
+    # ── Balance cap management ─────────────────────────────────────────────────
+
+    @commands.command(name="setcap")
+    @admin_only()
+    async def setcap(self, ctx: commands.Context, member: discord.Member, amount: float):
+        """Set a balance cap for a user. .setcap @user 50000"""
+        if amount <= 0:
+            return await ctx.send(embed=utils.error_embed("Cap must be positive."))
+        await db.set_balance_cap(member.id, amount, str(ctx.author.id))
+        await ctx.send(embed=utils.success_embed(
+            f"Balance cap for {member.mention} set to **{utils.fmt_pts(amount)} pts**."
+        ))
+
+    @commands.command(name="removecap")
+    @admin_only()
+    async def removecap(self, ctx: commands.Context, member: discord.Member):
+        """Remove a user's balance cap. .removecap @user"""
+        await db.remove_balance_cap(member.id)
+        await ctx.send(embed=utils.success_embed(f"Balance cap for {member.mention} removed."))
+
+    @commands.command(name="globalcap")
+    @admin_only()
+    async def globalcap(self, ctx: commands.Context, amount: float):
+        """Set a global balance cap for all users. .globalcap 500000  (0 to remove)"""
+        if amount <= 0:
+            await db.set_global_setting("global_cap", "")
+            return await ctx.send(embed=utils.success_embed("Global balance cap removed."))
+        await db.set_global_setting("global_cap", str(amount))
+        await ctx.send(embed=utils.success_embed(f"Global balance cap set to **{utils.fmt_pts(amount)} pts**."))
+
+    @commands.command(name="viewcap")
+    @admin_only()
+    async def viewcap(self, ctx: commands.Context, member: discord.Member = None):
+        """View balance cap info. .viewcap [@user]"""
+        global_cap_str = await db.get_global_setting("global_cap", "")
+        global_cap = float(global_cap_str) if global_cap_str else None
+
+        embed = discord.Embed(title="🔒 Balance Caps", color=0x5865F2)
+        embed.add_field(
+            name="Global Cap",
+            value=f"`{utils.fmt_pts(global_cap)} pts`" if global_cap else "None",
+            inline=True,
+        )
+        if member:
+            user_cap = await db.get_balance_cap(member.id)
+            embed.add_field(
+                name=f"{member.display_name}'s Cap",
+                value=f"`{utils.fmt_pts(user_cap)} pts`" if user_cap else "None",
+                inline=True,
+            )
         await ctx.send(embed=embed)
 
 
