@@ -36,6 +36,7 @@ COGS = [
     "cogs.races",
     "cogs.stats",
     "cogs.wallet",
+    "cogs.threads",
 ]
 
 
