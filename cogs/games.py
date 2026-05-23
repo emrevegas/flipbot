@@ -1163,18 +1163,19 @@ class Games(commands.Cog):
     # ── Towers ─────────────────────────────────────────────────────────────────
 
     @commands.command(name="towers", aliases=["tw"])
-    async def towers(self, ctx: commands.Context, mode: str = "easy", *, amount: str = ""):
-        """Start a Towers game.  .towers <easy|normal|hard> <bet>"""
-        mode = mode.lower()
-        if mode not in ("easy", "normal", "hard"):
-            return await ctx.send(embed=_err("Mode must be **easy**, **normal**, or **hard**."))
+    async def towers(self, ctx: commands.Context, amount: str = "", mode: str = "easy"):
+        """Start a Towers game.  .towers <bet> [easy|normal|hard]"""
         if not amount:
-            return await ctx.send(embed=_err("Usage: `.towers <easy|normal|hard> <bet>`"))
+            return await ctx.send(embed=_err("Usage: `.towers <bet> [easy|normal|hard]`"))
 
         try:
             bet = float(amount.replace(",", ""))
         except ValueError:
             return await ctx.send(embed=_err("Invalid bet amount."))
+
+        mode = mode.lower()
+        if mode not in ("easy", "normal", "hard"):
+            return await ctx.send(embed=_err("Mode must be **easy**, **normal**, or **hard**.  `.towers <bet> [easy|normal|hard]`"))
 
         await db.ensure_user(ctx.author.id, ctx.author.name)
         if not await _check_game(ctx, "towers", bet):
