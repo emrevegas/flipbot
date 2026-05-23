@@ -2,7 +2,7 @@
 from __future__ import annotations
 import discord
 from discord.ext import commands
-from modules import utils
+from modules import flip_utils as utils
 import config
 
 PREFIX = config.PREFIX

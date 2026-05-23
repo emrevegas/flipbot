@@ -6,7 +6,7 @@ from discord.ext import commands
 
 import config
 from database import db
-from modules import utils
+from modules import flip_utils as utils
 
 
 class Wallet(commands.Cog):

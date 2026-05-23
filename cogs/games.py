@@ -17,7 +17,7 @@ from discord.ext import commands
 
 import config
 from database import db
-from modules import image_gen, utils, balance_cap as bc
+from modules import image_gen, flip_utils as utils, flip_balance_cap as bc
 
 GAME_TIMEOUT = 120  # seconds for interactive games
 

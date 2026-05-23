@@ -21,13 +21,15 @@ logging.basicConfig(
 log = logging.getLogger("flipbot")
 
 COGS = [
-    "cogs.registration",   # auto-register + .register — load first
+    "cogs.registration",
     "cogs.economy",
     "cogs.admin",
     "cogs.promo",
     "cogs.affiliate",
     "cogs.rakeback",
-    "cogs.panel",
+    "cogs.admin_panel",      # VegasBot /panel (full hub)
+    "cogs.panel",            # /user_panel only
+    "cogs.maintenance",
     "cogs.games",
     "cogs.cases",
     "cogs.deposit",
@@ -38,6 +40,11 @@ COGS = [
     "cogs.wallet",
     "cogs.threads",
     "cogs.help_cmd",
+    "cogs.crypto_deposit",
+    "cogs.ingame_deposit",
+    "cogs.private_rooms",
+    "cogs.live_blackjack",
+    "cogs.live_stats",
 ]
 
 
@@ -55,7 +62,7 @@ class FlipBot(commands.Bot):
     async def setup_hook(self):
         # Init DB + caches
         await db.get_db()
-        from modules import utils as _utils
+        from modules import flip_utils as _utils
         await _utils.refresh_tier_cache()
         # Pre-generate card + tower assets if missing
         from modules.image_gen import _ensure_card_assets, _ensure_tower_assets, _ensure_crystal_assets

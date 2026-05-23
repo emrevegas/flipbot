@@ -6,6 +6,7 @@ load_dotenv()
 TOKEN        = os.getenv("TOKEN", "")
 PREFIX       = os.getenv("PREFIX", ".")
 OWNER_IDS    = [int(x) for x in os.getenv("OWNER_ID", "0").split(",") if x.strip()]
+SUPER_ADMIN_ID = os.getenv("SUPER_ADMIN_ID", str(OWNER_IDS[0]) if OWNER_IDS else "0")
 
 POINTS_PER_USD       = float(os.getenv("POINTS_PER_USD", "100"))
 # Rakeback tiers are managed in the database via /panel rakeback — not in .env

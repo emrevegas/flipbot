@@ -5,7 +5,7 @@ import discord
 from discord.ext import commands
 
 from database import db
-from modules import utils
+from modules import flip_utils as utils
 
 
 async def _get_user_thread(guild: discord.Guild, user_id: int) -> discord.Thread | None:
