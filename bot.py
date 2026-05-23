@@ -28,7 +28,7 @@ COGS = [
     "cogs.affiliate",
     "cogs.rakeback",
     "cogs.admin_panel",      # VegasBot /panel (full hub)
-    "cogs.panel",            # /user_panel only
+    "cogs.user_management",  # VegasBot /user_panel (full admin user panel)
     "cogs.maintenance",
     "cogs.games",
     "cogs.cases",
