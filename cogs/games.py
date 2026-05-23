@@ -19,6 +19,8 @@ import config
 from database import db
 from modules import image_gen, utils, balance_cap as bc
 
+GAME_TIMEOUT = 120  # seconds for interactive games
+
 
 # ── shared helpers ─────────────────────────────────────────────────────────────
 
@@ -59,12 +61,139 @@ async def _check_game(ctx: commands.Context, game_id: str, bet: float) -> bool:
 
     existing = await db.get_game_session(uid)
     if existing:
-        await ctx.send(embed=_err(
-            f"You already have an active **{existing['game']}** game. "
-            f"Finish or cash out first."
-        ))
-        return False
+        if _session_expired(existing):
+            await _resolve_expired_session(uid, existing)
+        else:
+            await ctx.send(embed=_err(
+                f"You already have an active **{existing['game']}** game. "
+                f"Finish or cash out first."
+            ))
+            return False
 
+    return True
+
+
+def _session_expired(sess: dict) -> bool:
+    started = int(sess.get("started_at") or 0)
+    return started > 0 and (time.time() - started) >= GAME_TIMEOUT
+
+
+async def _refund_game(user_id: int | str, bet: float, game_id: str, note: str = "timeout refund"):
+    """Refund bet and clear session on timeout."""
+    await db.add_balance(user_id, bet, note=note)
+    await db.clear_game_session(user_id)
+
+
+async def _bj_auto_stand(user_id: int, msg: discord.Message | None = None) -> None:
+    """Finish an active BJ session as if the player stood (timeout)."""
+    sess = await db.get_game_session(user_id)
+    if not sess or sess["game"] != "blackjack":
+        return
+    state = json.loads(sess["state"])
+    total_bet = float(sess["bet"]) * (2 if state.get("doubled") else 1)
+    username = state.get("username", "Player")
+
+    while Games._hand_value_static(state["dealer"]) < 17:
+        state["dealer"].append(state["deck"].pop())
+
+    pv = Games._hand_value_static(state["player"])
+    dv = Games._hand_value_static(state["dealer"])
+
+    if pv > 21:
+        outcome, gross, won = "BUST", 0.0, False
+    elif dv > 21 or pv > dv:
+        outcome, gross, won = "WIN", total_bet * 2, True
+    elif pv == dv:
+        outcome, gross, won = "PUSH", total_bet, False
+    else:
+        outcome, gross, won = "LOSS", 0.0, False
+
+    game_cfg = await db.get_game_config("blackjack")
+    he = float(game_cfg["house_edge"]) if game_cfg else 0.02
+    net = gross * (1 - he) if gross > 0 else 0.0
+
+    if net > 0:
+        bal = float((await db.get_user(user_id) or {}).get("balance", 0))
+        net_capped = await bc.apply_balance_cap(user_id, bal + net)
+        net = max(0.0, net_capped - bal)
+        await db.add_balance(user_id, net, note="blackjack timeout payout")
+
+    await db.add_wager(user_id, total_bet)
+    tier = utils.get_rakeback_tier(float((await db.get_user(user_id) or {}).get("total_wagered", 0)))
+    await db.add_rakeback(user_id, total_bet * tier["rate"])
+    await _record(user_id, won, total_bet, net)
+    await db.clear_game_session(user_id)
+    for mid, uid in list(_bj_msg_to_user.items()):
+        if uid == user_id:
+            _bj_msg_to_user.pop(mid, None)
+
+    if msg:
+        net_change = (net - total_bet) if won else (-total_bet if outcome != "PUSH" else 0.0)
+        gif_buf = await image_gen.render_bj_gif(
+            state["player"], state["dealer"],
+            reveal_dealer=True, result_text=outcome,
+            net_change=net_change, bet=total_bet, username=username,
+        )
+        try:
+            await msg.edit(
+                attachments=[discord.File(gif_buf, "blackjack.gif")],
+                view=_BJResultView(user_id, total_bet),
+            )
+        except Exception:
+            pass
+
+
+async def _resolve_expired_session(user_id: int | str, sess: dict) -> None:
+    """Resolve a timed-out session (refund or BJ auto-stand)."""
+    if sess["game"] == "blackjack":
+        await _bj_auto_stand(int(user_id))
+    else:
+        await _refund_game(user_id, float(sess["bet"]), sess["game"])
+
+
+async def _ensure_session_active(user_id: int | str, game_id: str) -> dict | None:
+    """Return session if active and not expired; refund + clear if timed out."""
+    sess = await db.get_game_session(user_id)
+    if not sess or sess["game"] != game_id:
+        return None
+    if _session_expired(sess):
+        await _resolve_expired_session(user_id, sess)
+        return None
+    return sess
+
+
+async def _check_game_interaction(
+    interaction: discord.Interaction, user_id: int, game_id: str, bet: float,
+) -> bool:
+    """Validate balance/config/session for re-bet from button interactions."""
+    existing = await db.get_game_session(user_id)
+    if existing:
+        if _session_expired(existing):
+            await _resolve_expired_session(user_id, existing)
+        else:
+            await interaction.response.send_message(
+                embed=_err("You already have an active game. Finish it first."), ephemeral=True,
+            )
+            return False
+    user = await db.get_user(user_id)
+    if not user or float(user["balance"]) < bet:
+        await interaction.response.send_message(embed=_err("Insufficient balance."), ephemeral=True)
+        return False
+    game_cfg = await db.get_game_config(game_id)
+    if not game_cfg or not game_cfg["enabled"]:
+        await interaction.response.send_message(
+            embed=_err(f"**{game_id}** is currently disabled."), ephemeral=True,
+        )
+        return False
+    if not (game_cfg["min_bet"] <= bet <= game_cfg["max_bet"]):
+        await interaction.response.send_message(
+            embed=_err(
+                f"Bet must be between {utils.fmt_pts(game_cfg['min_bet'])} "
+                f"and {utils.fmt_pts(game_cfg['max_bet'])} pts."
+            ),
+            ephemeral=True,
+        )
+        return False
     return True
 
 
@@ -149,8 +278,12 @@ class _MinesCashoutBtn(discord.ui.Button):
 
 
 class MinesGridView(discord.ui.View):
-    def __init__(self, state: dict, message_id: str, game_over: bool = False):
-        super().__init__(timeout=600)
+    def __init__(self, state: dict, message_id: str, user_id: int = 0, game_over: bool = False):
+        super().__init__(timeout=None if game_over else GAME_TIMEOUT)
+        self.user_id = user_id
+        self._state = state
+        self._message_id = message_id
+        self._game_over = game_over
         mine_set = set(state["mines"])
         revealed = set(state["revealed"])
 
@@ -186,12 +319,36 @@ class MinesGridView(discord.ui.View):
             cashout_label = "Cash Out"
         self.add_item(_MinesCashoutBtn(message_id, cashout_label, cashout_disabled))
 
+    async def on_timeout(self):
+        if self._game_over or not self.user_id:
+            return
+        sess = await db.get_game_session(self.user_id)
+        if not sess or sess["game"] != "mines":
+            return
+        bet = float(sess["bet"])
+        await _refund_game(self.user_id, bet, "mines", note="mines timeout refund")
+        if self._message_id:
+            _mines_msg_to_user.pop(self._message_id, None)
+        if self.message:
+            embed = discord.Embed(
+                title="⏱ Mines — Timed Out",
+                description=f"Bet **{utils.fmt_pts(bet)} pts** refunded.",
+                color=0xF39C12,
+            )
+            try:
+                await self.message.edit(
+                    embed=embed,
+                    view=MinesGridView(self._state, self._message_id, self.user_id, game_over=True),
+                )
+            except Exception:
+                pass
+
 
 async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int, c: int):
-    sess = await db.get_game_session(user_id)
-    if not sess or sess["game"] != "mines":
+    sess = await _ensure_session_active(user_id, "mines")
+    if not sess:
         return await interaction.response.send_message(
-            embed=_err("No active mines game."), ephemeral=True
+            embed=_err("No active mines game (may have timed out)."), ephemeral=True
         )
     state = json.loads(sess["state"])
 
@@ -225,7 +382,7 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
         await _record(user_id, False, bet, 0)
         _mines_msg_to_user.pop(msg_id, None)
 
-        view = MinesGridView(state, msg_id, game_over=True)
+        view = MinesGridView(state, msg_id, user_id, game_over=True)
         embed = discord.Embed(title="💥 Mines — BOOM!", color=0xE74C3C)
         embed.add_field(name="Bet", value=f"`{utils.fmt_pts(bet)} pts`", inline=True)
         embed.add_field(name="Result", value="💣 Mine hit!", inline=True)
@@ -238,7 +395,7 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
         state["multiplier"] = mult
         await db.set_game_session(user_id, "mines", bet, json.dumps(state))
 
-        view = MinesGridView(state, msg_id)
+        view = MinesGridView(state, msg_id, user_id)
         embed = discord.Embed(title="💣 Mines", color=0x5865F2)
         embed.add_field(name="Bet", value=f"`{utils.fmt_pts(bet)} pts`", inline=True)
         embed.add_field(name="Mines", value=str(state["mine_count"]), inline=True)
@@ -249,10 +406,10 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
 
 
 async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
-    sess = await db.get_game_session(user_id)
-    if not sess or sess["game"] != "mines":
+    sess = await _ensure_session_active(user_id, "mines")
+    if not sess:
         return await interaction.response.send_message(
-            embed=_err("No active mines game."), ephemeral=True
+            embed=_err("No active mines game (may have timed out)."), ephemeral=True
         )
     state = json.loads(sess["state"])
     msg_id = str(interaction.message.id)
@@ -262,7 +419,7 @@ async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
         await db.clear_game_session(user_id)
         await db.add_balance(user_id, bet, note="mines cancelled")
         _mines_msg_to_user.pop(msg_id, None)
-        view = MinesGridView(state, msg_id, game_over=True)
+        view = MinesGridView(state, msg_id, user_id, game_over=True)
         return await interaction.response.edit_message(
             embed=discord.Embed(description="No cells revealed — bet refunded.", color=0x5865F2),
             view=view,
@@ -286,7 +443,7 @@ async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
     await db.clear_game_session(user_id)
     _mines_msg_to_user.pop(msg_id, None)
 
-    view = MinesGridView(state, msg_id, game_over=True)
+    view = MinesGridView(state, msg_id, user_id, game_over=True)
     embed = discord.Embed(title="💰 Mines — Cashed Out!", color=0x2ECC71)
     embed.add_field(name="Multiplier", value=f"`{state['multiplier']:.2f}x`", inline=True)
     embed.add_field(name="Payout", value=f"`{utils.fmt_pts(net)} pts`", inline=True)
@@ -310,27 +467,10 @@ def _make_bj_deck() -> list[str]:
 
 async def _bj_start_from_interaction(interaction: discord.Interaction, user_id: int, bet: float):
     """Start (or re-start) a BJ game from a button interaction, editing the current message."""
-    user = await db.get_user(user_id)
-    if not user or float(user["balance"]) < bet:
-        return await interaction.response.send_message(
-            embed=_err("Insufficient balance."), ephemeral=True,
-        )
-    existing = await db.get_game_session(user_id)
-    if existing:
-        return await interaction.response.send_message(
-            embed=_err("You already have an active game."), ephemeral=True,
-        )
-    game_cfg = await db.get_game_config("blackjack")
-    if not game_cfg or not game_cfg["enabled"]:
-        return await interaction.response.send_message(
-            embed=_err("Blackjack is currently disabled."), ephemeral=True,
-        )
-    if not (game_cfg["min_bet"] <= bet <= game_cfg["max_bet"]):
-        return await interaction.response.send_message(
-            embed=_err(f"Bet must be between {utils.fmt_pts(game_cfg['min_bet'])} and {utils.fmt_pts(game_cfg['max_bet'])} pts."),
-            ephemeral=True,
-        )
+    if not await _check_game_interaction(interaction, user_id, "blackjack", bet):
+        return
 
+    user = await db.get_user(user_id)
     deck   = _make_bj_deck()
     player = [deck.pop(), deck.pop()]
     dealer = [deck.pop(), deck.pop()]
@@ -369,7 +509,7 @@ class _BJResultView(discord.ui.LayoutView):
     """Components V2: result GIF + Re-bet / 2× Bet buttons."""
 
     def __init__(self, user_id: int = 0, bet: float = 0.0):
-        super().__init__(timeout=300)
+        super().__init__(timeout=GAME_TIMEOUT)
         container = discord.ui.Container(accent_colour=discord.Colour.blurple())
         gallery   = discord.ui.MediaGallery()
         gallery.add_item(media="attachment://blackjack.gif")
@@ -401,7 +541,7 @@ class _BJView(discord.ui.LayoutView):
     """Components V2 LayoutView: Container → MediaGallery (image) + ActionRow (buttons)."""
 
     def __init__(self, user_id: int, message_id: str = "", can_double: bool = True):
-        super().__init__(timeout=300)
+        super().__init__(timeout=GAME_TIMEOUT)
         self.user_id    = user_id
         self.message_id = message_id
 
@@ -456,6 +596,9 @@ class _BJView(discord.ui.LayoutView):
         if await self._guard(interaction):
             await _bj_do_double(interaction)
 
+    async def on_timeout(self):
+        await _bj_auto_stand(self.user_id, self.message)
+
 
 async def _bj_do_hit(interaction: discord.Interaction):
     user_id = _bj_msg_to_user.get(str(interaction.message.id))
@@ -464,10 +607,10 @@ async def _bj_do_hit(interaction: discord.Interaction):
             embed=utils.error_embed("Game not found."), ephemeral=True
         )
 
-    sess = await db.get_game_session(user_id)
-    if not sess or sess["game"] != "blackjack":
+    sess = await _ensure_session_active(user_id, "blackjack")
+    if not sess:
         return await interaction.response.send_message(
-            embed=utils.error_embed("No active blackjack game."), ephemeral=True
+            embed=utils.error_embed("No active blackjack game (may have timed out)."), ephemeral=True
         )
 
     state = json.loads(sess["state"])
@@ -505,10 +648,10 @@ async def _bj_do_stand(interaction: discord.Interaction):
             embed=utils.error_embed("Game not found."), ephemeral=True
         )
 
-    sess = await db.get_game_session(user_id)
-    if not sess or sess["game"] != "blackjack":
+    sess = await _ensure_session_active(user_id, "blackjack")
+    if not sess:
         return await interaction.response.send_message(
-            embed=utils.error_embed("No active blackjack game."), ephemeral=True
+            embed=utils.error_embed("No active blackjack game (may have timed out)."), ephemeral=True
         )
 
     state = json.loads(sess["state"])
@@ -522,10 +665,10 @@ async def _bj_do_double(interaction: discord.Interaction):
             embed=utils.error_embed("Game not found."), ephemeral=True
         )
 
-    sess = await db.get_game_session(user_id)
-    if not sess or sess["game"] != "blackjack":
+    sess = await _ensure_session_active(user_id, "blackjack")
+    if not sess:
         return await interaction.response.send_message(
-            embed=utils.error_embed("No active blackjack game."), ephemeral=True
+            embed=utils.error_embed("No active blackjack game (may have timed out)."), ephemeral=True
         )
 
     user_data = await db.get_user(user_id)
@@ -1115,9 +1258,9 @@ class Games(commands.Cog):
         await self._hilo_guess(ctx, "lower")
 
     async def _hilo_guess(self, ctx: commands.Context, guess: str):
-        sess = await db.get_game_session(ctx.author.id)
-        if not sess or sess["game"] != "hilo":
-            return await ctx.send(embed=_err("No active Hi-Lo game. Start with `.hilo <amount>`."))
+        sess = await _ensure_session_active(ctx.author.id, "hilo")
+        if not sess:
+            return await ctx.send(embed=_err("No active Hi-Lo game (may have timed out — bet refunded)."))
         state = json.loads(sess["state"])
 
         current_rank = self._card_rank(state["current"])
@@ -1176,6 +1319,9 @@ class Games(commands.Cog):
         sess = await db.get_game_session(ctx.author.id)
         if not sess:
             return await ctx.send(embed=_err("No active game to cash out."))
+        if _session_expired(sess):
+            await _resolve_expired_session(ctx.author.id, sess)
+            return await ctx.send(embed=_err(f"Game timed out — bet refunded."))
 
         if sess["game"] == "hilo":
             state = json.loads(sess["state"])
@@ -1233,7 +1379,7 @@ class Games(commands.Cog):
         await db.set_game_session(ctx.author.id, "mines", amount, json.dumps(state))
         await db.add_balance(ctx.author.id, -amount, note="mines bet")
 
-        view = MinesGridView(state, "pending")
+        view = MinesGridView(state, "pending", ctx.author.id)
         embed = discord.Embed(title="💣 Mines", color=0x5865F2)
         embed.add_field(name="Bet", value=f"`{utils.fmt_pts(amount)} pts`", inline=True)
         embed.add_field(name="Mines", value=str(mine_count), inline=True)
@@ -1244,7 +1390,7 @@ class Games(commands.Cog):
         msg = await ctx.send(embed=embed, view=view)
         _mines_msg_to_user[str(msg.id)] = ctx.author.id
         # Re-render with correct message_id so custom_ids are unique per game
-        view2 = MinesGridView(state, str(msg.id))
+        view2 = MinesGridView(state, str(msg.id), ctx.author.id)
         await msg.edit(view=view2)
 
     # ── Crystals ───────────────────────────────────────────────────────────────
@@ -1264,53 +1410,11 @@ class Games(commands.Cog):
             return
 
         await db.add_balance(ctx.author.id, -bet, note="crystals bet")
-
-        # Generate outcome upfront (before reveal)
-        crystals  = random.choices(image_gen.CRYSTAL_TYPES, k=5)
-        combo     = image_gen.crystals_get_combo(crystals)
-        mult      = image_gen.CRYSTALS_MULTS[combo]
-
-        game_cfg  = await db.get_game_config("crystals")
-        he        = float(game_cfg["house_edge"]) if game_cfg else 0.02
-        gross     = bet * mult
-        net       = gross * (1 - he) if gross > 0 else 0.0
-
-        won = mult >= 1.0
-        if net > 0:
-            user      = await db.get_user(ctx.author.id)
-            cur_bal   = float((user or {}).get("balance", 0))
-            net = max(0.0, (await bc.apply_balance_cap(ctx.author.id, cur_bal + net)) - cur_bal)
-            await db.add_balance(ctx.author.id, net, note="crystals payout")
-
-        await db.add_wager(ctx.author.id, bet)
-        tier = utils.get_rakeback_tier(
-            float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0))
+        gif, _ = await _crystals_play(bet, ctx.author.display_name, ctx.author.id)
+        await ctx.send(
+            file=discord.File(gif, "crystals.gif"),
+            view=_CrystalsResultView(ctx.author.id, bet),
         )
-        await db.add_rakeback(ctx.author.id, bet * tier["rate"])
-        await _record(ctx.author.id, won, bet, net if won else 0.0)
-
-        net_change = (net - bet) if won else -bet
-
-        # Hidden state GIF first
-        hidden_gif = await image_gen.render_crystals_gif(
-            crystals, combo, mult, bet, ctx.author.display_name, net_change,
-            reveal_count=0,
-        )
-        state = {
-            "crystals":   crystals,
-            "combo":      combo,
-            "multiplier": mult,
-            "bet":        bet,
-            "username":   ctx.author.display_name,
-            "net_change": net_change,
-            "user_id":    ctx.author.id,
-        }
-        view = _CrystalsRevealView(ctx.author.id)
-        msg  = await ctx.send(
-            file=discord.File(hidden_gif, "crystals.gif"),
-            view=view,
-        )
-        _cr_msg_to_state[str(msg.id)] = state
 
     # ── Towers ─────────────────────────────────────────────────────────────────
 
@@ -1354,14 +1458,14 @@ class Games(commands.Cog):
         gif = await image_gen.render_towers_gif(
             grid, state["picks"], 0, mode, bet, ctx.author.display_name,
         )
-        view = _TowersView(ctx.author.id, "", can_cashout=False)
+        view = _TowersView(ctx.author.id, "", mode, can_cashout=False)
         msg  = await ctx.send(
             file=discord.File(gif, "towers.gif"),
             view=view,
         )
         _tw_msg_to_user[str(msg.id)] = ctx.author.id
         # Rebuild view with correct message_id so button callbacks resolve correctly
-        view2 = _TowersView(ctx.author.id, str(msg.id), can_cashout=False)
+        view2 = _TowersView(ctx.author.id, str(msg.id), mode, can_cashout=False)
         await msg.edit(view=view2)
 
     async def _mines_cashout(self, ctx: commands.Context, sess: dict):
@@ -1414,68 +1518,54 @@ async def setup(bot: commands.Bot):
 # CRYSTALS — 5-crystal reveal matcher, image-based GIF
 # ─────────────────────────────────────────────────────────────────────────────
 
-_cr_msg_to_state: dict[str, dict] = {}   # message_id → game state
 
+async def _crystals_play(bet: float, username: str, user_id: int) -> tuple[io.BytesIO, float]:
+    """Run crystals round: deduct bet, compute outcome, return reveal GIF + net_change."""
+    crystals = random.choices(image_gen.CRYSTAL_TYPES, k=5)
+    combo    = image_gen.crystals_get_combo(crystals)
+    mult     = image_gen.CRYSTALS_MULTS[combo]
 
-async def _crystals_start_from_interaction(
-    interaction: discord.Interaction, user_id: int, bet: float,
-):
-    user = await db.get_user(user_id)
-    if not user or float(user["balance"]) < bet:
-        return await interaction.response.send_message(embed=_err("Insufficient balance."), ephemeral=True)
-    if await db.get_game_session(user_id):
-        return await interaction.response.send_message(embed=_err("You already have an active game."), ephemeral=True)
     game_cfg = await db.get_game_config("crystals")
-    if not game_cfg or not game_cfg["enabled"]:
-        return await interaction.response.send_message(embed=_err("Crystals is currently disabled."), ephemeral=True)
-    if not (game_cfg["min_bet"] <= bet <= game_cfg["max_bet"]):
-        return await interaction.response.send_message(
-            embed=_err(f"Bet must be between {utils.fmt_pts(game_cfg['min_bet'])} and {utils.fmt_pts(game_cfg['max_bet'])} pts."),
-            ephemeral=True,
-        )
-
-    await db.add_balance(user_id, -bet, note="crystals re-bet")
-
-    crystals  = random.choices(image_gen.CRYSTAL_TYPES, k=5)
-    combo     = image_gen.crystals_get_combo(crystals)
-    mult      = image_gen.CRYSTALS_MULTS[combo]
-    he        = float(game_cfg["house_edge"]) if game_cfg else 0.02
-    gross     = bet * mult
-    net       = gross * (1 - he) if gross > 0 else 0.0
+    he       = float(game_cfg["house_edge"]) if game_cfg else 0.02
+    gross    = bet * mult
+    net      = gross * (1 - he) if gross > 0 else 0.0
 
     won = mult >= 1.0
     if net > 0:
+        user    = await db.get_user(user_id)
         cur_bal = float((user or {}).get("balance", 0))
         net = max(0.0, (await bc.apply_balance_cap(user_id, cur_bal + net)) - cur_bal)
         await db.add_balance(user_id, net, note="crystals payout")
 
     await db.add_wager(user_id, bet)
-    tier = utils.get_rakeback_tier(float((user or {}).get("total_wagered", 0)))
+    tier = utils.get_rakeback_tier(float((await db.get_user(user_id) or {}).get("total_wagered", 0)))
     await db.add_rakeback(user_id, bet * tier["rate"])
     await _record(user_id, won, bet, net if won else 0.0)
 
     net_change = (net - bet) if won else -bet
-    hidden_gif = await image_gen.render_crystals_gif(
-        crystals, combo, mult, bet, interaction.user.display_name, net_change,
-        reveal_count=0,
+    gif = await image_gen.render_crystals_gif(
+        crystals, combo, mult, bet, username, net_change, reveal_count=5,
     )
-    state = {
-        "crystals": crystals, "combo": combo, "multiplier": mult,
-        "bet": bet, "username": interaction.user.display_name,
-        "net_change": net_change, "user_id": user_id,
-    }
-    msg_id = str(interaction.message.id)
-    _cr_msg_to_state[msg_id] = state
-    view = _CrystalsRevealView(user_id)
+    return gif, net_change
+
+
+async def _crystals_start_from_interaction(
+    interaction: discord.Interaction, user_id: int, bet: float,
+):
+    if not await _check_game_interaction(interaction, user_id, "crystals", bet):
+        return
+
+    await db.add_balance(user_id, -bet, note="crystals re-bet")
+    gif, _ = await _crystals_play(bet, interaction.user.display_name, user_id)
     await interaction.response.edit_message(
-        attachments=[discord.File(hidden_gif, "crystals.gif")],
-        view=view,
+        attachments=[discord.File(gif, "crystals.gif")],
+        view=_CrystalsResultView(user_id, bet),
     )
 
 
 class _CrystalsResultView(discord.ui.LayoutView):
     def __init__(self, user_id: int = 0, bet: float = 0.0):
-        super().__init__(timeout=300)
+        super().__init__(timeout=GAME_TIMEOUT)
         c = discord.ui.Container(accent_colour=discord.Colour.purple())
         g = discord.ui.MediaGallery()
         g.add_item(media="attachment://crystals.gif")
@@ -1503,59 +1593,6 @@ class _CrystalsResultView(discord.ui.LayoutView):
         return _cb
 
 
-class _CrystalsRevealView(discord.ui.LayoutView):
-    """Hidden-state view with a single Reveal button."""
-
-    def __init__(self, user_id: int):
-        super().__init__(timeout=120)
-        self.user_id = user_id
-
-        container = discord.ui.Container(accent_colour=discord.Colour.purple())
-        gallery   = discord.ui.MediaGallery()
-        gallery.add_item(media="attachment://crystals.gif")
-        container.add_item(gallery)
-
-        row = discord.ui.ActionRow()
-        btn = discord.ui.Button(label="Reveal Crystals", style=discord.ButtonStyle.success, emoji="🔮")
-        btn.callback = self._on_reveal
-        row.add_item(btn)
-        container.add_item(row)
-        self.add_item(container)
-
-    async def _on_reveal(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message(
-                embed=utils.error_embed("Not your game."), ephemeral=True,
-            )
-        state = _cr_msg_to_state.get(str(interaction.message.id))
-        if not state:
-            return await interaction.response.send_message(
-                embed=utils.error_embed("Game not found."), ephemeral=True,
-            )
-        await _crystals_do_reveal(interaction, state)
-
-
-async def _crystals_do_reveal(interaction: discord.Interaction, state: dict):
-    _cr_msg_to_state.pop(str(interaction.message.id), None)
-
-    crystals   = state["crystals"]
-    combo      = state["combo"]
-    multiplier = state["multiplier"]
-    bet        = state["bet"]
-    username   = state["username"]
-    user_id    = state["user_id"]
-    net_change = state["net_change"]
-
-    gif = await image_gen.render_crystals_gif(
-        crystals, combo, multiplier, bet, username, net_change,
-        reveal_count=5,
-    )
-    await interaction.response.edit_message(
-        attachments=[discord.File(gif, "crystals.gif")],
-        view=_CrystalsResultView(user_id, bet),
-    )
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # TOWERS — image-based, button-driven, 10-floor climb
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1566,19 +1603,8 @@ _tw_msg_to_user: dict[str, int] = {}   # message_id → user_id
 async def _towers_start_from_interaction(
     interaction: discord.Interaction, user_id: int, bet: float, mode: str,
 ):
-    user = await db.get_user(user_id)
-    if not user or float(user["balance"]) < bet:
-        return await interaction.response.send_message(embed=_err("Insufficient balance."), ephemeral=True)
-    if await db.get_game_session(user_id):
-        return await interaction.response.send_message(embed=_err("You already have an active game."), ephemeral=True)
-    game_cfg = await db.get_game_config("towers")
-    if not game_cfg or not game_cfg["enabled"]:
-        return await interaction.response.send_message(embed=_err("Towers is currently disabled."), ephemeral=True)
-    if not (game_cfg["min_bet"] <= bet <= game_cfg["max_bet"]):
-        return await interaction.response.send_message(
-            embed=_err(f"Bet must be between {utils.fmt_pts(game_cfg['min_bet'])} and {utils.fmt_pts(game_cfg['max_bet'])} pts."),
-            ephemeral=True,
-        )
+    if not await _check_game_interaction(interaction, user_id, "towers", bet):
+        return
 
     bombs_per_floor = image_gen.TOWERS_BOMBS[mode]
     grid: list[list[str]] = []
@@ -1595,7 +1621,7 @@ async def _towers_start_from_interaction(
     await db.add_balance(user_id, -bet, note="towers re-bet")
 
     gif  = await image_gen.render_towers_gif(grid, state["picks"], 0, mode, bet, interaction.user.display_name)
-    view = _TowersView(user_id, str(interaction.message.id), can_cashout=False)
+    view = _TowersView(user_id, str(interaction.message.id), mode, can_cashout=False)
     _tw_msg_to_user[str(interaction.message.id)] = user_id
     await interaction.response.edit_message(
         attachments=[discord.File(gif, "towers.gif")],
@@ -1607,7 +1633,7 @@ class _TowersResultView(discord.ui.LayoutView):
     """Final view — GIF + Re-bet / 2× Bet buttons."""
 
     def __init__(self, user_id: int = 0, bet: float = 0.0, mode: str = "easy"):
-        super().__init__(timeout=300)
+        super().__init__(timeout=GAME_TIMEOUT)
         c = discord.ui.Container(accent_colour=discord.Colour.gold())
         g = discord.ui.MediaGallery()
         g.add_item(media="attachment://towers.gif")
@@ -1638,10 +1664,11 @@ class _TowersResultView(discord.ui.LayoutView):
 class _TowersView(discord.ui.LayoutView):
     """Active game view: image + 4 column buttons + cashout."""
 
-    def __init__(self, user_id: int, message_id: str, can_cashout: bool = False):
-        super().__init__(timeout=300)
+    def __init__(self, user_id: int, message_id: str, mode: str = "easy", can_cashout: bool = False):
+        super().__init__(timeout=GAME_TIMEOUT)
         self.user_id    = user_id
         self.message_id = message_id
+        self.mode       = mode
 
         container = discord.ui.Container(accent_colour=discord.Colour.gold())
         gallery   = discord.ui.MediaGallery()
@@ -1686,6 +1713,28 @@ class _TowersView(discord.ui.LayoutView):
         if await self._guard(interaction):
             await _towers_do_cashout(interaction)
 
+    async def on_timeout(self):
+        sess = await db.get_game_session(self.user_id)
+        if not sess or sess["game"] != "towers":
+            return
+        state = json.loads(sess["state"])
+        bet   = float(sess["bet"])
+        mode  = state.get("mode", self.mode)
+        username = state.get("username", "")
+        await _refund_game(self.user_id, bet, "towers", note="towers timeout refund")
+        if self.message:
+            _tw_msg_to_user.pop(str(self.message.id), None)
+            gif = await image_gen.render_towers_gif(
+                state["grid"], state["picks"], state["floor"], mode, bet, username,
+            )
+            try:
+                await self.message.edit(
+                    attachments=[discord.File(gif, "towers.gif")],
+                    view=_TowersResultView(self.user_id, bet, mode),
+                )
+            except Exception:
+                pass
+
 
 async def _towers_do_pick(interaction: discord.Interaction, col: int):
     user_id = _tw_msg_to_user.get(str(interaction.message.id))
@@ -1694,10 +1743,10 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
             embed=utils.error_embed("Game not found."), ephemeral=True,
         )
 
-    sess = await db.get_game_session(user_id)
-    if not sess or sess["game"] != "towers":
+    sess = await _ensure_session_active(user_id, "towers")
+    if not sess:
         return await interaction.response.send_message(
-            embed=utils.error_embed("No active towers game."), ephemeral=True,
+            embed=utils.error_embed("No active towers game (may have timed out)."), ephemeral=True,
         )
 
     state     = json.loads(sess["state"])
@@ -1771,7 +1820,7 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
                 grid, picks, new_floor, mode, bet, username,
                 just_revealed_floor=floor,
             )
-            view = _TowersView(user_id, str(interaction.message.id), can_cashout=True)
+            view = _TowersView(user_id, str(interaction.message.id), mode, can_cashout=True)
             await interaction.response.edit_message(
                 attachments=[discord.File(gif, "towers.gif")],
                 view=view,
@@ -1785,10 +1834,10 @@ async def _towers_do_cashout(interaction: discord.Interaction):
             embed=utils.error_embed("Game not found."), ephemeral=True,
         )
 
-    sess = await db.get_game_session(user_id)
-    if not sess or sess["game"] != "towers":
+    sess = await _ensure_session_active(user_id, "towers")
+    if not sess:
         return await interaction.response.send_message(
-            embed=utils.error_embed("No active towers game."), ephemeral=True,
+            embed=utils.error_embed("No active towers game (may have timed out)."), ephemeral=True,
         )
 
     state    = json.loads(sess["state"])
