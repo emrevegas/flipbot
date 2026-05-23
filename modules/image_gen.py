@@ -1290,17 +1290,12 @@ async def render_towers_gif(
         pick_col = picks[jrf]
         base     = base_revealed(jrf)
 
-        # Frame 0: floor jrf still hidden
+        # Frame 0: floor jrf still hidden (brief flash)
         frames.append(make_frame(base, active_fl=jrf))
         durations.append(120)
 
-        # Frame 1: picked cell reveals
-        base[jrf][pick_col] = grid[jrf][pick_col]
-        frames.append(make_frame(base, active_fl=jrf))
-        durations.append(440)
-
-        # Frame 2: all other cells reveal simultaneously
-        for c in [x for x in range(4) if x != pick_col]:
+        # Frame 1: all 4 cells reveal simultaneously
+        for c in range(4):
             base[jrf][c] = grid[jrf][c]
         frames.append(make_frame(base, active_fl=jrf))
         durations.append(400)
