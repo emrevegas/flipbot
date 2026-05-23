@@ -126,6 +126,7 @@ async def _bj_auto_stand(user_id: int, msg: discord.Message | None = None) -> No
     for mid, uid in list(_bj_msg_to_user.items()):
         if uid == user_id:
             _bj_msg_to_user.pop(mid, None)
+    _bj_user_msg.pop(int(user_id), None)
 
     if msg:
         net_change = (net - total_bet) if won else (-total_bet if outcome != "PUSH" else 0.0)
@@ -455,6 +456,12 @@ async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _bj_msg_to_user: dict[str, int] = {}  # message_id -> user_id
+_bj_user_msg: dict[int, discord.Message] = {}   # user_id -> latest game message
+
+
+def _cache_bj_msg(user_id: int, msg: discord.Message | None) -> None:
+    if msg is not None:
+        _bj_user_msg[int(user_id)] = msg
 
 
 def _make_bj_deck() -> list[str]:
@@ -496,6 +503,7 @@ async def _bj_start_from_interaction(interaction: discord.Interaction, user_id: 
         attachments=[discord.File(gif_buf, "blackjack.gif")],
         view=view,
     )
+    _cache_bj_msg(user_id, interaction.message)
     if pv == 21:
         await asyncio.sleep(0.6)
         msg = interaction.message
@@ -597,7 +605,8 @@ class _BJView(discord.ui.LayoutView):
             await _bj_do_double(interaction)
 
     async def on_timeout(self):
-        await _bj_auto_stand(self.user_id, self.message)
+        msg = _bj_user_msg.get(self.user_id)
+        await _bj_auto_stand(self.user_id, msg)
 
 
 async def _bj_do_hit(interaction: discord.Interaction):
@@ -639,6 +648,7 @@ async def _bj_do_hit(interaction: discord.Interaction):
             attachments=[discord.File(gif_buf, "blackjack.gif")],
             view=view,
         )
+        _cache_bj_msg(user_id, interaction.message)
 
 
 async def _bj_do_stand(interaction: discord.Interaction):
@@ -731,6 +741,7 @@ async def _bj_finish_from_interaction(
     await _record(user_id, won, total_bet, net)
     await db.clear_game_session(user_id)
     _bj_msg_to_user.pop(str(interaction.message.id), None)
+    _bj_user_msg.pop(int(user_id), None)
 
     net_change = (net - total_bet) if won else (-total_bet if outcome != "PUSH" else 0.0)
     gif_buf = await image_gen.render_bj_gif(
@@ -789,6 +800,7 @@ async def _bj_finish_interaction_free(
     await _record(user_id, won, total_bet, net)
     await db.clear_game_session(user_id)
     _bj_msg_to_user.pop(str(msg.id), None)
+    _bj_user_msg.pop(int(user_id), None)
 
     net_change = (net - total_bet) if won else 0.0
     gif_buf = await image_gen.render_bj_gif(
@@ -1085,6 +1097,7 @@ class Games(commands.Cog):
         view = _BJView(ctx.author.id, "pending", can_double=can_double)
         msg = await ctx.send(file=discord.File(gif_buf, "blackjack.gif"), view=view)
         _bj_msg_to_user[str(msg.id)] = ctx.author.id
+        _cache_bj_msg(ctx.author.id, msg)
         view.message_id = str(msg.id)
 
         if pv == 21:
@@ -1464,6 +1477,7 @@ class Games(commands.Cog):
             view=view,
         )
         _tw_msg_to_user[str(msg.id)] = ctx.author.id
+        _cache_tw_msg(ctx.author.id, msg)
         # Rebuild view with correct message_id so button callbacks resolve correctly
         view2 = _TowersView(ctx.author.id, str(msg.id), mode, can_cashout=False)
         await msg.edit(view=view2)
@@ -1598,6 +1612,12 @@ class _CrystalsResultView(discord.ui.LayoutView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _tw_msg_to_user: dict[str, int] = {}   # message_id → user_id
+_tw_user_msg: dict[int, discord.Message] = {}
+
+
+def _cache_tw_msg(user_id: int, msg: discord.Message | None) -> None:
+    if msg is not None:
+        _tw_user_msg[int(user_id)] = msg
 
 
 async def _towers_start_from_interaction(
@@ -1627,6 +1647,7 @@ async def _towers_start_from_interaction(
         attachments=[discord.File(gif, "towers.gif")],
         view=view,
     )
+    _cache_tw_msg(user_id, interaction.message)
 
 
 class _TowersResultView(discord.ui.LayoutView):
@@ -1722,13 +1743,15 @@ class _TowersView(discord.ui.LayoutView):
         mode  = state.get("mode", self.mode)
         username = state.get("username", "")
         await _refund_game(self.user_id, bet, "towers", note="towers timeout refund")
-        if self.message:
-            _tw_msg_to_user.pop(str(self.message.id), None)
+        msg = _tw_user_msg.get(self.user_id)
+        if msg:
+            _tw_msg_to_user.pop(str(msg.id), None)
+            _tw_user_msg.pop(self.user_id, None)
             gif = await image_gen.render_towers_gif(
                 state["grid"], state["picks"], state["floor"], mode, bet, username,
             )
             try:
-                await self.message.edit(
+                await msg.edit(
                     attachments=[discord.File(gif, "towers.gif")],
                     view=_TowersResultView(self.user_id, bet, mode),
                 )
@@ -1778,6 +1801,7 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
             attachments=[discord.File(gif, "towers.gif")],
             view=_TowersResultView(user_id, bet, mode),
         )
+        _tw_user_msg.pop(int(user_id), None)
 
     else:
         # Gem found
@@ -1813,6 +1837,7 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
                 attachments=[discord.File(gif, "towers.gif")],
                 view=_TowersResultView(user_id, bet, mode),
             )
+            _tw_user_msg.pop(int(user_id), None)
 
         else:
             await db.set_game_session(user_id, "towers", bet, json.dumps(state))
@@ -1825,6 +1850,7 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
                 attachments=[discord.File(gif, "towers.gif")],
                 view=view,
             )
+            _cache_tw_msg(user_id, interaction.message)
 
 
 async def _towers_do_cashout(interaction: discord.Interaction):
@@ -1878,3 +1904,5 @@ async def _towers_do_cashout(interaction: discord.Interaction):
         attachments=[discord.File(gif, "towers.gif")],
         view=_TowersResultView(user_id, bet, mode),
     )
+    _tw_user_msg.pop(int(user_id), None)
+    _tw_user_msg.pop(int(user_id), None)
