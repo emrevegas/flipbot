@@ -300,40 +300,64 @@ async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
 _bj_msg_to_user: dict[str, int] = {}  # message_id -> user_id
 
 
-class _BJView(discord.ui.View):
-    def __init__(self, user_id: int, message_id: str, can_double: bool = True):
+class _BJView(discord.ui.LayoutView):
+    """Components V2 LayoutView: Container → MediaGallery (image) + ActionRow (buttons)."""
+
+    def __init__(self, user_id: int, message_id: str = "", can_double: bool = True):
         super().__init__(timeout=300)
-        self.user_id = user_id
+        self.user_id    = user_id
         self.message_id = message_id
-        self._can_double = can_double
 
-    @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary, emoji="🃏")
-    async def hit(self, interaction: discord.Interaction, _):
+        # ── Container wrapping image + buttons ──────────────────────────────
+        container = discord.ui.Container(
+            accent_colour=discord.Colour.blurple(),
+        )
+
+        # Image gallery — references the attached file by name
+        gallery = discord.ui.MediaGallery()
+        gallery.add_item(media="attachment://blackjack.gif")
+        container.add_item(gallery)
+
+        # Action row with Hit / Stand / Double Down
+        row = discord.ui.ActionRow()
+
+        hit_btn = discord.ui.Button(label="Hit", style=discord.ButtonStyle.primary, emoji="🃏")
+        hit_btn.callback = self._on_hit
+        row.add_item(hit_btn)
+
+        stand_btn = discord.ui.Button(label="Stand", style=discord.ButtonStyle.secondary, emoji="🛑")
+        stand_btn.callback = self._on_stand
+        row.add_item(stand_btn)
+
+        double_btn = discord.ui.Button(
+            label="Double Down", style=discord.ButtonStyle.success,
+            emoji="⬆️", disabled=not can_double,
+        )
+        double_btn.callback = self._on_double
+        row.add_item(double_btn)
+
+        container.add_item(row)
+        self.add_item(container)
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            return await interaction.response.send_message(
+            await interaction.response.send_message(
                 embed=utils.error_embed("Not your game."), ephemeral=True
             )
-        await _bj_do_hit(interaction)
+            return False
+        return True
 
-    @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary, emoji="🛑")
-    async def stand(self, interaction: discord.Interaction, _):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message(
-                embed=utils.error_embed("Not your game."), ephemeral=True
-            )
-        await _bj_do_stand(interaction)
+    async def _on_hit(self, interaction: discord.Interaction):
+        if await self._guard(interaction):
+            await _bj_do_hit(interaction)
 
-    @discord.ui.button(label="Double Down", style=discord.ButtonStyle.success, emoji="⬆️")
-    async def double(self, interaction: discord.Interaction, _):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message(
-                embed=utils.error_embed("Not your game."), ephemeral=True
-            )
-        if not self._can_double:
-            return await interaction.response.send_message(
-                embed=utils.error_embed("Can't double now."), ephemeral=True
-            )
-        await _bj_do_double(interaction)
+    async def _on_stand(self, interaction: discord.Interaction):
+        if await self._guard(interaction):
+            await _bj_do_stand(interaction)
+
+    async def _on_double(self, interaction: discord.Interaction):
+        if await self._guard(interaction):
+            await _bj_do_double(interaction)
 
 
 async def _bj_do_hit(interaction: discord.Interaction):
@@ -371,7 +395,7 @@ async def _bj_do_hit(interaction: discord.Interaction):
         view = _BJView(user_id, str(interaction.message.id), can_double=can_double)
         await interaction.response.edit_message(
             attachments=[discord.File(gif_buf, "blackjack.gif")],
-            embed=None, view=view,
+            view=view,
         )
 
 
@@ -476,11 +500,10 @@ async def _bj_finish_from_interaction(
     try:
         await interaction.response.edit_message(
             attachments=[discord.File(gif_buf, "blackjack.gif")],
-            embed=None, view=None,
+            view=None,
         )
     except Exception:
         try:
-            await interaction.response.edit_message(embed=None, view=None)
             gif_buf.seek(0)
             await interaction.followup.send(file=discord.File(gif_buf, "blackjack.gif"))
         except Exception:
@@ -530,7 +553,7 @@ async def _bj_finish_interaction_free(
         net_change=net_change, bet=total_bet, username=username,
     )
     try:
-        await msg.edit(attachments=[discord.File(gif_buf, "blackjack.gif")], embed=None, view=None)
+        await msg.edit(attachments=[discord.File(gif_buf, "blackjack.gif")], view=None)
     except Exception:
         pass
 
