@@ -1299,11 +1299,11 @@ async def render_towers_gif(
         frames.append(make_frame(base, active_fl=jrf))
         durations.append(440)
 
-        # Frames: other cells reveal left-to-right
+        # Frame 2: all other cells reveal simultaneously
         for c in [x for x in range(4) if x != pick_col]:
             base[jrf][c] = grid[jrf][c]
-            frames.append(make_frame(base, active_fl=jrf))
-            durations.append(360)
+        frames.append(make_frame(base, active_fl=jrf))
+        durations.append(400)
 
         if grid[jrf][pick_col] == "gem" and result != "BOOM":
             # Show multiplier banner on cleared floor, then move to next floor
