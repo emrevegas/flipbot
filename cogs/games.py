@@ -300,16 +300,101 @@ async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
 _bj_msg_to_user: dict[str, int] = {}  # message_id -> user_id
 
 
-class _BJResultView(discord.ui.LayoutView):
-    """Components V2: Container with result GIF only — no buttons (game over)."""
+def _make_bj_deck() -> list[str]:
+    suits = ["♠", "♥", "♦", "♣"]
+    ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    deck  = [f"{r}{s}" for s in suits for r in ranks] * 2
+    random.shuffle(deck)
+    return deck
 
-    def __init__(self):
-        super().__init__(timeout=None)
+
+async def _bj_start_from_interaction(interaction: discord.Interaction, user_id: int, bet: float):
+    """Start (or re-start) a BJ game from a button interaction, editing the current message."""
+    user = await db.get_user(user_id)
+    if not user or float(user["balance"]) < bet:
+        return await interaction.response.send_message(
+            embed=_err("Insufficient balance."), ephemeral=True,
+        )
+    existing = await db.get_game_session(user_id)
+    if existing:
+        return await interaction.response.send_message(
+            embed=_err("You already have an active game."), ephemeral=True,
+        )
+    game_cfg = await db.get_game_config("blackjack")
+    if not game_cfg or not game_cfg["enabled"]:
+        return await interaction.response.send_message(
+            embed=_err("Blackjack is currently disabled."), ephemeral=True,
+        )
+    if not (game_cfg["min_bet"] <= bet <= game_cfg["max_bet"]):
+        return await interaction.response.send_message(
+            embed=_err(f"Bet must be between {utils.fmt_pts(game_cfg['min_bet'])} and {utils.fmt_pts(game_cfg['max_bet'])} pts."),
+            ephemeral=True,
+        )
+
+    deck   = _make_bj_deck()
+    player = [deck.pop(), deck.pop()]
+    dealer = [deck.pop(), deck.pop()]
+    state  = {
+        "bet": bet, "player": player, "dealer": dealer,
+        "deck": deck, "doubled": False,
+        "username": interaction.user.display_name,
+    }
+    await db.set_game_session(user_id, "blackjack", bet, json.dumps(state))
+    await db.add_balance(user_id, -bet, note="blackjack re-bet")
+
+    pv       = Games._hand_value_static(player)
+    gif_buf  = await image_gen.render_bj_gif(
+        player, [dealer[0], "?"],
+        bet=bet, username=interaction.user.display_name,
+    )
+    msg_id   = str(interaction.message.id)
+    can_double = float(user["balance"]) - bet >= bet
+    view     = _BJView(user_id, msg_id, can_double=can_double)
+    _bj_msg_to_user[msg_id] = user_id
+
+    await interaction.response.edit_message(
+        attachments=[discord.File(gif_buf, "blackjack.gif")],
+        view=view,
+    )
+    if pv == 21:
+        await asyncio.sleep(0.6)
+        msg = interaction.message
+        await _bj_finish_interaction_free(
+            None, msg, state, "natural_blackjack", user_id,
+            username=interaction.user.display_name,
+        )
+
+
+class _BJResultView(discord.ui.LayoutView):
+    """Components V2: result GIF + Re-bet / 2× Bet buttons."""
+
+    def __init__(self, user_id: int = 0, bet: float = 0.0):
+        super().__init__(timeout=300)
         container = discord.ui.Container(accent_colour=discord.Colour.blurple())
-        gallery = discord.ui.MediaGallery()
+        gallery   = discord.ui.MediaGallery()
         gallery.add_item(media="attachment://blackjack.gif")
         container.add_item(gallery)
+
+        if user_id and bet > 0:
+            row = discord.ui.ActionRow()
+            rb  = discord.ui.Button(label="Re-bet", style=discord.ButtonStyle.secondary, emoji="🔄")
+            rb.callback = self._make_cb(user_id, bet)
+            row.add_item(rb)
+            x2  = discord.ui.Button(label="2× Bet", style=discord.ButtonStyle.primary, emoji="⬆️")
+            x2.callback = self._make_cb(user_id, bet * 2)
+            row.add_item(x2)
+            container.add_item(row)
+
         self.add_item(container)
+
+    def _make_cb(self, user_id: int, bet: float):
+        async def _cb(interaction: discord.Interaction):
+            if interaction.user.id != user_id:
+                return await interaction.response.send_message(
+                    embed=utils.error_embed("Not your game."), ephemeral=True,
+                )
+            await _bj_start_from_interaction(interaction, user_id, bet)
+        return _cb
 
 
 class _BJView(discord.ui.LayoutView):
@@ -514,7 +599,7 @@ async def _bj_finish_from_interaction(
     try:
         await interaction.response.edit_message(
             attachments=[discord.File(gif_buf, "blackjack.gif")],
-            view=_BJResultView(),
+            view=_BJResultView(user_id, total_bet),
         )
     except Exception:
         try:
@@ -525,18 +610,20 @@ async def _bj_finish_from_interaction(
 
 
 async def _bj_finish_interaction_free(
-    ctx: commands.Context,
+    ctx: "commands.Context | None",
     msg: discord.Message,
     state: dict,
     reason: str,
     user_id: int,
+    username: str = "",
 ):
     """Finish a BJ game without an active interaction — used for natural blackjack on start."""
     sess = await db.get_game_session(user_id)
     if not sess:
         return
     total_bet = float(sess["bet"]) * (2 if state.get("doubled") else 1)
-    username = state.get("username", ctx.author.display_name)
+    if not username:
+        username = state.get("username", (ctx.author.display_name if ctx else "Player"))
 
     if reason == "natural_blackjack":
         outcome, gross, won = "BLACKJACK", total_bet * 2.5, True
@@ -567,7 +654,7 @@ async def _bj_finish_interaction_free(
         net_change=net_change, bet=total_bet, username=username,
     )
     try:
-        await msg.edit(attachments=[discord.File(gif_buf, "blackjack.gif")], view=_BJResultView())
+        await msg.edit(attachments=[discord.File(gif_buf, "blackjack.gif")], view=_BJResultView(user_id, total_bet))
     except Exception:
         pass
 
@@ -1330,14 +1417,90 @@ async def setup(bot: commands.Bot):
 _cr_msg_to_state: dict[str, dict] = {}   # message_id → game state
 
 
+async def _crystals_start_from_interaction(
+    interaction: discord.Interaction, user_id: int, bet: float,
+):
+    user = await db.get_user(user_id)
+    if not user or float(user["balance"]) < bet:
+        return await interaction.response.send_message(embed=_err("Insufficient balance."), ephemeral=True)
+    if await db.get_game_session(user_id):
+        return await interaction.response.send_message(embed=_err("You already have an active game."), ephemeral=True)
+    game_cfg = await db.get_game_config("crystals")
+    if not game_cfg or not game_cfg["enabled"]:
+        return await interaction.response.send_message(embed=_err("Crystals is currently disabled."), ephemeral=True)
+    if not (game_cfg["min_bet"] <= bet <= game_cfg["max_bet"]):
+        return await interaction.response.send_message(
+            embed=_err(f"Bet must be between {utils.fmt_pts(game_cfg['min_bet'])} and {utils.fmt_pts(game_cfg['max_bet'])} pts."),
+            ephemeral=True,
+        )
+
+    await db.add_balance(user_id, -bet, note="crystals re-bet")
+
+    crystals  = random.choices(image_gen.CRYSTAL_TYPES, k=5)
+    combo     = image_gen.crystals_get_combo(crystals)
+    mult      = image_gen.CRYSTALS_MULTS[combo]
+    he        = float(game_cfg["house_edge"]) if game_cfg else 0.02
+    gross     = bet * mult
+    net       = gross * (1 - he) if gross > 0 else 0.0
+
+    won = mult >= 1.0
+    if net > 0:
+        cur_bal = float((user or {}).get("balance", 0))
+        net = max(0.0, (await bc.apply_balance_cap(user_id, cur_bal + net)) - cur_bal)
+        await db.add_balance(user_id, net, note="crystals payout")
+
+    await db.add_wager(user_id, bet)
+    tier = utils.get_rakeback_tier(float((user or {}).get("total_wagered", 0)))
+    await db.add_rakeback(user_id, bet * tier["rate"])
+    await _record(user_id, won, bet, net if won else 0.0)
+
+    net_change = (net - bet) if won else -bet
+    hidden_gif = await image_gen.render_crystals_gif(
+        crystals, combo, mult, bet, interaction.user.display_name, net_change,
+        reveal_count=0,
+    )
+    state = {
+        "crystals": crystals, "combo": combo, "multiplier": mult,
+        "bet": bet, "username": interaction.user.display_name,
+        "net_change": net_change, "user_id": user_id,
+    }
+    msg_id = str(interaction.message.id)
+    _cr_msg_to_state[msg_id] = state
+    view = _CrystalsRevealView(user_id)
+    await interaction.response.edit_message(
+        attachments=[discord.File(hidden_gif, "crystals.gif")],
+        view=view,
+    )
+
+
 class _CrystalsResultView(discord.ui.LayoutView):
-    def __init__(self):
-        super().__init__(timeout=None)
+    def __init__(self, user_id: int = 0, bet: float = 0.0):
+        super().__init__(timeout=300)
         c = discord.ui.Container(accent_colour=discord.Colour.purple())
         g = discord.ui.MediaGallery()
         g.add_item(media="attachment://crystals.gif")
         c.add_item(g)
+
+        if user_id and bet > 0:
+            row = discord.ui.ActionRow()
+            rb  = discord.ui.Button(label="Re-bet", style=discord.ButtonStyle.secondary, emoji="🔄")
+            rb.callback = self._make_cb(user_id, bet)
+            row.add_item(rb)
+            x2  = discord.ui.Button(label="2× Bet", style=discord.ButtonStyle.primary, emoji="⬆️")
+            x2.callback = self._make_cb(user_id, bet * 2)
+            row.add_item(x2)
+            c.add_item(row)
+
         self.add_item(c)
+
+    def _make_cb(self, user_id: int, bet: float):
+        async def _cb(interaction: discord.Interaction):
+            if interaction.user.id != user_id:
+                return await interaction.response.send_message(
+                    embed=utils.error_embed("Not your game."), ephemeral=True,
+                )
+            await _crystals_start_from_interaction(interaction, user_id, bet)
+        return _cb
 
 
 class _CrystalsRevealView(discord.ui.LayoutView):
@@ -1389,7 +1552,7 @@ async def _crystals_do_reveal(interaction: discord.Interaction, state: dict):
     )
     await interaction.response.edit_message(
         attachments=[discord.File(gif, "crystals.gif")],
-        view=_CrystalsResultView(),
+        view=_CrystalsResultView(user_id, bet),
     )
 
 
@@ -1400,16 +1563,76 @@ async def _crystals_do_reveal(interaction: discord.Interaction, state: dict):
 _tw_msg_to_user: dict[str, int] = {}   # message_id → user_id
 
 
-class _TowersResultView(discord.ui.LayoutView):
-    """Final view — GIF only, no buttons."""
+async def _towers_start_from_interaction(
+    interaction: discord.Interaction, user_id: int, bet: float, mode: str,
+):
+    user = await db.get_user(user_id)
+    if not user or float(user["balance"]) < bet:
+        return await interaction.response.send_message(embed=_err("Insufficient balance."), ephemeral=True)
+    if await db.get_game_session(user_id):
+        return await interaction.response.send_message(embed=_err("You already have an active game."), ephemeral=True)
+    game_cfg = await db.get_game_config("towers")
+    if not game_cfg or not game_cfg["enabled"]:
+        return await interaction.response.send_message(embed=_err("Towers is currently disabled."), ephemeral=True)
+    if not (game_cfg["min_bet"] <= bet <= game_cfg["max_bet"]):
+        return await interaction.response.send_message(
+            embed=_err(f"Bet must be between {utils.fmt_pts(game_cfg['min_bet'])} and {utils.fmt_pts(game_cfg['max_bet'])} pts."),
+            ephemeral=True,
+        )
 
-    def __init__(self):
-        super().__init__(timeout=None)
+    bombs_per_floor = image_gen.TOWERS_BOMBS[mode]
+    grid: list[list[str]] = []
+    for _ in range(10):
+        cells = ["bomb"] * bombs_per_floor + ["gem"] * (4 - bombs_per_floor)
+        random.shuffle(cells)
+        grid.append(cells)
+
+    state = {
+        "mode": mode, "floor": 0, "grid": grid,
+        "picks": [None] * 10, "username": interaction.user.display_name,
+    }
+    await db.set_game_session(user_id, "towers", bet, json.dumps(state))
+    await db.add_balance(user_id, -bet, note="towers re-bet")
+
+    gif  = await image_gen.render_towers_gif(grid, state["picks"], 0, mode, bet, interaction.user.display_name)
+    view = _TowersView(user_id, str(interaction.message.id), can_cashout=False)
+    _tw_msg_to_user[str(interaction.message.id)] = user_id
+    await interaction.response.edit_message(
+        attachments=[discord.File(gif, "towers.gif")],
+        view=view,
+    )
+
+
+class _TowersResultView(discord.ui.LayoutView):
+    """Final view — GIF + Re-bet / 2× Bet buttons."""
+
+    def __init__(self, user_id: int = 0, bet: float = 0.0, mode: str = "easy"):
+        super().__init__(timeout=300)
         c = discord.ui.Container(accent_colour=discord.Colour.gold())
         g = discord.ui.MediaGallery()
         g.add_item(media="attachment://towers.gif")
         c.add_item(g)
+
+        if user_id and bet > 0:
+            row = discord.ui.ActionRow()
+            rb  = discord.ui.Button(label="Re-bet", style=discord.ButtonStyle.secondary, emoji="🔄")
+            rb.callback = self._make_cb(user_id, bet, mode)
+            row.add_item(rb)
+            x2  = discord.ui.Button(label="2× Bet", style=discord.ButtonStyle.primary, emoji="⬆️")
+            x2.callback = self._make_cb(user_id, bet * 2, mode)
+            row.add_item(x2)
+            c.add_item(row)
+
         self.add_item(c)
+
+    def _make_cb(self, user_id: int, bet: float, mode: str):
+        async def _cb(interaction: discord.Interaction):
+            if interaction.user.id != user_id:
+                return await interaction.response.send_message(
+                    embed=utils.error_embed("Not your game."), ephemeral=True,
+                )
+            await _towers_start_from_interaction(interaction, user_id, bet, mode)
+        return _cb
 
 
 class _TowersView(discord.ui.LayoutView):
@@ -1504,7 +1727,7 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
         )
         await interaction.response.edit_message(
             attachments=[discord.File(gif, "towers.gif")],
-            view=_TowersResultView(),
+            view=_TowersResultView(user_id, bet, mode),
         )
 
     else:
@@ -1539,7 +1762,7 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
             )
             await interaction.response.edit_message(
                 attachments=[discord.File(gif, "towers.gif")],
-                view=_TowersResultView(),
+                view=_TowersResultView(user_id, bet, mode),
             )
 
         else:
@@ -1604,5 +1827,5 @@ async def _towers_do_cashout(interaction: discord.Interaction):
     )
     await interaction.response.edit_message(
         attachments=[discord.File(gif, "towers.gif")],
-        view=_TowersResultView(),
+        view=_TowersResultView(user_id, bet, mode),
     )

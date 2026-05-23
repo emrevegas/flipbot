@@ -1530,8 +1530,8 @@ async def render_crystals_gif(
 
             if revealed and ctype:
                 base_col = CRYSTAL_COLORS[ctype]
-                slot_bg  = tuple(max(0, v - 45) for v in base_col)
-                border   = base_col if is_match else tuple(max(0, v - 20) for v in base_col)
+                slot_bg  = tuple(max(0, v - 45) for v in base_col) if is_match else BG
+                border   = base_col if is_match else tuple(max(0, v - 10) for v in base_col)
                 bw       = 3 if is_match else 2
             else:
                 slot_bg = HIDDEN
