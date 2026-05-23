@@ -813,10 +813,14 @@ async def render_bj_gif(
     net_change: float = 0.0,
     bet: float = 0.0,
     username: str = "",
+    animate_from: int = 0,
 ) -> io.BytesIO:
     """Animated BJ GIF.
 
-    - Deal frames play at 400ms each.
+    - animate_from=0: full interleaved deal animation (initial deal).
+    - animate_from=N: only animate player cards from index N onward (for hits).
+      The first frame shows the board before the new card; subsequent frames
+      reveal new cards one by one.
     - If result_text is set, final frame shows outcome + net_change; lasts 20 s.
     - GIF plays once (no loop).
     - Info bar below player cards shows username / bet / USD.
@@ -934,21 +938,31 @@ async def render_bj_gif(
     frames: list[Image.Image] = []
     durations: list[int] = []
 
-    ph_so_far: list[str] = []
-    dh_so_far: list[str] = []
-    max_c = max(len(player_hand), len(dealer_hand))
-    for i in range(max_c):
-        if i < len(player_hand):
-            ph_so_far = player_hand[: i + 1]
-        if i < len(dealer_hand):
-            dh_so_far = dealer_hand[: i + 1]
-        frames.append(_draw_frame(list(ph_so_far), list(dh_so_far)))
-        durations.append(380)
+    if animate_from == 0:
+        # Full interleaved deal animation (initial deal)
+        ph_so_far: list[str] = []
+        dh_so_far: list[str] = []
+        max_c = max(len(player_hand), len(dealer_hand))
+        for i in range(max_c):
+            if i < len(player_hand):
+                ph_so_far = player_hand[: i + 1]
+            if i < len(dealer_hand):
+                dh_so_far = dealer_hand[: i + 1]
+            frames.append(_draw_frame(list(ph_so_far), list(dh_so_far)))
+            durations.append(380)
+    else:
+        # Hit animation: existing board shown instantly, then each new card appears
+        # Frame 0: board state BEFORE the new card(s) — very brief flash
+        frames.append(_draw_frame(player_hand[:animate_from], dealer_hand))
+        durations.append(80)
+        # Frames: reveal each new card one at a time
+        for i in range(animate_from, len(player_hand)):
+            frames.append(_draw_frame(player_hand[: i + 1], dealer_hand))
+            durations.append(380)
 
-    # Final frame (with result if provided)
+    # Final frame (with result overlay if provided)
     frames.append(_draw_frame(list(player_hand), list(dealer_hand), is_final=True))
-    # 20 seconds on final frame so GIF "stops" — play once (no loop)
-    durations.append(20_000 if result_text else 8_000)
+    durations.append(20_000 if result_text else 5_000)
 
     buf = io.BytesIO()
     frames[0].save(

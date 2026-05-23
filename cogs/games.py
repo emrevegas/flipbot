@@ -300,6 +300,18 @@ async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
 _bj_msg_to_user: dict[str, int] = {}  # message_id -> user_id
 
 
+class _BJResultView(discord.ui.LayoutView):
+    """Components V2: Container with result GIF only — no buttons (game over)."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        container = discord.ui.Container(accent_colour=discord.Colour.blurple())
+        gallery = discord.ui.MediaGallery()
+        gallery.add_item(media="attachment://blackjack.gif")
+        container.add_item(gallery)
+        self.add_item(container)
+
+
 class _BJView(discord.ui.LayoutView):
     """Components V2 LayoutView: Container → MediaGallery (image) + ActionRow (buttons)."""
 
@@ -374,6 +386,7 @@ async def _bj_do_hit(interaction: discord.Interaction):
         )
 
     state = json.loads(sess["state"])
+    prev_count = len(state["player"])           # cards BEFORE new card
     state["player"].append(state["deck"].pop())
     await db.set_game_session(user_id, "blackjack", sess["bet"], json.dumps(state))
 
@@ -387,9 +400,10 @@ async def _bj_do_hit(interaction: discord.Interaction):
         )
     else:
         user_data = await db.get_user(user_id)
-        can_double = float((user_data or {}).get("balance", 0)) >= float(sess["bet"]) and len(state["player"]) == 2
+        can_double = False  # can only double on initial 2 cards
         gif_buf = await image_gen.render_bj_gif(
             state["player"], [state["dealer"][0], "?"],
+            animate_from=prev_count,            # only animate the new card
             bet=float(sess["bet"]), username=username,
         )
         view = _BJView(user_id, str(interaction.message.id), can_double=can_double)
@@ -500,7 +514,7 @@ async def _bj_finish_from_interaction(
     try:
         await interaction.response.edit_message(
             attachments=[discord.File(gif_buf, "blackjack.gif")],
-            view=None,
+            view=_BJResultView(),
         )
     except Exception:
         try:
@@ -553,7 +567,7 @@ async def _bj_finish_interaction_free(
         net_change=net_change, bet=total_bet, username=username,
     )
     try:
-        await msg.edit(attachments=[discord.File(gif_buf, "blackjack.gif")], view=None)
+        await msg.edit(attachments=[discord.File(gif_buf, "blackjack.gif")], view=_BJResultView())
     except Exception:
         pass
 
