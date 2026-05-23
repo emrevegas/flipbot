@@ -679,160 +679,307 @@ def render_race_card(rows: list[dict]) -> io.BytesIO:
     return buf
 
 
+# ── Blackjack card assets ──────────────────────────────────────────────────────
+
+CARDS_DIR = Path(__file__).parent.parent / "assets" / "cards"
+_CARD_W, _CARD_H = 71, 100  # target card size
+
+_SUIT_CHAR = {"h": "♥", "d": "♦", "c": "♣", "s": "♠"}
+_SUIT_COLOR = {"h": (195, 30, 30), "d": (195, 30, 30), "c": (15, 15, 15), "s": (15, 15, 15)}
+_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+_SUITS = ["h", "d", "c", "s"]
+
+
+def _gen_card_image(rank: str, suit: str) -> Image.Image:
+    """Generate a single card image with PIL."""
+    img = Image.new("RGBA", (_CARD_W, _CARD_H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([0, 0, _CARD_W - 1, _CARD_H - 1], radius=7,
+                            fill=(245, 245, 245), outline=(180, 180, 180), width=1)
+    suit_char = _SUIT_CHAR[suit]
+    ink = _SUIT_COLOR[suit]
+    f_sm = _font(13)
+    f_lg = _font(26, bold=True)
+    draw.text((4, 4), rank, font=f_sm, fill=ink)
+    draw.text((4, 18), suit_char, font=f_sm, fill=ink)
+    try:
+        sw = draw.textlength(suit_char, font=f_lg)
+        rw = draw.textlength(rank, font=f_lg)
+    except Exception:
+        sw = 18
+        rw = 18
+    draw.text((_CARD_W // 2 - rw // 2, _CARD_H // 2 - 24), rank, font=f_lg, fill=ink)
+    draw.text((_CARD_W // 2 - sw // 2, _CARD_H // 2 + 4), suit_char, font=f_lg, fill=ink)
+    return img
+
+
+def _gen_back_image() -> Image.Image:
+    """Generate a card-back image with PIL."""
+    img = Image.new("RGBA", (_CARD_W, _CARD_H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([0, 0, _CARD_W - 1, _CARD_H - 1], radius=7,
+                            fill=(22, 40, 80), outline=(60, 90, 150), width=2)
+    draw.rounded_rectangle([5, 5, _CARD_W - 6, _CARD_H - 6], radius=5,
+                            fill=(18, 32, 65))
+    # crosshatch pattern
+    for i in range(0, _CARD_W, 6):
+        draw.line([(5 + i, 5), (5, 5 + i)], fill=(30, 55, 110), width=1)
+        draw.line([(5 + i, _CARD_H - 6), (_CARD_W - 6, 5 + i)], fill=(30, 55, 110), width=1)
+    return img
+
+
+def _ensure_card_assets():
+    """Generate missing card PNGs into assets/cards/ on first run."""
+    CARDS_DIR.mkdir(parents=True, exist_ok=True)
+    back_path = CARDS_DIR / "back.png"
+    if not back_path.exists():
+        _gen_back_image().save(back_path, "PNG")
+    for rank in _RANKS:
+        for suit in _SUITS:
+            p = CARDS_DIR / f"{rank}{suit}.png"
+            if not p.exists():
+                _gen_card_image(rank, suit).save(p, "PNG")
+
+
+def _card_key(card_str: str) -> str:
+    """Convert deck card string (e.g. 'A♥', '10♣') to filename key (e.g. 'Ah', '10c')."""
+    if not card_str or card_str == "?":
+        return "back"
+    suit_map = {"♥": "h", "♦": "d", "♣": "c", "♠": "s"}
+    suit_char = card_str[-1]
+    rank = card_str[:-1] if len(card_str) > 1 else card_str
+    return f"{rank}{suit_map.get(suit_char, 'h')}"
+
+
+_card_cache: dict[str, Image.Image] = {}
+
+
+def _load_card_img(key: str) -> Image.Image:
+    """Load a card image (from assets or auto-generated), cached in memory."""
+    if key in _card_cache:
+        return _card_cache[key]
+    path = CARDS_DIR / f"{key}.png"
+    if path.exists():
+        img = Image.open(path).convert("RGBA").resize((_CARD_W, _CARD_H), Image.LANCZOS)
+    else:
+        if key == "back":
+            img = _gen_back_image()
+        else:
+            # parse rank/suit from key
+            suit_letter = key[-1] if key else "h"
+            rank = key[:-1] if len(key) > 1 else key
+            img = _gen_card_image(rank, suit_letter) if suit_letter in _SUIT_CHAR else _gen_back_image()
+    _card_cache[key] = img
+    return img
+
+
+def _paste_card(canvas: Image.Image, card_str: str, x: int, y: int, face_down: bool = False):
+    """Paste a card image (or back) onto canvas at (x, y)."""
+    key = "back" if face_down else _card_key(card_str)
+    card_img = _load_card_img(key).copy()
+    canvas.paste(card_img, (x, y), card_img)
+
+
 # ── Blackjack GIF ──────────────────────────────────────────────────────────────
 
-def _draw_card_on_img(img: "Image.Image", x: int, y: int, card: str, face_down: bool = False):
-    from PIL import ImageDraw as _ID
-    draw = _ID.Draw(img)
-    W, H = 58, 84
-    bg = (20, 30, 50) if face_down else (240, 240, 240)
-    draw.rounded_rectangle([x, y, x + W, y + H], radius=6, fill=bg, outline=(60, 80, 120), width=2)
-    if face_down:
-        draw.rounded_rectangle([x + 4, y + 4, x + W - 4, y + H - 4], radius=4, fill=(30, 50, 80))
-        return
-    suit = card[-1] if card else "?"
-    rank = card[:-1] if len(card) > 1 else card
-    red_suits = {"♥", "♦"}
-    color = (200, 30, 30) if suit in red_suits else (10, 10, 10)
-    font_sm = _font(13)
-    font_lg = _font(20)
-    draw.text((x + 4, y + 4), rank, font=font_sm, fill=color)
-    draw.text((x + 4, y + 18), suit, font=font_sm, fill=color)
-    try:
-        fw = draw.textlength(suit, font=font_lg)
-    except Exception:
-        fw = 14
-    draw.text((x + (W - fw) // 2, y + H // 2 - 12), suit, font=font_lg, fill=color)
+def _bj_hand_value(hand: list[str]) -> int:
+    total, aces = 0, 0
+    for card in hand:
+        if card in ("?", ""):
+            continue
+        rank = card[:-1] if len(card) > 1 else card
+        if rank in ("J", "Q", "K"):
+            total += 10
+        elif rank == "A":
+            total += 11
+            aces += 1
+        else:
+            try:
+                total += int(rank)
+            except ValueError:
+                pass
+    while total > 21 and aces:
+        total -= 10
+        aces -= 1
+    return total
 
 
 async def render_bj_gif(
-    player_hand: list,
-    dealer_hand: list,
+    player_hand: list[str],
+    dealer_hand: list[str],
+    *,
     reveal_dealer: bool = False,
     result_text: str = "",
+    net_change: float = 0.0,
+    bet: float = 0.0,
+    username: str = "",
 ) -> io.BytesIO:
-    """Create animated GIF showing cards being dealt one by one."""
-    from PIL import Image as _Img, ImageDraw as _ID
+    """Animated BJ GIF.
 
-    W, H = 520, 260
-    BG = (13, 17, 30)
-    WHITE = (255, 255, 255)
-    MUTED = (140, 150, 170)
-    GREEN = (46, 213, 96)
-    RED = (231, 76, 60)
-    GOLD = (255, 196, 0)
-    CW, CH = 60, 86
-    GAP = 8
+    - Deal frames play at 400ms each.
+    - If result_text is set, final frame shows outcome + net_change; lasts 20 s.
+    - GIF plays once (no loop).
+    - Info bar below player cards shows username / bet / USD.
+    """
+    _ensure_card_assets()
 
-    def _hv(hand):
-        total, aces = 0, 0
-        for c in hand:
-            if c == "?":
-                continue
-            r = c[:-1] if len(c) > 1 else c
-            if r in ("J", "Q", "K"):
-                total += 10
-            elif r == "A":
-                total += 11
-                aces += 1
-            else:
+    # Layout constants
+    W = 560
+    INFO_H = 46          # height of info bar at bottom
+    H = 310 + INFO_H     # total height
+
+    BG       = (13, 17, 30)
+    PANEL    = (18, 24, 42)
+    WHITE    = (255, 255, 255)
+    MUTED    = (120, 130, 150)
+    DIVIDER  = (35, 45, 70)
+    GREEN    = (46, 213, 96)
+    RED      = (231, 76, 60)
+    GOLD     = (255, 196, 0)
+    BLUE     = (88, 101, 242)
+
+    RESULT_COLORS = {
+        "BLACKJACK": GOLD, "WIN": GREEN, "PUSH": BLUE,
+        "BUST": RED, "LOSS": RED,
+    }
+
+    CW, CH = _CARD_W, _CARD_H   # 71 × 100
+    GAP = 9
+
+    font_label  = _font(12)
+    font_val    = _font(15, bold=True)
+    font_result = _font(44, bold=True)
+    font_sub    = _font(20, bold=True)
+    font_info   = _font(13)
+
+    pts_per_usd = config.POINTS_PER_USD or 100.0
+
+    def _draw_frame(ph: list[str], dh: list[str], is_final: bool = False) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+
+        # ── Dealer panel ──────────────────────────────────────────────────────
+        draw.rectangle([0, 0, W, 130], fill=PANEL)
+        draw.text((18, 10), "DEALER", font=font_label, fill=MUTED)
+        vis = [c for c in dh if c != "?"]
+        dv_str = str(_bj_hand_value(vis)) if "?" not in dh else "?"
+        draw.text((80, 10), dv_str, font=font_val, fill=WHITE)
+
+        for ci, card in enumerate(dh):
+            is_hidden = card == "?" and not reveal_dealer
+            _paste_card(img, card if not is_hidden else "?", 18 + ci * (CW + GAP), 30, face_down=is_hidden)
+
+        # ── Centre divider ────────────────────────────────────────────────────
+        draw.rectangle([0, 130, W, 144], fill=BG)
+        draw.line([(18, 137), (W - 18, 137)], fill=DIVIDER, width=1)
+
+        # ── Player panel ──────────────────────────────────────────────────────
+        draw.text((18, 148), "YOUR HAND", font=font_label, fill=MUTED)
+        pv = _bj_hand_value(ph)
+        pv_color = RED if pv > 21 else WHITE
+        draw.text((108, 148), str(pv), font=font_val, fill=pv_color)
+
+        for ci, card in enumerate(ph):
+            _paste_card(img, card, 18 + ci * (CW + GAP), 168)
+
+        # ── Info bar ──────────────────────────────────────────────────────────
+        info_y = H - INFO_H
+        draw.rectangle([0, info_y, W, H], fill=(8, 12, 22))
+        draw.line([(0, info_y), (W, info_y)], fill=DIVIDER, width=1)
+
+        uname_str = (username[:22] + "…") if len(username) > 22 else username
+        draw.text((18, info_y + 14), uname_str, font=font_info, fill=MUTED)
+
+        if bet > 0:
+            bet_str = f"Bet: {_fmt(bet)} pts  •  ${bet / pts_per_usd:.2f}"
+            try:
+                bw = draw.textlength(bet_str, font=font_info)
+            except Exception:
+                bw = len(bet_str) * 7
+            draw.text((W - 18 - bw, info_y + 14), bet_str, font=font_info, fill=MUTED)
+
+        # ── Result overlay (final frame only) ─────────────────────────────────
+        if is_final and result_text:
+            rc = RESULT_COLORS.get(result_text, WHITE)
+            overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(overlay)
+            od.rectangle([0, 0, W, info_y], fill=(0, 0, 0, 155))
+            merged = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+            draw2 = ImageDraw.Draw(merged)
+
+            # Outcome text (large, centred vertically in the cards area)
+            mid_y = (info_y) // 2
+            try:
+                rw = draw2.textlength(result_text, font=font_result)
+            except Exception:
+                rw = len(result_text) * 28
+            draw2.text(((W - rw) // 2, mid_y - 36), result_text, font=font_result, fill=rc)
+
+            # Net change line
+            if net_change != 0.0:
+                prefix = "+" if net_change > 0 else ""
+                sub_str = f"{prefix}{_fmt(net_change)} pts  (${abs(net_change) / pts_per_usd:.2f})"
+                sub_color = GREEN if net_change > 0 else RED
                 try:
-                    total += int(r)
+                    sw = draw2.textlength(sub_str, font=font_sub)
                 except Exception:
-                    pass
-        while total > 21 and aces:
-            total -= 10
-            aces -= 1
-        return total
+                    sw = len(sub_str) * 12
+                draw2.text(((W - sw) // 2, mid_y + 16), sub_str, font=font_sub, fill=sub_color)
 
-    font_label = _font(13)
-    font_val = _font(18)
-    font_result = _font(32, bold=True)
+            return merged
 
-    # Build step-by-step deal sequence (interleaved p/d cards)
-    all_steps: list[tuple[list, list]] = []
-    ph, dh = [], []
-    max_cards = max(len(player_hand), len(dealer_hand))
-    for i in range(max_cards):
-        if i < len(player_hand):
-            ph = player_hand[: i + 1]
-        if i < len(dealer_hand):
-            dh = dealer_hand[: i + 1]
-        all_steps.append((list(ph), list(dh)))
+        return img
 
-    if result_text:
-        all_steps.append((list(player_hand), list(dealer_hand)))
-
-    frames: list = []
+    # ── Build frame sequence ──────────────────────────────────────────────────
+    frames: list[Image.Image] = []
     durations: list[int] = []
 
-    for step_i, (ph_s, dh_s) in enumerate(all_steps):
-        img = _Img.new("RGB", (W, H), BG)
-        draw = _ID.Draw(img)
+    ph_so_far: list[str] = []
+    dh_so_far: list[str] = []
+    max_c = max(len(player_hand), len(dealer_hand))
+    for i in range(max_c):
+        if i < len(player_hand):
+            ph_so_far = player_hand[: i + 1]
+        if i < len(dealer_hand):
+            dh_so_far = dealer_hand[: i + 1]
+        frames.append(_draw_frame(list(ph_so_far), list(dh_so_far)))
+        durations.append(380)
 
-        # Dealer area
-        draw.text((20, 12), "DEALER", font=font_label, fill=MUTED)
-        visible_dealer = [c for c in dh_s if c != "?"]
-        dv_str = str(_hv(visible_dealer)) if "?" not in dh_s else "?"
-        draw.text((90, 12), dv_str, font=font_label, fill=WHITE)
-
-        for ci, card in enumerate(dh_s):
-            cx = 20 + ci * (CW + GAP)
-            is_hidden = card == "?" and not reveal_dealer
-            _draw_card_on_img(img, cx, 34, card if not is_hidden else "?", face_down=is_hidden)
-
-        # Divider
-        draw.line([(20, 140), (W - 20, 140)], fill=(30, 40, 60), width=1)
-
-        # Player area
-        draw.text((20, 148), "YOU", font=font_label, fill=MUTED)
-        pv = _hv(ph_s)
-        pv_color = RED if pv > 21 else WHITE
-        draw.text((60, 148), str(pv), font=font_label, fill=pv_color)
-
-        for ci, card in enumerate(ph_s):
-            cx = 20 + ci * (CW + GAP)
-            _draw_card_on_img(img, cx, 168, card, face_down=False)
-
-        # Result overlay on last frame
-        is_last = step_i == len(all_steps) - 1
-        if result_text and is_last:
-            result_colors = {
-                "BLACKJACK": GOLD, "WIN": GREEN, "PUSH": (88, 101, 242),
-                "BUST": RED, "LOSS": RED,
-            }
-            rc = result_colors.get(result_text, WHITE)
-            overlay = _Img.new("RGBA", (W, H), (0, 0, 0, 0))
-            od = _ID.Draw(overlay)
-            od.rectangle([0, 0, W, H], fill=(0, 0, 0, 140))
-            img_rgba = img.convert("RGBA")
-            img = _Img.alpha_composite(img_rgba, overlay).convert("RGB")
-            draw = _ID.Draw(img)
-            try:
-                fw = draw.textlength(result_text, font=font_result)
-            except Exception:
-                fw = len(result_text) * 18
-            draw.text(((W - fw) // 2, H // 2 - 20), result_text, font=font_result, fill=rc)
-
-        frames.append(img)
-        durations.append(2000 if is_last else 400)
-
-    if not frames:
-        frames = [_Img.new("RGB", (W, H), BG)]
-        durations = [500]
+    # Final frame (with result if provided)
+    frames.append(_draw_frame(list(player_hand), list(dealer_hand), is_final=True))
+    # 20 seconds on final frame so GIF "stops" — play once (no loop)
+    durations.append(20_000 if result_text else 8_000)
 
     buf = io.BytesIO()
     frames[0].save(
-        buf,
-        format="GIF",
-        save_all=True,
+        buf, format="GIF", save_all=True,
         append_images=frames[1:],
         duration=durations,
-        loop=0,
+        loop=1,        # 1 = play once, do not repeat
         optimize=False,
+        disposal=2,
     )
     buf.seek(0)
     return buf
+
+
+async def render_bj_static(
+    player_hand: list[str],
+    dealer_hand: list[str],
+    *,
+    reveal_dealer: bool = False,
+    bet: float = 0.0,
+    username: str = "",
+) -> io.BytesIO:
+    """Single static PNG of the current BJ board — used for mid-game hit updates."""
+    return await render_bj_gif(
+        player_hand, dealer_hand,
+        reveal_dealer=reveal_dealer,
+        result_text="",
+        net_change=0.0,
+        bet=bet,
+        username=username,
+    )
 
 
 # ── Case Opening Card ──────────────────────────────────────────────────────────
