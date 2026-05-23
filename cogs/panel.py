@@ -134,6 +134,22 @@ class _UserPanelView(discord.ui.View):
             file=discord.File(buf, "affiliate.png"), ephemeral=True
         )
 
+    @discord.ui.button(label="Stats Card", style=discord.ButtonStyle.secondary, emoji="📊")
+    async def stats_card(self, interaction: discord.Interaction, _):
+        stats = await db.get_user_stats(self.member.id)
+        wagered = float(self.user["total_wagered"])
+        loop = __import__("asyncio").get_event_loop()
+        buf = await loop.run_in_executor(
+            None,
+            image_gen.render_stats_card,
+            self.member.display_name,
+            stats,
+            wagered,
+        )
+        await interaction.response.send_message(
+            file=discord.File(buf, "stats.png"), ephemeral=True
+        )
+
 
 # ── /panel (admin) ─────────────────────────────────────────────────────────────
 
@@ -150,6 +166,34 @@ class AdminPanel(commands.Cog):
             return True
         return False
 
+    @panel_group.command(name="home", description="Admin panel home — platform overview.")
+    async def panel_home(self, interaction: discord.Interaction):
+        if not self._is_admin(interaction):
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Admins only."), ephemeral=True
+            )
+        dbc = await db.get_db()
+        total_users = (await (await dbc.execute("SELECT COUNT(*) FROM users")).fetchone())[0]
+        total_bal = (await (await dbc.execute("SELECT SUM(balance) FROM users")).fetchone())[0] or 0
+        total_wagered = (await (await dbc.execute("SELECT SUM(total_wagered) FROM users")).fetchone())[0] or 0
+        total_deposited = (await (await dbc.execute("SELECT SUM(total_deposited) FROM users")).fetchone())[0] or 0
+        total_affiliates = (await (await dbc.execute("SELECT COUNT(*) FROM affiliates")).fetchone())[0]
+        active_sessions = (await (await dbc.execute("SELECT COUNT(*) FROM game_sessions")).fetchone())[0]
+        total_promos = (await (await dbc.execute("SELECT COUNT(*) FROM promo_codes")).fetchone())[0] or 0
+
+        embed = discord.Embed(title="🎛️ FlipBot Admin Panel", color=0x5865F2)
+        if interaction.guild:
+            embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else "")
+        embed.add_field(name="👥 Users", value=str(total_users), inline=True)
+        embed.add_field(name="💰 Total Balance", value=f"`{utils.fmt_pts(total_bal)} pts`", inline=True)
+        embed.add_field(name="🎲 Total Wagered", value=f"`{utils.fmt_pts(total_wagered)} pts`", inline=True)
+        embed.add_field(name="📥 Total Deposited", value=f"`{utils.fmt_pts(total_deposited)} pts`", inline=True)
+        embed.add_field(name="🤝 Affiliates", value=str(total_affiliates), inline=True)
+        embed.add_field(name="🎯 Active Games", value=str(active_sessions), inline=True)
+        embed.add_field(name="🎟️ Promo Codes", value=str(total_promos), inline=True)
+        embed.set_footer(text=f"Use /panel <section> to manage each area  •  Admin: {interaction.user.name}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @panel_group.command(name="stats", description="Platform-wide stats.")
     async def panel_stats(self, interaction: discord.Interaction):
         if not self._is_admin(interaction):
@@ -163,7 +207,7 @@ class AdminPanel(commands.Cog):
         total_wagered = (await (await dbc.execute("SELECT SUM(total_wagered) FROM users")).fetchone())[0] or 0
         total_deposited = (await (await dbc.execute("SELECT SUM(total_deposited) FROM users")).fetchone())[0] or 0
         total_affiliates = (await (await dbc.execute("SELECT COUNT(*) FROM affiliates")).fetchone())[0]
-        total_promos = (await (await dbc.execute("SELECT SUM(uses) FROM promo_codes")).fetchone())[0] or 0
+        total_promo_uses = (await (await dbc.execute("SELECT SUM(uses) FROM promo_codes")).fetchone())[0] or 0
 
         embed = discord.Embed(title="📊 Platform Stats", color=0x5865F2)
         embed.add_field(name="Users", value=str(total_users), inline=True)
@@ -171,7 +215,7 @@ class AdminPanel(commands.Cog):
         embed.add_field(name="Total Wagered", value=f"`{utils.fmt_pts(total_wagered)} pts`", inline=True)
         embed.add_field(name="Total Deposited", value=f"`{utils.fmt_pts(total_deposited)} pts`", inline=True)
         embed.add_field(name="Affiliates", value=str(total_affiliates), inline=True)
-        embed.add_field(name="Promo Redemptions", value=str(total_promos), inline=True)
+        embed.add_field(name="Promo Redemptions", value=str(total_promo_uses), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @panel_group.command(name="user", description="View/modify a specific user.")
@@ -184,6 +228,8 @@ class AdminPanel(commands.Cog):
         await db.ensure_user(member.id, member.name)
         user = await db.get_user(member.id)
         aff = await db.get_affiliate(member.id)
+        is_banned = await db.is_banned(member.id)
+        is_muted = await db.is_muted(member.id)
 
         embed = discord.Embed(title=f"🛠️ Admin — {member.display_name}", color=0xF59E0B)
         embed.set_thumbnail(url=member.display_avatar.url)
@@ -194,8 +240,15 @@ class AdminPanel(commands.Cog):
         embed.add_field(name="Rakeback Acc.", value=f"`{utils.fmt_pts(float(user['rakeback_accumulated']))} pts`", inline=True)
         if aff:
             embed.add_field(name="Affiliate", value=f"`{aff['code']}`", inline=True)
+        status_flags = []
+        if is_banned:
+            status_flags.append("🚫 Banned")
+        if is_muted:
+            status_flags.append("🔇 Muted")
+        if status_flags:
+            embed.add_field(name="Status", value=" | ".join(status_flags), inline=False)
 
-        view = _AdminUserView(member, interaction.user)
+        view = _AdminUserView(member, interaction.user, is_banned=is_banned, is_muted=is_muted)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @panel_group.command(name="leaderboard", description="View top balances.")
@@ -227,12 +280,70 @@ class AdminPanel(commands.Cog):
         view = _RakebackTierView(interaction.user)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+    @panel_group.command(name="games", description="Manage game settings (enable/disable, bet limits, house edge).")
+    async def panel_games(self, interaction: discord.Interaction):
+        if not self._is_admin(interaction):
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Admins only."), ephemeral=True
+            )
+        games = await db.get_all_games()
+        embed = discord.Embed(title="🎮 Game Settings", color=0xFEE75C)
+        for g in games:
+            status = "✅ Enabled" if g["enabled"] else "❌ Disabled"
+            embed.add_field(
+                name=f"{g['name']} (`{g['id']}`)",
+                value=(
+                    f"{status}\n"
+                    f"Bet: `{utils.fmt_pts(g['min_bet'])}` – `{utils.fmt_pts(g['max_bet'])} pts`\n"
+                    f"House edge: `{float(g['house_edge'])*100:.1f}%`"
+                ),
+                inline=True,
+            )
+        embed.set_footer(text="Use the buttons below to configure a game.")
+        view = _GameSettingsView(interaction.user)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @panel_group.command(name="promo", description="View and manage promo codes.")
+    async def panel_promo(self, interaction: discord.Interaction):
+        if not self._is_admin(interaction):
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Admins only."), ephemeral=True
+            )
+        dbc = await db.get_db()
+        rows = await (await dbc.execute(
+            "SELECT code, reward, uses, max_uses, enabled FROM promo_codes ORDER BY created_at DESC LIMIT 20"
+        )).fetchall()
+
+        embed = discord.Embed(title="🎟️ Promo Codes", color=0x5865F2)
+        if rows:
+            lines = []
+            for row in rows:
+                status = "✅" if row["enabled"] else "❌"
+                uses_str = f"{row['uses']}/{row['max_uses']}" if row["max_uses"] else f"{row['uses']}/∞"
+                lines.append(
+                    f"{status} `{row['code']}` — **{utils.fmt_pts(row['reward'])} pts** — {uses_str} uses"
+                )
+            embed.description = "\n".join(lines)
+        else:
+            embed.description = "No promo codes yet."
+        embed.set_footer(text="Use the buttons to create or delete promo codes.")
+        view = _PromoManageView(interaction.user)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 
 class _AdminUserView(discord.ui.View):
-    def __init__(self, target: discord.Member, admin: discord.Member):
+    def __init__(
+        self,
+        target: discord.Member,
+        admin: discord.Member | discord.User,
+        is_banned: bool = False,
+        is_muted: bool = False,
+    ):
         super().__init__(timeout=120)
         self.target = target
         self.admin = admin
+        self.is_banned = is_banned
+        self.is_muted = is_muted
 
     @discord.ui.button(label="Add Balance", style=discord.ButtonStyle.success, emoji="➕")
     async def add_bal(self, interaction: discord.Interaction, _):
@@ -251,6 +362,48 @@ class _AdminUserView(discord.ui.View):
         if interaction.user.id != self.admin.id:
             return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
         await interaction.response.send_modal(_BalanceModal(self.target, "set"))
+
+    @discord.ui.button(label="Ban / Unban", style=discord.ButtonStyle.danger, emoji="🚫", row=1)
+    async def ban_toggle(self, interaction: discord.Interaction, _):
+        if interaction.user.id != self.admin.id:
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        if self.is_banned:
+            await db.unban_user(self.target.id)
+            self.is_banned = False
+            msg = f"✅ **{self.target.display_name}** has been **unbanned**."
+        else:
+            await interaction.response.send_modal(_BanModal(self.target))
+            return
+        await interaction.response.send_message(embed=utils.success_embed(msg), ephemeral=True)
+
+    @discord.ui.button(label="Mute / Unmute", style=discord.ButtonStyle.secondary, emoji="🔇", row=1)
+    async def mute_toggle(self, interaction: discord.Interaction, _):
+        if interaction.user.id != self.admin.id:
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        if self.is_muted:
+            await db.unmute_user(self.target.id)
+            self.is_muted = False
+            msg = f"✅ **{self.target.display_name}** has been **unmuted**."
+        else:
+            await db.mute_user(self.target.id, banned_by=str(interaction.user.id))
+            self.is_muted = True
+            msg = f"🔇 **{self.target.display_name}** has been **muted** from games."
+        await interaction.response.send_message(embed=utils.success_embed(msg), ephemeral=True)
+
+    @discord.ui.button(label="Clear Game Session", style=discord.ButtonStyle.secondary, emoji="🗑️", row=1)
+    async def clear_session(self, interaction: discord.Interaction, _):
+        if interaction.user.id != self.admin.id:
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        sess = await db.get_game_session(self.target.id)
+        if not sess:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("No active game session."), ephemeral=True
+            )
+        await db.clear_game_session(self.target.id)
+        await interaction.response.send_message(
+            embed=utils.success_embed(f"Cleared **{sess['game']}** session for {self.target.mention}."),
+            ephemeral=True,
+        )
 
 
 class _BalanceModal(discord.ui.Modal):
@@ -281,6 +434,26 @@ class _BalanceModal(discord.ui.Modal):
             embed=utils.success_embed(
                 f"{self.action.title()} **{utils.fmt_pts(amount)} pts** for {self.target.mention}.\n"
                 f"New balance: **{utils.fmt_pts(new_bal)} pts**"
+            ),
+            ephemeral=True,
+        )
+
+
+class _BanModal(discord.ui.Modal, title="Ban User"):
+    reason_input = discord.ui.TextInput(
+        label="Reason", placeholder="e.g. Chargeback / abuse", required=False, max_length=200
+    )
+
+    def __init__(self, target: discord.Member):
+        super().__init__()
+        self.target = target
+
+    async def on_submit(self, interaction: discord.Interaction):
+        reason = self.reason_input.value or "No reason provided"
+        await db.ban_user(self.target.id, reason=reason, banned_by=str(interaction.user.id))
+        await interaction.response.send_message(
+            embed=utils.success_embed(
+                f"🚫 **{self.target.display_name}** has been banned.\nReason: {reason}"
             ),
             ephemeral=True,
         )
@@ -371,6 +544,238 @@ class _TierDeleteModal(discord.ui.Modal, title="Delete Rakeback Tier"):
         await utils.refresh_tier_cache()
         await interaction.response.send_message(
             embed=utils.success_embed(f"Tier **{name}** deleted."), ephemeral=True
+        )
+
+
+# ── Game settings management ────────────────────────────────────────────────────
+
+class _GameSettingsView(discord.ui.View):
+    def __init__(self, admin: discord.Member | discord.User):
+        super().__init__(timeout=180)
+        self.admin = admin
+
+    def _check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.admin.id
+
+    @discord.ui.button(label="Edit Game", style=discord.ButtonStyle.primary, emoji="⚙️")
+    async def edit_game(self, interaction: discord.Interaction, _):
+        if not self._check(interaction):
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        await interaction.response.send_modal(_GameEditModal())
+
+    @discord.ui.button(label="Toggle Enable", style=discord.ButtonStyle.secondary, emoji="🔄")
+    async def toggle_game(self, interaction: discord.Interaction, _):
+        if not self._check(interaction):
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        await interaction.response.send_modal(_GameToggleModal())
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔃")
+    async def refresh_games(self, interaction: discord.Interaction, _):
+        if not self._check(interaction):
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        games = await db.get_all_games()
+        embed = discord.Embed(title="🎮 Game Settings", color=0xFEE75C)
+        for g in games:
+            status = "✅ Enabled" if g["enabled"] else "❌ Disabled"
+            embed.add_field(
+                name=f"{g['name']} (`{g['id']}`)",
+                value=(
+                    f"{status}\n"
+                    f"Bet: `{utils.fmt_pts(g['min_bet'])}` – `{utils.fmt_pts(g['max_bet'])} pts`\n"
+                    f"House edge: `{float(g['house_edge'])*100:.1f}%`"
+                ),
+                inline=True,
+            )
+        embed.set_footer(text="Use the buttons below to configure a game.")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+class _GameEditModal(discord.ui.Modal, title="Edit Game Settings"):
+    game_id_input = discord.ui.TextInput(label="Game ID", placeholder="e.g. blackjack, mines, slots", max_length=20)
+    min_bet_input = discord.ui.TextInput(label="Min Bet (pts)", placeholder="e.g. 10", required=False)
+    max_bet_input = discord.ui.TextInput(label="Max Bet (pts)", placeholder="e.g. 100000", required=False)
+    house_edge_input = discord.ui.TextInput(label="House Edge (%)", placeholder="e.g. 2  → means 2%", required=False)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        game_id = self.game_id_input.value.strip().lower()
+        cfg = await db.get_game_config(game_id)
+        if not cfg:
+            return await interaction.response.send_message(
+                embed=utils.error_embed(f"Game `{game_id}` not found."), ephemeral=True
+            )
+
+        updates = {}
+        if self.min_bet_input.value.strip():
+            try:
+                updates["min_bet"] = float(self.min_bet_input.value.replace(",", ""))
+            except ValueError:
+                return await interaction.response.send_message(
+                    embed=utils.error_embed("Invalid min bet."), ephemeral=True
+                )
+        if self.max_bet_input.value.strip():
+            try:
+                updates["max_bet"] = float(self.max_bet_input.value.replace(",", ""))
+            except ValueError:
+                return await interaction.response.send_message(
+                    embed=utils.error_embed("Invalid max bet."), ephemeral=True
+                )
+        if self.house_edge_input.value.strip():
+            try:
+                he = float(self.house_edge_input.value.strip().rstrip("%")) / 100
+                updates["house_edge"] = he
+            except ValueError:
+                return await interaction.response.send_message(
+                    embed=utils.error_embed("Invalid house edge."), ephemeral=True
+                )
+
+        if not updates:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("No changes provided."), ephemeral=True
+            )
+
+        dbc = await db.get_db()
+        set_parts = ", ".join(f"{k}=?" for k in updates)
+        await dbc.execute(
+            f"UPDATE games SET {set_parts} WHERE id=?",
+            (*updates.values(), game_id),
+        )
+        await dbc.commit()
+
+        changed = ", ".join(
+            f"{k}=`{utils.fmt_pts(v) + ' pts' if 'bet' in k else str(round(v*100,1))+'%'}`"
+            for k, v in updates.items()
+        )
+        await interaction.response.send_message(
+            embed=utils.success_embed(f"Game **{cfg['name']}** updated: {changed}"),
+            ephemeral=True,
+        )
+
+
+class _GameToggleModal(discord.ui.Modal, title="Toggle Game"):
+    game_id_input = discord.ui.TextInput(label="Game ID", placeholder="e.g. blackjack, mines", max_length=20)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        game_id = self.game_id_input.value.strip().lower()
+        cfg = await db.get_game_config(game_id)
+        if not cfg:
+            return await interaction.response.send_message(
+                embed=utils.error_embed(f"Game `{game_id}` not found."), ephemeral=True
+            )
+        new_state = 0 if cfg["enabled"] else 1
+        dbc = await db.get_db()
+        await dbc.execute("UPDATE games SET enabled=? WHERE id=?", (new_state, game_id))
+        await dbc.commit()
+        status = "✅ Enabled" if new_state else "❌ Disabled"
+        await interaction.response.send_message(
+            embed=utils.success_embed(f"Game **{cfg['name']}** is now {status}."),
+            ephemeral=True,
+        )
+
+
+# ── Promo code management ───────────────────────────────────────────────────────
+
+class _PromoManageView(discord.ui.View):
+    def __init__(self, admin: discord.Member | discord.User):
+        super().__init__(timeout=180)
+        self.admin = admin
+
+    def _check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.admin.id
+
+    @discord.ui.button(label="Create Promo", style=discord.ButtonStyle.success, emoji="➕")
+    async def create_promo(self, interaction: discord.Interaction, _):
+        if not self._check(interaction):
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        await interaction.response.send_modal(_PromoCreateModal())
+
+    @discord.ui.button(label="Delete Promo", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def delete_promo(self, interaction: discord.Interaction, _):
+        if not self._check(interaction):
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        await interaction.response.send_modal(_PromoDeleteModal())
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄")
+    async def refresh(self, interaction: discord.Interaction, _):
+        if not self._check(interaction):
+            return await interaction.response.send_message(embed=utils.error_embed("Not your panel."), ephemeral=True)
+        dbc = await db.get_db()
+        rows = await (await dbc.execute(
+            "SELECT code, reward, uses, max_uses, enabled FROM promo_codes ORDER BY created_at DESC LIMIT 20"
+        )).fetchall()
+        embed = discord.Embed(title="🎟️ Promo Codes", color=0x5865F2)
+        if rows:
+            lines = []
+            for row in rows:
+                status = "✅" if row["enabled"] else "❌"
+                uses_str = f"{row['uses']}/{row['max_uses']}" if row["max_uses"] else f"{row['uses']}/∞"
+                lines.append(
+                    f"{status} `{row['code']}` — **{utils.fmt_pts(row['reward'])} pts** — {uses_str} uses"
+                )
+            embed.description = "\n".join(lines)
+        else:
+            embed.description = "No promo codes yet."
+        embed.set_footer(text="Use the buttons to create or delete promo codes.")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+class _PromoCreateModal(discord.ui.Modal, title="Create Promo Code"):
+    code_input = discord.ui.TextInput(label="Code", placeholder="e.g. WELCOME100", max_length=32)
+    reward_input = discord.ui.TextInput(label="Reward (pts)", placeholder="e.g. 500")
+    max_uses_input = discord.ui.TextInput(label="Max Uses (0 = unlimited)", placeholder="e.g. 100 or 0", required=False)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        code = self.code_input.value.strip().upper()
+        try:
+            reward = float(self.reward_input.value.replace(",", ""))
+        except ValueError:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Invalid reward amount."), ephemeral=True
+            )
+        try:
+            max_uses = int(self.max_uses_input.value or 0)
+        except ValueError:
+            max_uses = 0
+
+        existing = await db.get_promo(code)
+        if existing:
+            return await interaction.response.send_message(
+                embed=utils.error_embed(f"Code `{code}` already exists."), ephemeral=True
+            )
+
+        dbc = await db.get_db()
+        import time as _time
+        await dbc.execute(
+            """INSERT INTO promo_codes (code, reward, max_uses, uses, enabled, created_at)
+               VALUES (?, ?, ?, 0, 1, ?)""",
+            (code, reward, max_uses if max_uses > 0 else None, int(_time.time())),
+        )
+        await dbc.commit()
+        max_str = str(max_uses) if max_uses > 0 else "unlimited"
+        await interaction.response.send_message(
+            embed=utils.success_embed(
+                f"✅ Promo code **`{code}`** created!\n"
+                f"Reward: `{utils.fmt_pts(reward)} pts` | Max uses: `{max_str}`"
+            ),
+            ephemeral=True,
+        )
+
+
+class _PromoDeleteModal(discord.ui.Modal, title="Delete Promo Code"):
+    code_input = discord.ui.TextInput(label="Code to Delete", placeholder="e.g. WELCOME100", max_length=32)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        code = self.code_input.value.strip().upper()
+        existing = await db.get_promo(code)
+        if not existing:
+            return await interaction.response.send_message(
+                embed=utils.error_embed(f"Code `{code}` not found."), ephemeral=True
+            )
+        dbc = await db.get_db()
+        await dbc.execute("DELETE FROM promo_codes WHERE code=?", (code,))
+        await dbc.commit()
+        await interaction.response.send_message(
+            embed=utils.success_embed(f"Promo code **`{code}`** deleted."),
+            ephemeral=True,
         )
 
 

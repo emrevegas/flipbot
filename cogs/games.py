@@ -72,14 +72,8 @@ async def _payout(user_id: int | str, game_id: str, bet: float, gross_payout: fl
     """Deduct bet, apply house edge / balance cap, credit payout. Returns net payout."""
     game_cfg = await db.get_game_config(game_id)
     house_edge = float(game_cfg["house_edge"]) if game_cfg else 0.02
-    # deduct bet
     await db.add_balance(user_id, -bet, note=f"{game_id} bet")
-    # apply house edge
     net = gross_payout * (1 - house_edge)
-    # cap
-    user = await db.get_user(user_id)
-    if user:
-        current_bal = float(user["balance"]) - bet  # already deducted above but not committed yet
     current_bal_after = float((await db.get_user(user_id) or {}).get("balance", 0))
     capped = await bc.apply_balance_cap(user_id, current_bal_after + net)
     net = max(0.0, capped - current_bal_after)
@@ -88,8 +82,6 @@ async def _payout(user_id: int | str, game_id: str, bet: float, gross_payout: fl
         await db.add_balance(user_id, net, note=f"{game_id} payout")
     await db.add_wager(user_id, bet)
 
-    import config as _cfg
-    # Rakeback
     tier = utils.get_rakeback_tier(
         float((await db.get_user(user_id) or {}).get("total_wagered", 0))
     )
@@ -102,6 +94,474 @@ async def _payout(user_id: int | str, game_id: str, bet: float, gross_payout: fl
 async def _record(user_id: int | str, won: bool, bet: float, net: float):
     profit = net - bet if won else -bet
     await db.record_game_result(user_id, won, profit)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MINES — button-based 4×5 grid
+# ─────────────────────────────────────────────────────────────────────────────
+
+_mines_msg_to_user: dict[str, int] = {}  # message_id -> user_id
+
+
+class _MinesCell(discord.ui.Button):
+    def __init__(self, r: int, c: int, message_id: str):
+        super().__init__(
+            style=discord.ButtonStyle.secondary, emoji="⬜",
+            row=r, custom_id=f"mc_{r}{c}_{message_id}",
+        )
+        self.r = r
+        self.c = c
+
+    async def callback(self, interaction: discord.Interaction):
+        user_id = _mines_msg_to_user.get(str(interaction.message.id))
+        if not user_id:
+            return await interaction.response.send_message(
+                embed=_err("Game session not found. It may have expired."), ephemeral=True
+            )
+        if interaction.user.id != user_id:
+            return await interaction.response.send_message(
+                embed=_err("This is not your game."), ephemeral=True
+            )
+        await _mines_do_pick(interaction, user_id, self.r, self.c)
+
+
+class _MinesCashoutBtn(discord.ui.Button):
+    def __init__(self, message_id: str, label: str, disabled: bool):
+        super().__init__(
+            style=discord.ButtonStyle.success,
+            label=label,
+            row=4,
+            disabled=disabled,
+            custom_id=f"mco_{message_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        user_id = _mines_msg_to_user.get(str(interaction.message.id))
+        if not user_id:
+            return await interaction.response.send_message(
+                embed=_err("Game session not found. It may have expired."), ephemeral=True
+            )
+        if interaction.user.id != user_id:
+            return await interaction.response.send_message(
+                embed=_err("This is not your game."), ephemeral=True
+            )
+        await _mines_do_cashout(interaction, user_id)
+
+
+class MinesGridView(discord.ui.View):
+    def __init__(self, state: dict, message_id: str, game_over: bool = False):
+        super().__init__(timeout=600)
+        mine_set = set(state["mines"])
+        revealed = set(state["revealed"])
+
+        for r in range(4):
+            for c in range(5):
+                idx = r * 5 + c
+                if idx in revealed:
+                    is_mine = idx in mine_set
+                    btn = discord.ui.Button(
+                        style=discord.ButtonStyle.danger if is_mine else discord.ButtonStyle.success,
+                        emoji="💣" if is_mine else "💎",
+                        row=r, disabled=True,
+                        custom_id=f"mr_{r}{c}_{message_id}",
+                    )
+                elif game_over:
+                    is_mine = idx in mine_set
+                    btn = discord.ui.Button(
+                        style=discord.ButtonStyle.danger if is_mine else discord.ButtonStyle.secondary,
+                        emoji="💣" if is_mine else "💎",
+                        row=r, disabled=True,
+                        custom_id=f"mo_{r}{c}_{message_id}",
+                    )
+                else:
+                    btn = _MinesCell(r, c, message_id)
+                self.add_item(btn)
+
+        mult = state["multiplier"]
+        pot = float(state["bet"]) * mult
+        cashout_disabled = len(revealed) == 0 or game_over
+        if not cashout_disabled:
+            cashout_label = f"Cash Out  {mult:.2f}x  ·  {utils.fmt_pts(pot)} pts"
+        else:
+            cashout_label = "Cash Out"
+        self.add_item(_MinesCashoutBtn(message_id, cashout_label, cashout_disabled))
+
+
+async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int, c: int):
+    sess = await db.get_game_session(user_id)
+    if not sess or sess["game"] != "mines":
+        return await interaction.response.send_message(
+            embed=_err("No active mines game."), ephemeral=True
+        )
+    state = json.loads(sess["state"])
+
+    idx = r * 5 + c
+    if idx in state["revealed"]:
+        return await interaction.response.send_message(
+            embed=_err("Cell already revealed!"), ephemeral=True
+        )
+
+    mine_set = set(state["mines"])
+    rigged = await bc.should_rig_outcome(user_id, "mines", float(sess["bet"]))
+
+    hit_mine = idx in mine_set
+    state["revealed"].append(idx)
+    if rigged and not hit_mine and len(state["revealed"]) >= 3:
+        if random.random() < 0.4:
+            hit_mine = True
+            mine_set.add(idx)
+            state["mines"] = list(mine_set)
+
+    msg_id = str(interaction.message.id)
+    bet = float(sess["bet"])
+
+    if hit_mine:
+        await db.clear_game_session(user_id)
+        await db.add_wager(user_id, bet)
+        tier = utils.get_rakeback_tier(
+            float((await db.get_user(user_id) or {}).get("total_wagered", 0))
+        )
+        await db.add_rakeback(user_id, bet * tier["rate"])
+        await _record(user_id, False, bet, 0)
+        _mines_msg_to_user.pop(msg_id, None)
+
+        view = MinesGridView(state, msg_id, game_over=True)
+        embed = discord.Embed(title="💥 Mines — BOOM!", color=0xE74C3C)
+        embed.add_field(name="Bet", value=f"`{utils.fmt_pts(bet)} pts`", inline=True)
+        embed.add_field(name="Result", value="💣 Mine hit!", inline=True)
+        embed.add_field(name="Lost", value=f"`{utils.fmt_pts(bet)} pts`", inline=True)
+        await interaction.response.edit_message(embed=embed, view=view)
+    else:
+        safe_cells = 20 - state["mine_count"]
+        picks = len(state["revealed"])
+        mult = round(1.0 + (picks / max(safe_cells, 1)) * (state["mine_count"] / 5), 2)
+        state["multiplier"] = mult
+        await db.set_game_session(user_id, "mines", bet, json.dumps(state))
+
+        view = MinesGridView(state, msg_id)
+        embed = discord.Embed(title="💣 Mines", color=0x5865F2)
+        embed.add_field(name="Bet", value=f"`{utils.fmt_pts(bet)} pts`", inline=True)
+        embed.add_field(name="Mines", value=str(state["mine_count"]), inline=True)
+        embed.add_field(name="Multiplier", value=f"`{mult:.2f}x`", inline=True)
+        embed.add_field(name="Potential", value=f"`{utils.fmt_pts(bet * mult)} pts`", inline=True)
+        embed.set_footer(text="Click cells to reveal. Cash out to collect winnings.")
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
+    sess = await db.get_game_session(user_id)
+    if not sess or sess["game"] != "mines":
+        return await interaction.response.send_message(
+            embed=_err("No active mines game."), ephemeral=True
+        )
+    state = json.loads(sess["state"])
+    msg_id = str(interaction.message.id)
+    bet = float(sess["bet"])
+
+    if not state["revealed"]:
+        await db.clear_game_session(user_id)
+        await db.add_balance(user_id, bet, note="mines cancelled")
+        _mines_msg_to_user.pop(msg_id, None)
+        view = MinesGridView(state, msg_id, game_over=True)
+        return await interaction.response.edit_message(
+            embed=discord.Embed(description="No cells revealed — bet refunded.", color=0x5865F2),
+            view=view,
+        )
+
+    game_cfg = await db.get_game_config("mines")
+    he = float(game_cfg["house_edge"]) if game_cfg else 0.02
+    gross = bet * state["multiplier"]
+    net = gross * (1 - he)
+
+    user = await db.get_user(user_id)
+    current_bal = float((user or {}).get("balance", 0))
+    net_capped_bal = await bc.apply_balance_cap(user_id, current_bal + net)
+    net = max(0.0, net_capped_bal - current_bal)
+
+    await db.add_balance(user_id, net, note="mines cashout")
+    await db.add_wager(user_id, bet)
+    tier = utils.get_rakeback_tier(float((user or {}).get("total_wagered", 0)))
+    await db.add_rakeback(user_id, bet * tier["rate"])
+    await _record(user_id, True, bet, net)
+    await db.clear_game_session(user_id)
+    _mines_msg_to_user.pop(msg_id, None)
+
+    view = MinesGridView(state, msg_id, game_over=True)
+    embed = discord.Embed(title="💰 Mines — Cashed Out!", color=0x2ECC71)
+    embed.add_field(name="Multiplier", value=f"`{state['multiplier']:.2f}x`", inline=True)
+    embed.add_field(name="Payout", value=f"`{utils.fmt_pts(net)} pts`", inline=True)
+    await interaction.response.edit_message(embed=embed, view=view)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BLACKJACK — GIF animation + button UI
+# ─────────────────────────────────────────────────────────────────────────────
+
+_bj_msg_to_user: dict[str, int] = {}  # message_id -> user_id
+
+
+class _BJView(discord.ui.View):
+    def __init__(self, user_id: int, message_id: str, can_double: bool = True):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+        self.message_id = message_id
+        self._can_double = can_double
+
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary, emoji="🃏")
+    async def hit(self, interaction: discord.Interaction, _):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Not your game."), ephemeral=True
+            )
+        await _bj_do_hit(interaction)
+
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary, emoji="🛑")
+    async def stand(self, interaction: discord.Interaction, _):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Not your game."), ephemeral=True
+            )
+        await _bj_do_stand(interaction)
+
+    @discord.ui.button(label="Double Down", style=discord.ButtonStyle.success, emoji="⬆️")
+    async def double(self, interaction: discord.Interaction, _):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Not your game."), ephemeral=True
+            )
+        if not self._can_double:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Can't double now."), ephemeral=True
+            )
+        await _bj_do_double(interaction)
+
+
+async def _bj_do_hit(interaction: discord.Interaction):
+    user_id = _bj_msg_to_user.get(str(interaction.message.id))
+    if not user_id:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("Game not found."), ephemeral=True
+        )
+
+    sess = await db.get_game_session(user_id)
+    if not sess or sess["game"] != "blackjack":
+        return await interaction.response.send_message(
+            embed=utils.error_embed("No active blackjack game."), ephemeral=True
+        )
+
+    state = json.loads(sess["state"])
+    state["player"].append(state["deck"].pop())
+    await db.set_game_session(user_id, "blackjack", sess["bet"], json.dumps(state))
+
+    pv = Games._hand_value_static(state["player"])
+
+    if pv >= 21:
+        await _bj_finish_from_interaction(
+            interaction, user_id, state,
+            "stand" if pv == 21 else "bust",
+        )
+    else:
+        dealer_display = [state["dealer"][0], "?"]
+        embed = discord.Embed(title="🃏 Blackjack", color=0x5865F2)
+        embed.add_field(name=f"Your Hand ({pv})", value=" ".join(state["player"]), inline=True)
+        embed.add_field(name="Dealer", value=f"{state['dealer'][0]} 🂠", inline=True)
+        embed.add_field(name="Bet", value=f"`{utils.fmt_pts(float(sess['bet']))} pts`", inline=True)
+        embed.set_footer(text="Hit, Stand, or Double Down.")
+
+        user_data = await db.get_user(user_id)
+        can_double = float((user_data or {}).get("balance", 0)) >= float(sess["bet"]) and len(state["player"]) == 2
+        view = _BJView(user_id, str(interaction.message.id), can_double=can_double)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+async def _bj_do_stand(interaction: discord.Interaction):
+    user_id = _bj_msg_to_user.get(str(interaction.message.id))
+    if not user_id:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("Game not found."), ephemeral=True
+        )
+
+    sess = await db.get_game_session(user_id)
+    if not sess or sess["game"] != "blackjack":
+        return await interaction.response.send_message(
+            embed=utils.error_embed("No active blackjack game."), ephemeral=True
+        )
+
+    state = json.loads(sess["state"])
+    await _bj_finish_from_interaction(interaction, user_id, state, "stand")
+
+
+async def _bj_do_double(interaction: discord.Interaction):
+    user_id = _bj_msg_to_user.get(str(interaction.message.id))
+    if not user_id:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("Game not found."), ephemeral=True
+        )
+
+    sess = await db.get_game_session(user_id)
+    if not sess or sess["game"] != "blackjack":
+        return await interaction.response.send_message(
+            embed=utils.error_embed("No active blackjack game."), ephemeral=True
+        )
+
+    user_data = await db.get_user(user_id)
+    if float((user_data or {}).get("balance", 0)) < float(sess["bet"]):
+        return await interaction.response.send_message(
+            embed=utils.error_embed("Insufficient balance to double down."), ephemeral=True
+        )
+
+    await db.add_balance(user_id, -float(sess["bet"]), note="blackjack double")
+    state = json.loads(sess["state"])
+    state["doubled"] = True
+    state["player"].append(state["deck"].pop())
+    await db.set_game_session(user_id, "blackjack", sess["bet"], json.dumps(state))
+    await _bj_finish_from_interaction(interaction, user_id, state, "stand")
+
+
+async def _bj_finish_from_interaction(
+    interaction: discord.Interaction,
+    user_id: int,
+    state: dict,
+    reason: str,
+):
+    sess = await db.get_game_session(user_id)
+    if not sess:
+        return
+    original_bet = float(sess["bet"])
+    total_bet = original_bet * (2 if state.get("doubled") else 1)
+
+    if reason not in ("bust", "natural_blackjack"):
+        while Games._hand_value_static(state["dealer"]) < 17:
+            state["dealer"].append(state["deck"].pop())
+
+    pv = Games._hand_value_static(state["player"])
+    dv = Games._hand_value_static(state["dealer"])
+
+    if reason == "natural_blackjack":
+        outcome, gross, won = "BLACKJACK", total_bet * 2.5, True
+    elif reason == "bust" or pv > 21:
+        outcome, gross, won = "BUST", 0, False
+    elif dv > 21 or pv > dv:
+        outcome, gross, won = "WIN", total_bet * 2, True
+    elif pv == dv:
+        outcome, gross, won = "PUSH", total_bet, False
+    else:
+        outcome, gross, won = "LOSS", 0, False
+
+    game_cfg = await db.get_game_config("blackjack")
+    he = float(game_cfg["house_edge"]) if game_cfg else 0.02
+    net = gross * (1 - he) if gross > 0 else 0
+
+    if net > 0:
+        bal = float((await db.get_user(user_id) or {}).get("balance", 0))
+        net_capped = await bc.apply_balance_cap(user_id, bal + net)
+        net = max(0.0, net_capped - bal)
+        await db.add_balance(user_id, net, note="blackjack payout")
+
+    await db.add_wager(user_id, total_bet)
+    tier = utils.get_rakeback_tier(
+        float((await db.get_user(user_id) or {}).get("total_wagered", 0))
+    )
+    await db.add_rakeback(user_id, total_bet * tier["rate"])
+    await _record(user_id, won, total_bet, net)
+    await db.clear_game_session(user_id)
+    _bj_msg_to_user.pop(str(interaction.message.id), None)
+
+    gif_buf = await image_gen.render_bj_gif(
+        state["player"], state["dealer"],
+        reveal_dealer=True, result_text=outcome,
+    )
+
+    COLORS = {
+        "WIN": 0x2ECC71, "BLACKJACK": 0xF1C40F, "PUSH": 0x5865F2,
+        "BUST": 0xE74C3C, "LOSS": 0xE74C3C,
+    }
+    embed = discord.Embed(
+        title=f"🃏 Blackjack — {outcome}", color=COLORS.get(outcome, 0x5865F2)
+    )
+    embed.add_field(name=f"Your Hand ({pv})", value=" ".join(state["player"]), inline=True)
+    embed.add_field(name=f"Dealer ({dv})", value=" ".join(state["dealer"]), inline=True)
+    embed.add_field(name="Bet", value=f"`{utils.fmt_pts(total_bet)} pts`", inline=True)
+    embed.add_field(name="Payout", value=f"`{utils.fmt_pts(net)} pts`", inline=True)
+
+    try:
+        await interaction.response.edit_message(
+            embed=embed,
+            attachments=[discord.File(gif_buf, "blackjack.gif")],
+            view=None,
+        )
+    except Exception:
+        await interaction.response.edit_message(embed=embed, view=None)
+        try:
+            gif_buf.seek(0)
+            await interaction.followup.send(file=discord.File(gif_buf, "blackjack.gif"))
+        except Exception:
+            pass
+
+
+async def _bj_finish_interaction_free(
+    ctx: commands.Context,
+    msg: discord.Message,
+    state: dict,
+    reason: str,
+    user_id: int,
+):
+    """Finish a BJ game without an interaction — used for natural blackjack on start."""
+    sess = await db.get_game_session(user_id)
+    if not sess:
+        return
+    original_bet = float(sess["bet"])
+    total_bet = original_bet * (2 if state.get("doubled") else 1)
+
+    pv = Games._hand_value_static(state["player"])
+    dv = Games._hand_value_static(state["dealer"])
+
+    if reason == "natural_blackjack":
+        outcome, gross, won = "BLACKJACK", total_bet * 2.5, True
+    else:
+        outcome, gross, won = "LOSS", 0, False
+
+    game_cfg = await db.get_game_config("blackjack")
+    he = float(game_cfg["house_edge"]) if game_cfg else 0.02
+    net = gross * (1 - he) if gross > 0 else 0
+
+    if net > 0:
+        bal = float((await db.get_user(user_id) or {}).get("balance", 0))
+        net_capped = await bc.apply_balance_cap(user_id, bal + net)
+        net = max(0.0, net_capped - bal)
+        await db.add_balance(user_id, net, note="blackjack payout")
+
+    await db.add_wager(user_id, total_bet)
+    tier = utils.get_rakeback_tier(
+        float((await db.get_user(user_id) or {}).get("total_wagered", 0))
+    )
+    await db.add_rakeback(user_id, total_bet * tier["rate"])
+    await _record(user_id, won, total_bet, net)
+    await db.clear_game_session(user_id)
+    _bj_msg_to_user.pop(str(msg.id), None)
+
+    gif_buf = await image_gen.render_bj_gif(
+        state["player"], state["dealer"],
+        reveal_dealer=True, result_text=outcome,
+    )
+
+    COLORS = {"BLACKJACK": 0xF1C40F}
+    embed = discord.Embed(
+        title=f"🃏 Blackjack — {outcome}", color=COLORS.get(outcome, 0x5865F2)
+    )
+    embed.add_field(name=f"Your Hand ({pv})", value=" ".join(state["player"]), inline=True)
+    embed.add_field(name=f"Dealer ({dv})", value=" ".join(state["dealer"]), inline=True)
+    embed.add_field(name="Bet", value=f"`{utils.fmt_pts(total_bet)} pts`", inline=True)
+    embed.add_field(name="Payout", value=f"`{utils.fmt_pts(net)} pts`", inline=True)
+
+    try:
+        await msg.edit(
+            embed=embed,
+            attachments=[discord.File(gif_buf, "blackjack.gif")],
+            view=None,
+        )
+    except Exception:
+        await msg.edit(embed=embed, view=None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -165,7 +625,7 @@ class Games(commands.Cog):
         if player_roll > house_roll:
             won, gross, outcome = True, amount * 2, "WIN"
         elif player_roll == house_roll:
-            won, gross, outcome = False, amount, "TIE"  # tie returns bet
+            won, gross, outcome = False, amount, "TIE"
         else:
             won, gross, outcome = False, 0, "LOSS"
 
@@ -273,13 +733,11 @@ class Games(commands.Cog):
         rigged = await bc.should_rig_outcome(ctx.author.id, "slots", amount)
 
         if rigged:
-            # ensure no jackpot
             reels = [random.choice(self.SLOT_SYMBOLS) for _ in range(3)]
             while len(set(reels)) == 1:
                 reels = [random.choice(self.SLOT_SYMBOLS) for _ in range(3)]
         else:
-            # weighted toward wins
-            if random.random() < 0.30:  # 30% jackpot chance
+            if random.random() < 0.30:
                 sym = random.choice(self.SLOT_SYMBOLS)
                 reels = [sym, sym, sym]
             elif random.random() < 0.45:
@@ -289,7 +747,6 @@ class Games(commands.Cog):
             else:
                 reels = [random.choice(self.SLOT_SYMBOLS) for _ in range(3)]
 
-        # calculate payout
         if len(set(reels)) == 1:
             multi = self.SLOT_PAYOUTS.get(reels[0], 2.0)
             gross = amount * multi
@@ -302,8 +759,7 @@ class Games(commands.Cog):
         net = await _payout(ctx.author.id, "slots", amount, gross)
         await _record(ctx.author.id, won, amount, net)
 
-        import asyncio as _aio
-        loop = _aio.get_event_loop()
+        loop = asyncio.get_event_loop()
         img_buf = await loop.run_in_executor(
             None, image_gen.render_slots_card, reels, amount, net
         )
@@ -326,21 +782,17 @@ class Games(commands.Cog):
 
         rigged = await bc.should_rig_outcome(ctx.author.id, "crash", amount)
 
-        # generate crash point
         if rigged:
             crash_point = round(random.uniform(1.0, 1.8), 2)
         else:
             r = random.random()
-            # house edge built in: crash point = 0.99 / (1 - r), capped
             crash_point = round(min(0.99 / max(1 - r, 0.01), 1000.0), 2)
 
-        # did auto cashout trigger before crash?
         if auto_cashout and auto_cashout <= crash_point:
             multi = auto_cashout
             won = True
             outcome = f"CASHED OUT @ {multi:.2f}x"
         elif not auto_cashout and crash_point > 1.0:
-            # no auto: random manual cashout between 1.01 and crash
             multi = round(random.uniform(1.0, crash_point), 2)
             won = True
             outcome = f"CASHED OUT @ {multi:.2f}x"
@@ -366,7 +818,7 @@ class Games(commands.Cog):
 
     @commands.command(name="blackjack", aliases=["bj"])
     async def blackjack(self, ctx: commands.Context, amount: float):
-        """Start a blackjack game. .blackjack 100 — then .hit / .stand / .double"""
+        """Start a blackjack game. .blackjack 100"""
         await db.ensure_user(ctx.author.id, ctx.author.name)
         if not await _check_game(ctx, "blackjack", amount):
             return
@@ -376,32 +828,45 @@ class Games(commands.Cog):
         player = [deck.pop(), deck.pop()]
         dealer = [deck.pop(), deck.pop()]
 
-        state = {
-            "bet": amount,
-            "player": player,
-            "dealer": dealer,
-            "deck": deck,
-            "doubled": False,
-        }
+        state = {"bet": amount, "player": player, "dealer": dealer, "deck": deck, "doubled": False}
         await db.set_game_session(ctx.author.id, "blackjack", amount, json.dumps(state))
         await db.add_balance(ctx.author.id, -amount, note="blackjack bet")
 
-        embed = self._bj_embed(player, [dealer[0], "?"], amount, in_progress=True)
-        await ctx.send(embed=embed)
+        dealer_display = [dealer[0], "?"]
+        user_data = await db.get_user(ctx.author.id)
+        can_double = float((user_data or {}).get("balance", 0)) >= amount
 
-        if self._hand_value(player) == 21:
-            await self._bj_finish(ctx, "natural_blackjack")
+        gif_buf = await image_gen.render_bj_gif(player, dealer_display)
+        pv = self._hand_value(player)
+
+        embed = discord.Embed(title="🃏 Blackjack", color=0x5865F2)
+        embed.add_field(name=f"Your Hand ({pv})", value=" ".join(player), inline=True)
+        embed.add_field(name="Dealer", value=f"{dealer[0]} 🂠", inline=True)
+        embed.add_field(name="Bet", value=f"`{utils.fmt_pts(amount)} pts`", inline=True)
+        embed.set_footer(text="Hit, Stand, or Double Down.")
+
+        view = _BJView(ctx.author.id, "pending", can_double=can_double)
+        msg = await ctx.send(
+            embed=embed,
+            file=discord.File(gif_buf, "blackjack.gif"),
+            view=view,
+        )
+
+        _bj_msg_to_user[str(msg.id)] = ctx.author.id
+        view.message_id = str(msg.id)
+
+        if pv == 21:
+            await asyncio.sleep(0.5)
+            await _bj_finish_interaction_free(ctx, msg, state, "natural_blackjack", ctx.author.id)
 
     @commands.command(name="hit")
     async def bj_hit(self, ctx: commands.Context):
-        """Hit in blackjack."""
+        """Hit in blackjack (prefix fallback)."""
         sess = await db.get_game_session(ctx.author.id)
         if not sess or sess["game"] != "blackjack":
             return await ctx.send(embed=_err("No active blackjack game. Start with `.blackjack <amount>`."))
         state = json.loads(sess["state"])
-        deck = state["deck"]
-        state["player"].append(deck.pop())
-        state["deck"] = deck
+        state["player"].append(state["deck"].pop())
         await db.set_game_session(ctx.author.id, "blackjack", sess["bet"], json.dumps(state))
 
         pv = self._hand_value(state["player"])
@@ -415,7 +880,7 @@ class Games(commands.Cog):
 
     @commands.command(name="stand")
     async def bj_stand(self, ctx: commands.Context):
-        """Stand in blackjack."""
+        """Stand in blackjack (prefix fallback)."""
         sess = await db.get_game_session(ctx.author.id)
         if not sess or sess["game"] != "blackjack":
             return await ctx.send(embed=_err("No active blackjack game."))
@@ -424,7 +889,7 @@ class Games(commands.Cog):
 
     @commands.command(name="double")
     async def bj_double(self, ctx: commands.Context):
-        """Double down in blackjack."""
+        """Double down in blackjack (prefix fallback)."""
         sess = await db.get_game_session(ctx.author.id)
         if not sess or sess["game"] != "blackjack":
             return await ctx.send(embed=_err("No active blackjack game."))
@@ -444,7 +909,6 @@ class Games(commands.Cog):
         original_bet = float(sess["bet"])
         total_bet = original_bet * (2 if state.get("doubled") else 1)
 
-        # dealer plays
         if reason not in ("bust", "natural_blackjack"):
             while self._hand_value(state["dealer"]) < 17:
                 state["dealer"].append(state["deck"].pop())
@@ -479,10 +943,16 @@ class Games(commands.Cog):
             net = max(0.0, net_capped - float((await db.get_user(ctx.author.id) or {}).get("balance", 0)))
             await db.add_balance(ctx.author.id, net, note="blackjack payout")
         await db.add_wager(ctx.author.id, total_bet)
-        tier = utils.get_rakeback_tier(float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0)))
+        tier = utils.get_rakeback_tier(
+            float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0))
+        )
         await db.add_rakeback(ctx.author.id, total_bet * tier["rate"])
         await _record(ctx.author.id, won, total_bet, net)
         await db.clear_game_session(ctx.author.id)
+        # Clean up button message mapping
+        for mid, uid in list(_bj_msg_to_user.items()):
+            if uid == ctx.author.id:
+                _bj_msg_to_user.pop(mid, None)
 
         embed = self._bj_embed(state["player"], state["dealer"], total_bet, result=outcome, net=net)
         await ctx.send(embed=embed)
@@ -511,6 +981,10 @@ class Games(commands.Cog):
         return [f"{r}{s}" for s in suits for r in ranks] * 2
 
     def _hand_value(self, hand: list[str]) -> int:
+        return Games._hand_value_static(hand)
+
+    @staticmethod
+    def _hand_value_static(hand: list[str]) -> int:
         total, aces = 0, 0
         for card in hand:
             if card == "?":
@@ -522,7 +996,10 @@ class Games(commands.Cog):
                 total += 11
                 aces += 1
             else:
-                total += int(rank)
+                try:
+                    total += int(rank)
+                except ValueError:
+                    pass
         while total > 21 and aces:
             total -= 10
             aces -= 1
@@ -552,7 +1029,7 @@ class Games(commands.Cog):
 
         embed = discord.Embed(title="🃏 Hi-Lo", color=0x5865F2)
         embed.add_field(name="Current Card", value=f"`{current}`", inline=True)
-        embed.add_field(name="Multiplier", value=f"`1.00x`", inline=True)
+        embed.add_field(name="Multiplier", value="`1.00x`", inline=True)
         embed.set_footer(text="Use .higher / .lower to predict, or .cashout to take winnings")
         await ctx.send(embed=embed)
 
@@ -583,7 +1060,6 @@ class Games(commands.Cog):
                 next_rank = max(1, current_rank - 1)
             else:
                 next_rank = min(13, current_rank + 1)
-            # synthesize card
             next_card = f"{['A','2','3','4','5','6','7','8','9','10','J','Q','K'][next_rank-1]}♠"
 
         correct = (guess == "higher" and next_rank > current_rank) or \
@@ -592,7 +1068,6 @@ class Games(commands.Cog):
 
         if tie:
             state["current"] = next_card
-            state["deck"] = state.get("deck", [])
             await db.set_game_session(ctx.author.id, "hilo", sess["bet"], json.dumps(state))
             embed = discord.Embed(title="🃏 Hi-Lo — TIE", color=0xF1C40F)
             embed.add_field(name="New Card", value=f"`{next_card}`", inline=True)
@@ -604,7 +1079,6 @@ class Games(commands.Cog):
             state["multiplier"] = round(state["multiplier"] * 1.5, 2)
             state["streak"] = state.get("streak", 0) + 1
             state["current"] = next_card
-            state["deck"] = state.get("deck", [])
             await db.set_game_session(ctx.author.id, "hilo", sess["bet"], json.dumps(state))
             embed = discord.Embed(title="🃏 Hi-Lo — Correct!", color=0x2ECC71)
             embed.add_field(name="New Card", value=f"`{next_card}`", inline=True)
@@ -615,7 +1089,9 @@ class Games(commands.Cog):
         else:
             await db.clear_game_session(ctx.author.id)
             await db.add_wager(ctx.author.id, sess["bet"])
-            tier = utils.get_rakeback_tier(float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0)))
+            tier = utils.get_rakeback_tier(
+                float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0))
+            )
             await db.add_rakeback(ctx.author.id, sess["bet"] * tier["rate"])
             await _record(ctx.author.id, False, sess["bet"], 0)
             embed = discord.Embed(title="🃏 Hi-Lo — WRONG!", color=0xE74C3C)
@@ -625,7 +1101,7 @@ class Games(commands.Cog):
 
     @commands.command(name="cashout")
     async def hilo_cashout(self, ctx: commands.Context):
-        """Cash out Hi-Lo winnings."""
+        """Cash out Hi-Lo or Mines winnings."""
         sess = await db.get_game_session(ctx.author.id)
         if not sess:
             return await ctx.send(embed=_err("No active game to cash out."))
@@ -633,14 +1109,18 @@ class Games(commands.Cog):
         if sess["game"] == "hilo":
             state = json.loads(sess["state"])
             gross = sess["bet"] * state["multiplier"]
-            net = await _payout(ctx.author.id, "hilo", 0, gross)  # bet already deducted
-            # we need to add gross directly since bet was already deducted
             game_cfg = await db.get_game_config("hilo")
             he = float(game_cfg["house_edge"]) if game_cfg else 0.02
             actual_net = gross * (1 - he)
+            user = await db.get_user(ctx.author.id)
+            current_bal = float((user or {}).get("balance", 0))
+            net_capped_bal = await bc.apply_balance_cap(ctx.author.id, current_bal + actual_net)
+            actual_net = max(0.0, net_capped_bal - current_bal)
             await db.add_balance(ctx.author.id, actual_net, note="hilo cashout")
             await db.add_wager(ctx.author.id, sess["bet"])
-            tier = utils.get_rakeback_tier(float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0)))
+            tier = utils.get_rakeback_tier(
+                float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0))
+            )
             await db.add_rakeback(ctx.author.id, sess["bet"] * tier["rate"])
             await _record(ctx.author.id, True, sess["bet"], actual_net)
             await db.clear_game_session(ctx.author.id)
@@ -663,19 +1143,17 @@ class Games(commands.Cog):
 
     @commands.command(name="mines")
     async def mines(self, ctx: commands.Context, amount: float, mine_count: int = 3):
-        """Start a mines game. .mines 100 3 — then .pick A1, .cashout"""
+        """Start a mines game. .mines 100 3 — click grid buttons to reveal, cashout button to collect."""
         await db.ensure_user(ctx.author.id, ctx.author.name)
         if not await _check_game(ctx, "mines", amount):
             return
-        if not 1 <= mine_count <= 20:
-            return await ctx.send(embed=_err("Mine count must be between 1 and 20."))
+        if not 1 <= mine_count <= 19:
+            return await ctx.send(embed=_err("Mine count must be between 1 and 19."))
 
-        grid_size = 5
-        total = grid_size * grid_size
+        total = 20  # 4 rows × 5 cols
         mine_positions = random.sample(range(total), mine_count)
         state = {
             "bet": amount,
-            "grid_size": grid_size,
             "mines": mine_positions,
             "revealed": [],
             "multiplier": 1.0,
@@ -684,109 +1162,54 @@ class Games(commands.Cog):
         await db.set_game_session(ctx.author.id, "mines", amount, json.dumps(state))
         await db.add_balance(ctx.author.id, -amount, note="mines bet")
 
-        loop = asyncio.get_event_loop()
-        img_buf = await loop.run_in_executor(
-            None, image_gen.render_mines_grid,
-            grid_size, set(mine_positions), set(), amount, 1.0,
-        )
-        await ctx.send(
-            content=f"💣 **Mines** started! Use `.pick A1` to reveal cells, `.cashout` to cash out.",
-            file=discord.File(img_buf, "mines.png"),
-        )
+        view = MinesGridView(state, "pending")
+        embed = discord.Embed(title="💣 Mines", color=0x5865F2)
+        embed.add_field(name="Bet", value=f"`{utils.fmt_pts(amount)} pts`", inline=True)
+        embed.add_field(name="Mines", value=str(mine_count), inline=True)
+        embed.add_field(name="Multiplier", value="`1.00x`", inline=True)
+        embed.add_field(name="Potential", value=f"`{utils.fmt_pts(amount)} pts`", inline=True)
+        embed.set_footer(text="Click cells to reveal. Cash out to collect winnings.")
 
-    @commands.command(name="pick")
-    async def mines_pick(self, ctx: commands.Context, cell: str):
-        """Pick a cell in mines. .pick A1"""
-        sess = await db.get_game_session(ctx.author.id)
-        if not sess or sess["game"] != "mines":
-            return await ctx.send(embed=_err("No active mines game."))
-        state = json.loads(sess["state"])
-
-        cell = cell.upper().strip()
-        if len(cell) < 2:
-            return await ctx.send(embed=_err("Invalid cell. Use format like A1, B3, etc."))
-
-        row_char = cell[0]
-        col_str = cell[1:]
-        if not row_char.isalpha() or not col_str.isdigit():
-            return await ctx.send(embed=_err("Invalid cell format. Example: A1, B3"))
-
-        gs = state["grid_size"]
-        row = ord(row_char) - ord('A')
-        col = int(col_str) - 1
-
-        if row < 0 or row >= gs or col < 0 or col >= gs:
-            return await ctx.send(embed=_err(f"Cell out of bounds. Valid rows: A-{chr(64+gs)}, cols: 1-{gs}"))
-
-        idx = row * gs + col
-        if idx in state["revealed"]:
-            return await ctx.send(embed=_err("You already revealed that cell!"))
-
-        state["revealed"].append(idx)
-        mine_set = set(state["mines"])
-        rigged = await bc.should_rig_outcome(ctx.author.id, "mines", sess["bet"])
-
-        hit_mine = idx in mine_set
-        if rigged and not hit_mine and len(state["revealed"]) >= 3:
-            # Force a mine hit after some safe picks
-            if random.random() < 0.4:
-                hit_mine = True
-                mine_set.add(idx)
-                state["mines"] = list(mine_set)
-
-        if hit_mine:
-            await db.clear_game_session(ctx.author.id)
-            await db.add_wager(ctx.author.id, sess["bet"])
-            tier = utils.get_rakeback_tier(float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0)))
-            await db.add_rakeback(ctx.author.id, sess["bet"] * tier["rate"])
-            await _record(ctx.author.id, False, sess["bet"], 0)
-            loop = asyncio.get_event_loop()
-            img_buf = await loop.run_in_executor(
-                None, image_gen.render_mines_grid,
-                gs, mine_set, set(state["revealed"]), sess["bet"], state["multiplier"], True,
-            )
-            await ctx.send(
-                content=f"💥 **MINE!** {ctx.author.mention} You lost **{utils.fmt_pts(sess['bet'])} pts**!",
-                file=discord.File(img_buf, "mines.png"),
-            )
-        else:
-            safe_cells = gs * gs - state["mine_count"]
-            picks = len(state["revealed"])
-            mult = round(1.0 + (picks / max(safe_cells, 1)) * (state["mine_count"] / 5), 2)
-            state["multiplier"] = mult
-            await db.set_game_session(ctx.author.id, "mines", sess["bet"], json.dumps(state))
-            loop = asyncio.get_event_loop()
-            img_buf = await loop.run_in_executor(
-                None, image_gen.render_mines_grid,
-                gs, mine_set, set(state["revealed"]), sess["bet"], mult,
-            )
-            await ctx.send(
-                content=f"✅ Safe! Multiplier: **{mult:.2f}x** | Potential: **{utils.fmt_pts(sess['bet'] * mult)} pts** | `.cashout` to collect",
-                file=discord.File(img_buf, "mines.png"),
-            )
+        msg = await ctx.send(embed=embed, view=view)
+        _mines_msg_to_user[str(msg.id)] = ctx.author.id
+        # Re-render with correct message_id so custom_ids are unique per game
+        view2 = MinesGridView(state, str(msg.id))
+        await msg.edit(view=view2)
 
     async def _mines_cashout(self, ctx: commands.Context, sess: dict):
+        """Prefix fallback cashout for mines."""
         state = json.loads(sess["state"])
+        user_id = ctx.author.id
+        bet = float(sess["bet"])
+
         if not state["revealed"]:
-            await db.clear_game_session(ctx.author.id)
-            await db.add_balance(ctx.author.id, sess["bet"], note="mines cancelled")
-            return await ctx.send(embed=discord.Embed(description="No cells revealed — bet refunded.", color=0x5865F2))
+            await db.clear_game_session(user_id)
+            await db.add_balance(user_id, bet, note="mines cancelled")
+            # Remove any stale message mapping
+            for mid, uid in list(_mines_msg_to_user.items()):
+                if uid == user_id:
+                    _mines_msg_to_user.pop(mid, None)
+            return await ctx.send(
+                embed=discord.Embed(description="No cells revealed — bet refunded.", color=0x5865F2)
+            )
 
         game_cfg = await db.get_game_config("mines")
         he = float(game_cfg["house_edge"]) if game_cfg else 0.02
-        gross = sess["bet"] * state["multiplier"]
+        gross = bet * state["multiplier"]
         net = gross * (1 - he)
-        net_capped_bal = await bc.apply_balance_cap(
-            ctx.author.id,
-            float((await db.get_user(ctx.author.id) or {}).get("balance", 0)) + net,
-        )
-        net = max(0.0, net_capped_bal - float((await db.get_user(ctx.author.id) or {}).get("balance", 0)))
-        await db.add_balance(ctx.author.id, net, note="mines cashout")
-        await db.add_wager(ctx.author.id, sess["bet"])
-        tier = utils.get_rakeback_tier(float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0)))
-        await db.add_rakeback(ctx.author.id, sess["bet"] * tier["rate"])
-        await _record(ctx.author.id, True, sess["bet"], net)
-        await db.clear_game_session(ctx.author.id)
+        user = await db.get_user(user_id)
+        current_bal = float((user or {}).get("balance", 0))
+        net_capped_bal = await bc.apply_balance_cap(user_id, current_bal + net)
+        net = max(0.0, net_capped_bal - current_bal)
+        await db.add_balance(user_id, net, note="mines cashout")
+        await db.add_wager(user_id, bet)
+        tier = utils.get_rakeback_tier(float((user or {}).get("total_wagered", 0)))
+        await db.add_rakeback(user_id, bet * tier["rate"])
+        await _record(user_id, True, bet, net)
+        await db.clear_game_session(user_id)
+        for mid, uid in list(_mines_msg_to_user.items()):
+            if uid == user_id:
+                _mines_msg_to_user.pop(mid, None)
 
         await ctx.send(embed=discord.Embed(
             title="💰 Mines — Cashed Out!",

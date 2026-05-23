@@ -37,6 +37,7 @@ COGS = [
     "cogs.stats",
     "cogs.wallet",
     "cogs.threads",
+    "cogs.help_cmd",
 ]
 
 
@@ -48,7 +49,7 @@ class FlipBot(commands.Bot):
         super().__init__(
             command_prefix=commands.when_mentioned_or(config.PREFIX),
             intents=intents,
-            help_command=_HelpCommand(),
+            help_command=None,  # replaced by cogs.help_cmd
         )
 
     async def setup_hook(self):
@@ -91,11 +92,6 @@ class FlipBot(commands.Bot):
 
 def _err(msg: str) -> discord.Embed:
     return discord.Embed(description=f"❌ {msg}", color=0xE74C3C)
-
-
-class _HelpCommand(commands.DefaultHelpCommand):
-    def get_ending_note(self):
-        return f"Use {self.context.prefix}help <command> for more info."
 
 
 async def main():
