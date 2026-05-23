@@ -1336,6 +1336,295 @@ async def render_towers_gif(
     return buf
 
 
+# ── Crystals Game ─────────────────────────────────────────────────────────────
+
+CRYSTAL_TYPES: list[str] = ["blue", "white", "black", "purple", "yellow", "green", "red", "aqua"]
+
+CRYSTAL_COLORS: dict[str, tuple[int, int, int]] = {
+    "blue":   (66,  135, 245),
+    "white":  (220, 225, 255),
+    "black":  (65,  65,  75),
+    "purple": (160, 50,  235),
+    "yellow": (240, 195, 40),
+    "green":  (46,  210, 85),
+    "red":    (225, 55,  55),
+    "aqua":   (35,  215, 230),
+}
+
+CRYSTALS_MULTS: dict[str, float] = {
+    "quintuple": 20.0,
+    "quadruple":  4.80,
+    "full_house": 3.84,
+    "triple":     2.88,
+    "two_pair":   1.92,
+    "one_pair":   0.10,
+    "no_match":   0.0,
+}
+
+COMBO_LABELS: dict[str, str] = {
+    "quintuple": "QUINTUPLE!",
+    "quadruple": "QUADRUPLE!",
+    "full_house": "FULL HOUSE!",
+    "triple":    "TRIPLE!",
+    "two_pair":  "TWO PAIR!",
+    "one_pair":  "ONE PAIR",
+    "no_match":  "NO MATCH",
+}
+
+_CR_ICON_SZ = 52
+_cr_icons: "dict[str, Image.Image]" = {}
+
+
+def _gen_crystal_icon(color: tuple[int, int, int], sz: int = _CR_ICON_SZ) -> "Image.Image":
+    """Draw a gem-cut crystal diamond in the given RGB color."""
+    img  = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    cx, cy = sz // 2, sz // 2
+    r = sz // 2 - 3
+
+    # Main diamond body
+    pts = [(cx, cy - r), (cx + r, cy - r // 3), (cx + r // 2, cy + r),
+           (cx - r // 2, cy + r), (cx - r, cy - r // 3)]
+    draw.polygon(pts, fill=color + (230,))
+
+    # Darker lower facet
+    dark = tuple(max(0, v - 50) for v in color)
+    draw.polygon(
+        [(cx - r // 2, cy + r), (cx + r // 2, cy + r), (cx, cy)],
+        fill=dark + (200,),
+    )
+
+    # Bright upper-left shine
+    light = tuple(min(255, v + 80) for v in color)
+    draw.polygon(
+        [(cx, cy - r), (cx + r // 5, cy - r // 3), (cx - r // 3, cy - r // 5)],
+        fill=light + (180,),
+    )
+
+    # Outline
+    draw.polygon(pts, outline=tuple(max(0, v - 30) for v in color) + (255,), width=2)
+    return img
+
+
+def _ensure_crystal_assets() -> None:
+    asset_dir = Path("assets/crystals")
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    for name in CRYSTAL_TYPES:
+        path = asset_dir / f"{name}.png"
+        if path.exists():
+            raw = Image.open(path).convert("RGBA")
+        else:
+            raw = _gen_crystal_icon(CRYSTAL_COLORS[name], _CR_ICON_SZ)
+        _cr_icons[name] = raw.resize((_CR_ICON_SZ, _CR_ICON_SZ), Image.LANCZOS)
+
+
+def crystals_get_combo(crystals: list[str]) -> str:
+    from collections import Counter
+    counts = sorted(Counter(crystals).values(), reverse=True)
+    if counts[0] == 5:
+        return "quintuple"
+    if counts[0] == 4:
+        return "quadruple"
+    if counts[0] == 3 and len(counts) > 1 and counts[1] == 2:
+        return "full_house"
+    if counts[0] == 3:
+        return "triple"
+    if counts[0] == 2 and len(counts) > 1 and counts[1] == 2:
+        return "two_pair"
+    if counts[0] == 2:
+        return "one_pair"
+    return "no_match"
+
+
+async def render_crystals_gif(
+    crystals: list[str],        # 5 crystal type strings
+    combo: str,
+    multiplier: float,
+    bet: float,
+    username: str,
+    net_change: float,
+    *,
+    reveal_count: int = 5,      # how many to show (0 = all hidden)
+) -> io.BytesIO:
+    """Animated crystals GIF. reveal_count=0 → hidden state; =5 → full reveal."""
+    _ensure_crystal_assets()
+
+    NUM      = 5
+    SLOT_W   = 82
+    SLOT_H   = 100
+    SLOT_GAP = 10
+    HDR_H    = 42
+    INFO_H   = 44
+    RES_H    = 58
+    PAD_TOP  = 8
+    PAD_BOT  = 8
+    GRID_Y   = HDR_H + PAD_TOP
+    RES_Y    = GRID_Y + SLOT_H + 10
+
+    GRID_TOTAL_W = NUM * SLOT_W + (NUM - 1) * SLOT_GAP
+    W = GRID_TOTAL_W + 60
+    H = HDR_H + PAD_TOP + SLOT_H + 10 + RES_H + INFO_H + PAD_BOT
+
+    GRID_LEFT = (W - GRID_TOTAL_W) // 2
+
+    BG     = (13, 17, 30)
+    PANEL  = (18, 24, 42)
+    WHITE  = (255, 255, 255)
+    MUTED  = (110, 120, 145)
+    DIV    = (35, 45, 70)
+    GREEN  = (46, 213, 96)
+    RED    = (231, 76, 60)
+    GOLD   = (255, 196, 0)
+    HIDDEN = (22, 28, 48)
+    HIDDEN_BR = (42, 52, 82)
+
+    pts_per_usd = config.POINTS_PER_USD or 100.0
+
+    font_hdr  = _font(14, bold=True)
+    font_slot = _font(11, bold=True)
+    font_res  = _font(26, bold=True)
+    font_sub  = _font(15, bold=True)
+    font_info = _font(13)
+
+    from collections import Counter
+    counts = Counter(crystals)
+    matching = {c for c, n in counts.items() if n > 1}  # crystal types in a match
+
+    def _text_w(d, text, font):
+        try:
+            return d.textlength(text, font=font)
+        except Exception:
+            return len(text) * 7.5
+
+    def make_frame(n_revealed: int, is_final: bool = False) -> Image.Image:
+        img  = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+
+        # Header
+        draw.rectangle([0, 0, W, HDR_H], fill=PANEL)
+        title = "CRYSTALS"
+        draw.text((16, 13), title, font=font_hdr, fill=WHITE)
+        if multiplier > 0 and is_final:
+            m_str = f"{multiplier:.2f}x"
+            mw = _text_w(draw, m_str, font_hdr)
+            draw.text((W - 16 - mw, 13), m_str, font=font_hdr, fill=GOLD)
+
+        # Info bar
+        iy = H - INFO_H
+        draw.rectangle([0, iy, W, H], fill=(8, 12, 22))
+        draw.line([(0, iy), (W, iy)], fill=DIV, width=1)
+        uname = (username[:22] + "…") if len(username) > 22 else username
+        draw.text((16, iy + 15), uname, font=font_info, fill=MUTED)
+        if bet > 0:
+            bs = f"Bet: {_fmt(bet)} pts  •  ${bet / pts_per_usd:.2f}"
+            bw = _text_w(draw, bs, font_info)
+            draw.text((W - 16 - bw, iy + 15), bs, font=font_info, fill=MUTED)
+
+        # Crystal slots
+        for i in range(NUM):
+            sx = GRID_LEFT + i * (SLOT_W + SLOT_GAP)
+            sy = GRID_Y
+            revealed = i < n_revealed
+            ctype    = crystals[i] if revealed else None
+            is_match = is_final and ctype in matching
+
+            if revealed and ctype:
+                base_col = CRYSTAL_COLORS[ctype]
+                slot_bg  = tuple(max(0, v - 45) for v in base_col)
+                border   = base_col if is_match else tuple(max(0, v - 20) for v in base_col)
+                bw       = 3 if is_match else 2
+            else:
+                slot_bg = HIDDEN
+                border  = HIDDEN_BR
+                bw      = 1
+
+            draw.rounded_rectangle(
+                [sx, sy, sx + SLOT_W, sy + SLOT_H],
+                radius=8, fill=slot_bg, outline=border, width=bw,
+            )
+
+            if revealed and ctype and ctype in _cr_icons:
+                icon = _cr_icons[ctype]
+                ix   = sx + (SLOT_W - _CR_ICON_SZ) // 2
+                iy2  = sy + (SLOT_H - _CR_ICON_SZ) // 2 - 4
+                img.paste(icon, (ix, iy2), icon)
+                # Crystal name label below icon
+                lbl = ctype.upper()
+                lw  = _text_w(draw, lbl, font_slot)
+                draw.text(
+                    (sx + (SLOT_W - lw) // 2, sy + SLOT_H - 18),
+                    lbl, font=font_slot,
+                    fill=CRYSTAL_COLORS[ctype],
+                )
+            elif not revealed:
+                draw.text(
+                    (sx + (SLOT_W - 8) // 2, sy + (SLOT_H - 14) // 2),
+                    "?", font=font_slot, fill=MUTED,
+                )
+
+            # Glow ring on matching slots in final frame
+            if is_match:
+                glow_col = CRYSTAL_COLORS[ctype] + (80,)
+                ov  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                od  = ImageDraw.Draw(ov)
+                od.rounded_rectangle(
+                    [sx - 2, sy - 2, sx + SLOT_W + 2, sy + SLOT_H + 2],
+                    radius=10, outline=CRYSTAL_COLORS[ctype] + (160,), width=3,
+                )
+                img = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+                draw = ImageDraw.Draw(img)
+
+        # Result area
+        if is_final:
+            label = COMBO_LABELS.get(combo, combo.upper())
+            if multiplier >= 2.0:
+                res_col = GOLD
+            elif multiplier >= 1.0:
+                res_col = GREEN
+            elif multiplier > 0:
+                res_col = (180, 180, 180)
+            else:
+                res_col = RED
+            rw = _text_w(draw, label, font_res)
+            draw.text(((W - rw) // 2, RES_Y + 4), label, font=font_res, fill=res_col)
+            if net_change != 0.0:
+                pfx = "+" if net_change > 0 else ""
+                sub = f"{pfx}{_fmt(net_change)} pts  (${abs(net_change) / pts_per_usd:.2f})"
+                sc  = GREEN if net_change > 0 else RED
+                sw  = _text_w(draw, sub, font_sub)
+                draw.text(((W - sw) // 2, RES_Y + 34), sub, font=font_sub, fill=sc)
+
+        return img
+
+    # Build frames: hidden → reveal one by one → final hold
+    frames:    list[Image.Image] = []
+    durations: list[int]         = []
+
+    if reveal_count == 0:
+        # Static hidden state (for initial ".crystals" message before reveal)
+        frames.append(make_frame(0))
+        durations.append(5_000)
+    else:
+        # Animate reveal one by one
+        frames.append(make_frame(0))
+        durations.append(300)
+        for n in range(1, NUM + 1):
+            frames.append(make_frame(n, is_final=(n == NUM)))
+            durations.append(20_000 if n == NUM else 450)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=1,
+        optimize=False,
+        disposal=2,
+    )
+    buf.seek(0)
+    return buf
+
+
 # ── Case Opening Card ──────────────────────────────────────────────────────────
 
 def render_case_open_card(item_name: str, item_value: float, case_name: str) -> io.BytesIO:

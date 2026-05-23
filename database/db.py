@@ -270,7 +270,8 @@ async def _init_tables():
             ('limbo',     'Limbo',      1, 10, 100000, 0.05, 0.02),
             ('slots',     'Slots',      1, 10, 100000, 0.05, 0.02),
             ('crash',     'Crash',      1, 10, 100000, 0.05, 0.02),
-            ('towers',    'Towers',     1, 10, 100000, 0.05, 0.02);
+            ('towers',    'Towers',     1, 10, 100000, 0.05, 0.02),
+            ('crystals',  'Crystals',   1, 10, 100000, 0.05, 0.02);
     """)
     # Seed default rakeback tiers if none exist
     count = (await (await db.execute("SELECT COUNT(*) FROM rakeback_tiers")).fetchone())[0]

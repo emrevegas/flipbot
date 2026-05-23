@@ -1160,6 +1160,71 @@ class Games(commands.Cog):
         view2 = MinesGridView(state, str(msg.id))
         await msg.edit(view=view2)
 
+    # ── Crystals ───────────────────────────────────────────────────────────────
+
+    @commands.command(name="crystals", aliases=["crystal", "cr"])
+    async def crystals(self, ctx: commands.Context, amount: str = ""):
+        """Reveal 5 crystals and match for prizes.  .crystals <bet>"""
+        if not amount:
+            return await ctx.send(embed=_err("Usage: `.crystals <bet>`"))
+        try:
+            bet = float(amount.replace(",", ""))
+        except ValueError:
+            return await ctx.send(embed=_err("Invalid bet amount."))
+
+        await db.ensure_user(ctx.author.id, ctx.author.name)
+        if not await _check_game(ctx, "crystals", bet):
+            return
+
+        await db.add_balance(ctx.author.id, -bet, note="crystals bet")
+
+        # Generate outcome upfront (before reveal)
+        crystals  = random.choices(image_gen.CRYSTAL_TYPES, k=5)
+        combo     = image_gen.crystals_get_combo(crystals)
+        mult      = image_gen.CRYSTALS_MULTS[combo]
+
+        game_cfg  = await db.get_game_config("crystals")
+        he        = float(game_cfg["house_edge"]) if game_cfg else 0.02
+        gross     = bet * mult
+        net       = gross * (1 - he) if gross > 0 else 0.0
+
+        won = mult >= 1.0
+        if net > 0:
+            user      = await db.get_user(ctx.author.id)
+            cur_bal   = float((user or {}).get("balance", 0))
+            net = max(0.0, (await bc.apply_balance_cap(ctx.author.id, cur_bal + net)) - cur_bal)
+            await db.add_balance(ctx.author.id, net, note="crystals payout")
+
+        await db.add_wager(ctx.author.id, bet)
+        tier = utils.get_rakeback_tier(
+            float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0))
+        )
+        await db.add_rakeback(ctx.author.id, bet * tier["rate"])
+        await _record(ctx.author.id, won, bet, net if won else 0.0)
+
+        net_change = (net - bet) if won else -bet
+
+        # Hidden state GIF first
+        hidden_gif = await image_gen.render_crystals_gif(
+            crystals, combo, mult, bet, ctx.author.display_name, net_change,
+            reveal_count=0,
+        )
+        state = {
+            "crystals":   crystals,
+            "combo":      combo,
+            "multiplier": mult,
+            "bet":        bet,
+            "username":   ctx.author.display_name,
+            "net_change": net_change,
+            "user_id":    ctx.author.id,
+        }
+        view = _CrystalsRevealView(ctx.author.id)
+        msg  = await ctx.send(
+            file=discord.File(hidden_gif, "crystals.gif"),
+            view=view,
+        )
+        _cr_msg_to_state[str(msg.id)] = state
+
     # ── Towers ─────────────────────────────────────────────────────────────────
 
     @commands.command(name="towers", aliases=["tw"])
@@ -1256,6 +1321,76 @@ class Games(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Games(bot))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CRYSTALS — 5-crystal reveal matcher, image-based GIF
+# ─────────────────────────────────────────────────────────────────────────────
+
+_cr_msg_to_state: dict[str, dict] = {}   # message_id → game state
+
+
+class _CrystalsResultView(discord.ui.LayoutView):
+    def __init__(self):
+        super().__init__(timeout=None)
+        c = discord.ui.Container(accent_colour=discord.Colour.purple())
+        g = discord.ui.MediaGallery()
+        g.add_item(media="attachment://crystals.gif")
+        c.add_item(g)
+        self.add_item(c)
+
+
+class _CrystalsRevealView(discord.ui.LayoutView):
+    """Hidden-state view with a single Reveal button."""
+
+    def __init__(self, user_id: int):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+
+        container = discord.ui.Container(accent_colour=discord.Colour.purple())
+        gallery   = discord.ui.MediaGallery()
+        gallery.add_item(media="attachment://crystals.gif")
+        container.add_item(gallery)
+
+        row = discord.ui.ActionRow()
+        btn = discord.ui.Button(label="Reveal Crystals", style=discord.ButtonStyle.success, emoji="🔮")
+        btn.callback = self._on_reveal
+        row.add_item(btn)
+        container.add_item(row)
+        self.add_item(container)
+
+    async def _on_reveal(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Not your game."), ephemeral=True,
+            )
+        state = _cr_msg_to_state.get(str(interaction.message.id))
+        if not state:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Game not found."), ephemeral=True,
+            )
+        await _crystals_do_reveal(interaction, state)
+
+
+async def _crystals_do_reveal(interaction: discord.Interaction, state: dict):
+    _cr_msg_to_state.pop(str(interaction.message.id), None)
+
+    crystals   = state["crystals"]
+    combo      = state["combo"]
+    multiplier = state["multiplier"]
+    bet        = state["bet"]
+    username   = state["username"]
+    user_id    = state["user_id"]
+    net_change = state["net_change"]
+
+    gif = await image_gen.render_crystals_gif(
+        crystals, combo, multiplier, bet, username, net_change,
+        reveal_count=5,
+    )
+    await interaction.response.edit_message(
+        attachments=[discord.File(gif, "crystals.gif")],
+        view=_CrystalsResultView(),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

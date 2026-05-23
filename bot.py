@@ -58,9 +58,10 @@ class FlipBot(commands.Bot):
         from modules import utils as _utils
         await _utils.refresh_tier_cache()
         # Pre-generate card + tower assets if missing
-        from modules.image_gen import _ensure_card_assets, _ensure_tower_assets
+        from modules.image_gen import _ensure_card_assets, _ensure_tower_assets, _ensure_crystal_assets
         _ensure_card_assets()
         _ensure_tower_assets()
+        _ensure_crystal_assets()
         # Load cogs
         for cog in COGS:
             try:
