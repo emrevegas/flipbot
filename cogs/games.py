@@ -1160,6 +1160,57 @@ class Games(commands.Cog):
         view2 = MinesGridView(state, str(msg.id))
         await msg.edit(view=view2)
 
+    # ── Towers ─────────────────────────────────────────────────────────────────
+
+    @commands.command(name="towers", aliases=["tw"])
+    async def towers(self, ctx: commands.Context, mode: str = "easy", *, amount: str = ""):
+        """Start a Towers game.  .towers <easy|normal|hard> <bet>"""
+        mode = mode.lower()
+        if mode not in ("easy", "normal", "hard"):
+            return await ctx.send(embed=_err("Mode must be **easy**, **normal**, or **hard**."))
+        if not amount:
+            return await ctx.send(embed=_err("Usage: `.towers <easy|normal|hard> <bet>`"))
+
+        try:
+            bet = float(amount.replace(",", ""))
+        except ValueError:
+            return await ctx.send(embed=_err("Invalid bet amount."))
+
+        await db.ensure_user(ctx.author.id, ctx.author.name)
+        if not await _check_game(ctx, "towers", bet):
+            return
+
+        # Generate the 10×4 grid
+        bombs_per_floor = image_gen.TOWERS_BOMBS[mode]
+        grid: list[list[str]] = []
+        for _ in range(10):
+            cells = ["bomb"] * bombs_per_floor + ["gem"] * (4 - bombs_per_floor)
+            random.shuffle(cells)
+            grid.append(cells)
+
+        state = {
+            "mode":     mode,
+            "floor":    0,
+            "grid":     grid,
+            "picks":    [None] * 10,
+            "username": ctx.author.display_name,
+        }
+        await db.set_game_session(ctx.author.id, "towers", bet, json.dumps(state))
+        await db.add_balance(ctx.author.id, -bet, note="towers bet")
+
+        gif = await image_gen.render_towers_gif(
+            grid, state["picks"], 0, mode, bet, ctx.author.display_name,
+        )
+        view = _TowersView(ctx.author.id, "", can_cashout=False)
+        msg  = await ctx.send(
+            file=discord.File(gif, "towers.gif"),
+            view=view,
+        )
+        _tw_msg_to_user[str(msg.id)] = ctx.author.id
+        # Rebuild view with correct message_id so button callbacks resolve correctly
+        view2 = _TowersView(ctx.author.id, str(msg.id), can_cashout=False)
+        await msg.edit(view=view2)
+
     async def _mines_cashout(self, ctx: commands.Context, sess: dict):
         """Prefix fallback cashout for mines."""
         state = json.loads(sess["state"])
@@ -1204,3 +1255,218 @@ class Games(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Games(bot))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOWERS — image-based, button-driven, 10-floor climb
+# ─────────────────────────────────────────────────────────────────────────────
+
+_tw_msg_to_user: dict[str, int] = {}   # message_id → user_id
+
+
+class _TowersResultView(discord.ui.LayoutView):
+    """Final view — GIF only, no buttons."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        c = discord.ui.Container(accent_colour=discord.Colour.gold())
+        g = discord.ui.MediaGallery()
+        g.add_item(media="attachment://towers.gif")
+        c.add_item(g)
+        self.add_item(c)
+
+
+class _TowersView(discord.ui.LayoutView):
+    """Active game view: image + 4 column buttons + cashout."""
+
+    def __init__(self, user_id: int, message_id: str, can_cashout: bool = False):
+        super().__init__(timeout=300)
+        self.user_id    = user_id
+        self.message_id = message_id
+
+        container = discord.ui.Container(accent_colour=discord.Colour.gold())
+        gallery   = discord.ui.MediaGallery()
+        gallery.add_item(media="attachment://towers.gif")
+        container.add_item(gallery)
+
+        # Column pick buttons
+        col_row = discord.ui.ActionRow()
+        for col in range(4):
+            btn          = discord.ui.Button(label=str(col + 1), style=discord.ButtonStyle.primary)
+            btn.callback = self._make_pick(col)
+            col_row.add_item(btn)
+        container.add_item(col_row)
+
+        # Cashout button (separate row)
+        co_row   = discord.ui.ActionRow()
+        co_btn   = discord.ui.Button(
+            label="Cash Out", style=discord.ButtonStyle.success,
+            emoji="💰", disabled=not can_cashout,
+        )
+        co_btn.callback = self._on_cashout
+        co_row.add_item(co_btn)
+        container.add_item(co_row)
+
+        self.add_item(container)
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                embed=utils.error_embed("Not your game."), ephemeral=True,
+            )
+            return False
+        return True
+
+    def _make_pick(self, col: int):
+        async def _cb(interaction: discord.Interaction):
+            if await self._guard(interaction):
+                await _towers_do_pick(interaction, col)
+        return _cb
+
+    async def _on_cashout(self, interaction: discord.Interaction):
+        if await self._guard(interaction):
+            await _towers_do_cashout(interaction)
+
+
+async def _towers_do_pick(interaction: discord.Interaction, col: int):
+    user_id = _tw_msg_to_user.get(str(interaction.message.id))
+    if not user_id:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("Game not found."), ephemeral=True,
+        )
+
+    sess = await db.get_game_session(user_id)
+    if not sess or sess["game"] != "towers":
+        return await interaction.response.send_message(
+            embed=utils.error_embed("No active towers game."), ephemeral=True,
+        )
+
+    state     = json.loads(sess["state"])
+    floor     = state["floor"]
+    grid      = state["grid"]
+    picks     = state["picks"]
+    mode      = state["mode"]
+    bet       = float(sess["bet"])
+    username  = state.get("username", str(interaction.user.display_name))
+    cell_type = grid[floor][col]
+    picks[floor] = col
+
+    if cell_type == "bomb":
+        await db.clear_game_session(user_id)
+        _tw_msg_to_user.pop(str(interaction.message.id), None)
+
+        await db.add_wager(user_id, bet)
+        tier = utils.get_rakeback_tier(
+            float((await db.get_user(user_id) or {}).get("total_wagered", 0))
+        )
+        await db.add_rakeback(user_id, bet * tier["rate"])
+        await _record(user_id, False, bet, 0.0)
+
+        gif = await image_gen.render_towers_gif(
+            grid, picks, floor, mode, bet, username,
+            just_revealed_floor=floor, result="BOOM", net_change=-bet,
+        )
+        await interaction.response.edit_message(
+            attachments=[discord.File(gif, "towers.gif")],
+            view=_TowersResultView(),
+        )
+
+    else:
+        # Gem found
+        new_floor = floor + 1
+        state["floor"] = new_floor
+        state["picks"] = picks
+        mults = image_gen.TOWERS_MULTS[mode]
+
+        if new_floor >= 10:
+            # Reached the top — auto-cashout
+            await db.clear_game_session(user_id)
+            _tw_msg_to_user.pop(str(interaction.message.id), None)
+
+            game_cfg = await db.get_game_config("towers")
+            he   = float(game_cfg["house_edge"]) if game_cfg else 0.02
+            gross = bet * mults[9]
+            net   = gross * (1 - he)
+            user  = await db.get_user(user_id)
+            cur_bal = float((user or {}).get("balance", 0))
+            net = max(0.0, (await bc.apply_balance_cap(user_id, cur_bal + net)) - cur_bal)
+            await db.add_balance(user_id, net, note="towers top-floor win")
+            await db.add_wager(user_id, bet)
+            tier = utils.get_rakeback_tier(float((user or {}).get("total_wagered", 0)))
+            await db.add_rakeback(user_id, bet * tier["rate"])
+            await _record(user_id, True, bet, net)
+
+            gif = await image_gen.render_towers_gif(
+                grid, picks, 10, mode, bet, username,
+                just_revealed_floor=floor, result="CASHOUT",
+                net_change=net - bet,
+            )
+            await interaction.response.edit_message(
+                attachments=[discord.File(gif, "towers.gif")],
+                view=_TowersResultView(),
+            )
+
+        else:
+            await db.set_game_session(user_id, "towers", bet, json.dumps(state))
+            gif = await image_gen.render_towers_gif(
+                grid, picks, new_floor, mode, bet, username,
+                just_revealed_floor=floor,
+            )
+            view = _TowersView(user_id, str(interaction.message.id), can_cashout=True)
+            await interaction.response.edit_message(
+                attachments=[discord.File(gif, "towers.gif")],
+                view=view,
+            )
+
+
+async def _towers_do_cashout(interaction: discord.Interaction):
+    user_id = _tw_msg_to_user.get(str(interaction.message.id))
+    if not user_id:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("Game not found."), ephemeral=True,
+        )
+
+    sess = await db.get_game_session(user_id)
+    if not sess or sess["game"] != "towers":
+        return await interaction.response.send_message(
+            embed=utils.error_embed("No active towers game."), ephemeral=True,
+        )
+
+    state    = json.loads(sess["state"])
+    floor    = state["floor"]
+    mode     = state["mode"]
+    bet      = float(sess["bet"])
+    username = state.get("username", str(interaction.user.display_name))
+    mults    = image_gen.TOWERS_MULTS[mode]
+
+    if floor == 0:
+        await db.clear_game_session(user_id)
+        _tw_msg_to_user.pop(str(interaction.message.id), None)
+        await db.add_balance(user_id, bet, note="towers refund (no floors cleared)")
+        return await interaction.response.send_message(
+            embed=_ok("No floors cleared — bet refunded."), ephemeral=True,
+        )
+
+    game_cfg = await db.get_game_config("towers")
+    he    = float(game_cfg["house_edge"]) if game_cfg else 0.02
+    gross = bet * mults[floor - 1]
+    net   = gross * (1 - he)
+    user  = await db.get_user(user_id)
+    cur_bal = float((user or {}).get("balance", 0))
+    net = max(0.0, (await bc.apply_balance_cap(user_id, cur_bal + net)) - cur_bal)
+    await db.add_balance(user_id, net, note="towers cashout")
+    await db.add_wager(user_id, bet)
+    tier = utils.get_rakeback_tier(float((user or {}).get("total_wagered", 0)))
+    await db.add_rakeback(user_id, bet * tier["rate"])
+    await _record(user_id, True, bet, net)
+    await db.clear_game_session(user_id)
+    _tw_msg_to_user.pop(str(interaction.message.id), None)
+
+    gif = await image_gen.render_towers_gif(
+        state["grid"], state["picks"], floor, mode, bet, username,
+        result="CASHOUT", net_change=net - bet,
+    )
+    await interaction.response.edit_message(
+        attachments=[discord.File(gif, "towers.gif")],
+        view=_TowersResultView(),
+    )

@@ -996,6 +996,351 @@ async def render_bj_static(
     )
 
 
+# ── Towers Game ───────────────────────────────────────────────────────────────
+
+TOWERS_MULTS: dict[str, list[float]] = {
+    "easy":   [1.28, 1.64, 2.10, 2.68, 3.43, 4.39, 5.62, 7.19, 9.21, 11.79],
+    "normal": [1.88, 3.54, 6.65, 12.51, 23.53, 44.24, 83.18, 156.37, 294.05, 552.90],
+    "hard":   [3.76, 14.14, 53.17, 199.92, 751.72, 2826.45, 10627.41, 39959.45, 150261.85, 565184.55],
+}
+TOWERS_BOMBS: dict[str, int] = {"easy": 1, "normal": 2, "hard": 3}
+
+_TW_ICON_SZ = 26
+_tw_gem_img: "Image.Image | None" = None
+_tw_bomb_img: "Image.Image | None" = None
+
+
+def _gen_gem_icon(sz: int) -> "Image.Image":
+    img = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    cx, cy = sz // 2, sz // 2
+    r = sz // 2 - 2
+    pts = [(cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)]
+    draw.polygon(pts, fill=(46, 213, 96), outline=(25, 140, 60), width=2)
+    # inner facet lines
+    draw.line([(cx, cy - r + 3), (cx, cy + r - 3)], fill=(100, 255, 150, 140), width=1)
+    # shine
+    shine = [(cx - r // 3, cy - r + 2), (cx + r // 3, cy - r + 2), (cx + 2, cy - 3), (cx - 2, cy - 3)]
+    draw.polygon(shine, fill=(180, 255, 200, 180))
+    return img
+
+
+def _gen_bomb_icon(sz: int) -> "Image.Image":
+    img = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    cx, cy = sz // 2, sz // 2 + sz // 12
+    r = sz // 2 - 4
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(38, 38, 38), outline=(90, 90, 90), width=2)
+    # fuse
+    fx, fy = cx + r - 2, cy - r + 2
+    draw.line([(fx, fy), (fx + 3, fy - 5), (fx + 5, fy - 9)], fill=(180, 130, 40), width=2)
+    # spark
+    draw.ellipse([fx + 3, fy - 12, fx + 9, fy - 8], fill=(255, 210, 0))
+    # body shine
+    sr = max(2, r // 4)
+    draw.ellipse([cx - sr - 2, cy - r + 3, cx + sr - 2, cy - r + sr + 5], fill=(75, 75, 75))
+    return img
+
+
+def _ensure_tower_assets() -> None:
+    global _tw_gem_img, _tw_bomb_img
+    if _tw_gem_img is not None and _tw_bomb_img is not None:
+        return
+    asset_dir = Path("assets")
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    gem_path  = asset_dir / "gem.png"
+    bomb_path = asset_dir / "bomb.png"
+    if gem_path.exists():
+        raw = Image.open(gem_path).convert("RGBA")
+    else:
+        raw = _gen_gem_icon(_TW_ICON_SZ)
+    _tw_gem_img = raw.resize((_TW_ICON_SZ, _TW_ICON_SZ), Image.LANCZOS)
+    if bomb_path.exists():
+        raw = Image.open(bomb_path).convert("RGBA")
+    else:
+        raw = _gen_bomb_icon(_TW_ICON_SZ)
+    _tw_bomb_img = raw.resize((_TW_ICON_SZ, _TW_ICON_SZ), Image.LANCZOS)
+
+
+async def render_towers_gif(
+    grid: "list[list[str]]",        # 10 floors × 4 cols, "gem" or "bomb"
+    picks: "list[int | None]",      # per floor: chosen col index, or None
+    active_floor: int,              # floor player should act on next (0=bottom)
+    mode: str,
+    bet: float,
+    username: str,
+    *,
+    just_revealed_floor: "int | None" = None,
+    result: str = "",               # "BOOM" | "CASHOUT" | ""
+    net_change: float = 0.0,
+) -> io.BytesIO:
+    """Animated Towers GIF.
+
+    - just_revealed_floor=N: animate the reveal of floor N (picked cell first,
+      then others left-to-right), then show result or next active floor.
+    - result="BOOM": BOOM overlay on final frame (20 s hold).
+    - result="CASHOUT": CASHOUT overlay on final frame (20 s hold).
+    - Otherwise: single static frame (initial state or inter-floor state).
+    """
+    _ensure_tower_assets()
+
+    NUM_FL      = 10
+    W           = 460
+    CELL_W      = 72
+    CELL_H      = 40
+    CELL_GAP_X  = 8
+    CELL_GAP_Y  = 6
+    MULT_W      = 58       # width of left multiplier label column
+    GRID_LEFT   = MULT_W + 6
+    HDR_H       = 44
+    GRID_TOP    = HDR_H + 2
+    ROW_STRIDE  = CELL_H + CELL_GAP_Y
+    INFO_H      = 46
+    H = GRID_TOP + NUM_FL * ROW_STRIDE - CELL_GAP_Y + 6 + INFO_H
+
+    # Colours
+    BG               = (13, 17, 30)
+    PANEL            = (18, 24, 42)
+    ACTIVE_ROW_BG    = (22, 30, 52)
+    WHITE            = (255, 255, 255)
+    MUTED            = (110, 120, 145)
+    DIVIDER          = (35, 45, 70)
+    GREEN            = (46, 213, 96)
+    RED              = (231, 76, 60)
+    GOLD             = (255, 196, 0)
+    CELL_HIDDEN_BG   = (22, 28, 48)
+    CELL_HIDDEN_BR   = (42, 52, 80)
+    CELL_ACTIVE_BG   = (28, 38, 66)
+    CELL_ACTIVE_BR   = GOLD
+    CELL_GEM_BG      = (16, 50, 28)
+    CELL_GEM_BR      = GREEN
+    CELL_BOMB_BG     = (55, 16, 16)
+    CELL_BOMB_BR     = RED
+    CELL_FUTURE_BG   = (16, 20, 34)
+    CELL_FUTURE_BR   = (30, 38, 60)
+
+    mults          = TOWERS_MULTS.get(mode, TOWERS_MULTS["easy"])
+    pts_per_usd    = config.POINTS_PER_USD or 100.0
+
+    font_hdr   = _font(14, bold=True)
+    font_mult  = _font(11, bold=True)
+    font_cell  = _font(11, bold=True)
+    font_res   = _font(44, bold=True)
+    font_sub   = _font(20, bold=True)
+    font_info  = _font(13)
+    font_fl    = _font(12, bold=True)
+
+    def _floor_y(f: int) -> int:
+        return GRID_TOP + (NUM_FL - 1 - f) * ROW_STRIDE
+
+    def _cell_x(col: int) -> int:
+        return GRID_LEFT + col * (CELL_W + CELL_GAP_X)
+
+    def _text_w(draw_obj: "ImageDraw.ImageDraw", text: str, font: "ImageFont.FreeTypeFont") -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 7.5
+
+    def make_frame(
+        revealed: "list[list[str | None]]",
+        active_fl: "int | None",
+        show_mult_fl: "int | None" = None,
+        result_text: str = "",
+        net_chg: float = 0.0,
+    ) -> Image.Image:
+        img  = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+
+        # ── Header ────────────────────────────────────────────────────────────
+        draw.rectangle([0, 0, W, HDR_H], fill=PANEL)
+        draw.text((16, 13), "TOWERS", font=font_hdr, fill=WHITE)
+        draw.text((95, 13), f"│  {mode.upper()}", font=font_hdr, fill=MUTED)
+        if active_fl is not None and 0 < active_fl <= NUM_FL:
+            cur = mults[active_fl - 1]
+            val = bet * cur
+            cash_str = f"💰  {_fmt(val)} pts"
+            cw = _text_w(draw, cash_str, font_hdr)
+            draw.text((W - 16 - cw, 13), cash_str, font=font_hdr, fill=GOLD)
+
+        # ── Info bar ──────────────────────────────────────────────────────────
+        iy = H - INFO_H
+        draw.rectangle([0, iy, W, H], fill=(8, 12, 22))
+        draw.line([(0, iy), (W, iy)], fill=DIVIDER, width=1)
+        uname = (username[:22] + "…") if len(username) > 22 else username
+        draw.text((16, iy + 16), uname, font=font_info, fill=MUTED)
+        if bet > 0:
+            bet_s = f"Bet: {_fmt(bet)} pts  •  ${bet / pts_per_usd:.2f}"
+            bw = _text_w(draw, bet_s, font_info)
+            draw.text((W - 16 - bw, iy + 16), bet_s, font=font_info, fill=MUTED)
+
+        # ── Grid ──────────────────────────────────────────────────────────────
+        for f in range(NUM_FL):
+            fy        = _floor_y(f)
+            is_active = (active_fl == f)
+
+            # Active floor row background highlight
+            if is_active:
+                draw.rectangle([0, fy - 2, W, fy + CELL_H + 2], fill=ACTIVE_ROW_BG)
+
+            # Multiplier label
+            m_str = f"{mults[f]:.2f}x"
+            if show_mult_fl == f:
+                m_col = GOLD
+            elif active_fl is not None and f < active_fl:
+                m_col = GREEN
+            elif is_active:
+                m_col = WHITE
+            else:
+                m_col = MUTED
+            mw = _text_w(draw, m_str, font_mult)
+            draw.text((MULT_W - mw - 4, fy + (CELL_H - 12) // 2), m_str, font=font_mult, fill=m_col)
+
+            # Cells
+            for c in range(4):
+                cx   = _cell_x(c)
+                cell = revealed[f][c]  # None / "gem" / "bomb"
+
+                if cell == "gem":
+                    bg, br = CELL_GEM_BG, CELL_GEM_BR
+                elif cell == "bomb":
+                    bg, br = CELL_BOMB_BG, CELL_BOMB_BR
+                elif is_active:
+                    bg, br = CELL_ACTIVE_BG, CELL_ACTIVE_BR
+                elif active_fl is not None and f > active_fl:
+                    bg, br = CELL_FUTURE_BG, CELL_FUTURE_BR
+                else:
+                    bg, br = CELL_HIDDEN_BG, CELL_HIDDEN_BR
+
+                bw = 2 if (is_active or cell is not None) else 1
+                draw.rounded_rectangle(
+                    [cx, fy, cx + CELL_W, fy + CELL_H],
+                    radius=5, fill=bg, outline=br, width=bw,
+                )
+
+                if cell == "gem" and _tw_gem_img:
+                    ix = cx + (CELL_W - _TW_ICON_SZ) // 2
+                    iy2 = fy + (CELL_H - _TW_ICON_SZ) // 2
+                    img.paste(_tw_gem_img, (ix, iy2), _tw_gem_img)
+                elif cell == "bomb" and _tw_bomb_img:
+                    ix = cx + (CELL_W - _TW_ICON_SZ) // 2
+                    iy2 = fy + (CELL_H - _TW_ICON_SZ) // 2
+                    img.paste(_tw_bomb_img, (ix, iy2), _tw_bomb_img)
+                elif cell is None and is_active:
+                    q = "?"
+                    qw = _text_w(draw, q, font_cell)
+                    draw.text(
+                        (cx + (CELL_W - qw) // 2, fy + (CELL_H - 14) // 2),
+                        q, font=font_cell, fill=MUTED,
+                    )
+
+        # Multiplier flash banner on show_mult_fl row
+        if show_mult_fl is not None:
+            fy = _floor_y(show_mult_fl)
+            gx1 = GRID_LEFT
+            gx2 = GRID_LEFT + 4 * (CELL_W + CELL_GAP_X) - CELL_GAP_X
+            ov  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            od  = ImageDraw.Draw(ov)
+            od.rectangle([gx1, fy, gx2, fy + CELL_H], fill=(0, 0, 0, 130))
+            img = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            banner = f"✓  {mults[show_mult_fl]:.2f}x"
+            bw2 = _text_w(draw, banner, font_fl)
+            draw.text(
+                (gx1 + (gx2 - gx1 - bw2) // 2, fy + (CELL_H - 14) // 2),
+                banner, font=font_fl, fill=GOLD,
+            )
+
+        # Result overlay
+        if result_text:
+            rc = RED if result_text == "BOOM" else GOLD
+            ov   = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            od   = ImageDraw.Draw(ov)
+            od.rectangle([0, 0, W, iy], fill=(0, 0, 0, 168))
+            img  = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            mid  = iy // 2
+            rw   = _text_w(draw, result_text, font_res)
+            draw.text(((W - rw) // 2, mid - 36), result_text, font=font_res, fill=rc)
+            if net_chg != 0.0:
+                pfx = "+" if net_chg > 0 else ""
+                sub = f"{pfx}{_fmt(net_chg)} pts  (${abs(net_chg) / pts_per_usd:.2f})"
+                sub_col = GREEN if net_chg > 0 else RED
+                sw = _text_w(draw, sub, font_sub)
+                draw.text(((W - sw) // 2, mid + 16), sub, font=font_sub, fill=sub_col)
+
+        return img
+
+    # ── Build frames ──────────────────────────────────────────────────────────
+
+    def base_revealed(up_to_floor: int) -> "list[list[str | None]]":
+        """All floors below up_to_floor fully revealed; rest hidden."""
+        rev: list[list[str | None]] = [[None] * 4 for _ in range(NUM_FL)]
+        for f in range(up_to_floor):
+            if picks[f] is not None:
+                for c in range(4):
+                    rev[f][c] = grid[f][c]
+        return rev
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+
+    if just_revealed_floor is not None:
+        jrf      = just_revealed_floor
+        pick_col = picks[jrf]
+        base     = base_revealed(jrf)
+
+        # Frame 0: floor jrf still hidden
+        frames.append(make_frame(base, active_fl=jrf))
+        durations.append(120)
+
+        # Frame 1: picked cell reveals
+        base[jrf][pick_col] = grid[jrf][pick_col]
+        frames.append(make_frame(base, active_fl=jrf))
+        durations.append(440)
+
+        # Frames: other cells reveal left-to-right
+        for c in [x for x in range(4) if x != pick_col]:
+            base[jrf][c] = grid[jrf][c]
+            frames.append(make_frame(base, active_fl=jrf))
+            durations.append(360)
+
+        if grid[jrf][pick_col] == "gem" and result != "BOOM":
+            # Show multiplier banner on cleared floor, then move to next floor
+            frames.append(make_frame(base, active_fl=active_floor, show_mult_fl=jrf))
+            durations.append(900)
+            # Final: active_floor ready for player
+            frames.append(make_frame(base, active_fl=active_floor))
+            durations.append(5_000)
+        else:
+            # BOOM — 20 s final frame
+            frames.append(make_frame(base, active_fl=jrf, result_text="BOOM", net_chg=net_change))
+            durations.append(20_000)
+
+    elif result == "CASHOUT":
+        base = base_revealed(active_floor)
+        frames.append(make_frame(base, active_fl=active_floor, result_text="CASHOUT", net_chg=net_change))
+        durations.append(20_000)
+
+    else:
+        # Initial state (or plain static update)
+        base = base_revealed(active_floor)
+        frames.append(make_frame(base, active_fl=active_floor))
+        durations.append(5_000)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=1,
+        optimize=False,
+        disposal=2,
+    )
+    buf.seek(0)
+    return buf
+
+
 # ── Case Opening Card ──────────────────────────────────────────────────────────
 
 def render_case_open_card(item_name: str, item_value: float, case_name: str) -> io.BytesIO:
