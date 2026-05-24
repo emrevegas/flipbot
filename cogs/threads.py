@@ -13,23 +13,67 @@ def _thread_tag(user_id: int) -> str:
 
 
 def _thread_matches(thread: discord.Thread, user_id: int) -> bool:
+    if getattr(thread, "archived", False):
+        return False
     tag = _thread_tag(user_id)
-    return thread.name.endswith(tag) or tag in thread.name
+    closed = f"closed-{tag}"
+    name = thread.name or ""
+    if closed in name:
+        return False
+    return name.endswith(tag) or tag in name
 
 
 async def _get_user_thread(guild: discord.Guild, user_id: int) -> discord.Thread | None:
-    """Find the private thread owned by this user (tagged in thread name)."""
-    for thread in guild.threads:
-        if _thread_matches(thread, user_id):
-            return thread
-    try:
-        active = await guild.active_threads()
-        for thread in active.threads:
+    """Find the user's active (non-archived) private thread."""
+    seen: set[int] = set()
+
+    def pick(threads) -> discord.Thread | None:
+        for thread in threads:
+            tid = thread.id
+            if tid in seen:
+                continue
+            seen.add(tid)
             if _thread_matches(thread, user_id):
                 return thread
+        return None
+
+    found = pick(guild.threads)
+    if found:
+        return found
+
+    try:
+        active = await guild.active_threads()
+        found = pick(active.threads)
+        if found:
+            return found
     except Exception:
         pass
+
     return None
+
+
+async def _archive_user_thread(thread: discord.Thread, user_id: int) -> None:
+    """Archive and rename so _get_user_thread no longer finds it."""
+    tag = _thread_tag(user_id)
+    name = thread.name or ""
+    if tag in name:
+        new_name = name.replace(tag, f"closed-{tag}", 1)[:100]
+    else:
+        new_name = f"{name[:88]} [closed]"[:100]
+
+    try:
+        await thread.edit(name=new_name, locked=True)
+    except discord.HTTPException:
+        pass
+
+    if not getattr(thread, "archived", False):
+        try:
+            await thread.archive()
+        except discord.HTTPException:
+            try:
+                await thread.edit(archived=True, locked=True)
+            except discord.HTTPException:
+                pass
 
 
 class Threads(commands.Cog):
@@ -187,11 +231,17 @@ class Threads(commands.Cog):
                 description="🔒 Thread closed and archived.",
                 color=0xE74C3C,
             ))
-            await thread.edit(archived=True, locked=True)
+        except discord.HTTPException:
+            pass
+
+        try:
+            await _archive_user_thread(thread, ctx.author.id)
         except discord.HTTPException as e:
             return await ctx.send(embed=utils.error_embed(f"Failed to archive: {e}"))
 
-        await ctx.send(embed=utils.success_embed("Your thread has been archived."))
+        await ctx.send(embed=utils.success_embed(
+            "Your thread has been archived. You can create a new one with `.thread create`."
+        ))
 
     # ── info ───────────────────────────────────────────────────────────────────
 
@@ -230,7 +280,11 @@ class Threads(commands.Cog):
         if not thread:
             return await ctx.send(embed=utils.error_embed(f"{member.display_name} has no active thread."))
 
-        await thread.edit(archived=True, locked=True)
+        try:
+            await _archive_user_thread(thread, member.id)
+        except discord.HTTPException as e:
+            return await ctx.send(embed=utils.error_embed(f"Failed to archive: {e}"))
+
         await ctx.send(embed=utils.success_embed(f"Archived {member.mention}'s thread."))
 
 
