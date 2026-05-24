@@ -589,8 +589,17 @@ def check_permission(user_id, permission):
 
 
 def can_manage_items(user_id) -> bool:
-    """True if user may use /items and /cases (admin or item_manager)."""
-    return not check_permission(user_id, "admin") or not check_permission(user_id, "item_manager")
+    """True if user may use /items, /cases, and /setprices (admin or item_manager from /user_panel)."""
+    if is_super_admin(user_id):
+        return True
+    admins = get_data("server/admins") or {}
+    user_key = str(user_id)
+    if user_key not in admins:
+        return False
+    perms = admins[user_key]
+    if isinstance(perms, str):
+        perms = [perms]
+    return "admin" in perms or "item_manager" in perms
 
 
 def get_all_registered_user_ids() -> list[str]:

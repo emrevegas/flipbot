@@ -2524,6 +2524,18 @@ class CasesCog(commands.Cog):
         layout = make_cases_hub(ctx.author.id)
         await ctx.send(view=layout)
 
+    @app_commands.command(name="setprices", description=t("cases.cmd_setprices_desc", lang="en"))
+    async def setprices_admin(self, interaction: discord.Interaction):
+        uid = str(interaction.user.id)
+        from modules.database import can_manage_items
+        if not can_manage_items(interaction.user.id):
+            return await interaction.response.send_message(
+                embed=create_error_embed(t("cases.item_manager_only", user_id=uid)), ephemeral=True
+            )
+        from modules.set_prices import start_set_prices_flow
+
+        await start_set_prices_flow(interaction)
+
     @app_commands.command(name="community_cases", description="Community kasa panelini açar")
     async def community_cases(self, interaction: discord.Interaction):
         uid  = str(interaction.user.id)

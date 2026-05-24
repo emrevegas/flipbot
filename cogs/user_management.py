@@ -2376,7 +2376,7 @@ class PermissionSelect(discord.ui.Select):
             ),
             discord.SelectOption(
                 label="Item Manager",
-                description="Manage global items and official cases (/items, /cases)",
+                description="Manage items and cases (/items, /cases, /setprices)",
                 emoji="📦",
                 value="item_manager",
                 default="item_manager" in current_perms

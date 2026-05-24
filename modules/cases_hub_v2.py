@@ -251,7 +251,7 @@ class CasesOpenHubLayout(ui.LayoutView):
         self.show_gif = True
         self._rebuild()
         files = [discord.File(gif_buf, CASE_GIF_ATTACHMENT)] if gif_buf else []
-        await interaction.edit_message(
+        await interaction.message.edit(
             content=None,
             embed=None,
             attachments=files,
