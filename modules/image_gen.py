@@ -729,6 +729,10 @@ HTW_WHEEL_ORDER: list[int] = [
 ]
 HTW_RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 HTW_POCKET_STEP = 360.0 / 37.0
+HTW_POINTER_DEG = 270.0  # 12 o'clock in Pillow (0° = 3 o'clock, clockwise)
+HTW_ANGLE_OFFSET = -2.0   # fine-tune pointer vs pocket (empirical)
+HTW_SPIN_MS = 2_400
+HTW_RESULT_HOLD_MS = 20_000
 _htw_wheel_cache: dict[int, Image.Image] = {}
 
 
@@ -741,9 +745,9 @@ def _htw_pocket_fill(n: int) -> tuple[int, int, int]:
 
 
 def _htw_angle_for_number(num: int) -> float:
-    """Rotation (degrees) so this pocket sits under the top pointer."""
+    """CCW rotation so the winning pocket sits under the top pointer."""
     idx = HTW_WHEEL_ORDER.index(int(num))
-    return -idx * HTW_POCKET_STEP
+    return HTW_ANGLE_OFFSET - idx * HTW_POCKET_STEP
 
 
 def _htw_ease_out(t: float) -> float:
@@ -752,52 +756,45 @@ def _htw_ease_out(t: float) -> float:
 
 
 def _htw_build_wheel(size: int) -> Image.Image:
-    """Procedural European roulette wheel (RGBA). Cached per size."""
+    """Procedural European roulette wheel (RGBA, no cramped pocket labels)."""
     if size in _htw_wheel_cache:
         return _htw_wheel_cache[size]
 
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     cx = cy = size // 2
-    outer = size // 2 - 3
-    inner = max(18, int(outer * 0.30))
+    outer = size // 2 - 4
+    inner = max(22, int(outer * 0.34))
     step = HTW_POCKET_STEP
-    font_pocket = _font(max(8, size // 20), bold=True)
     gold = (255, 196, 0)
     rim = (58, 66, 88)
 
     bbox = [cx - outer, cy - outer, cx + outer, cy + outer]
+    top = HTW_POINTER_DEG
     for i, num in enumerate(HTW_WHEEL_ORDER):
-        start = 90 - (i + 1) * step
-        end = 90 - i * step
+        start = top + i * step
+        end = top + (i + 1) * step
         draw.pieslice(bbox, start, end, fill=_htw_pocket_fill(num))
-        draw.pieslice(bbox, start, end, outline=(0, 0, 0, 90), width=1)
 
-    draw.ellipse(bbox, outline=gold, width=max(2, size // 64))
+    for i in range(37):
+        a = math.radians(top + i * step)
+        x0 = cx + inner * math.cos(a)
+        y0 = cy + inner * math.sin(a)
+        x1 = cx + outer * math.cos(a)
+        y1 = cy + outer * math.sin(a)
+        draw.line([(x0, y0), (x1, y1)], fill=(0, 0, 0, 140), width=1)
+
+    draw.ellipse(bbox, outline=gold, width=max(2, size // 56))
     draw.ellipse(
-        [cx - outer + 6, cy - outer + 6, cx + outer - 6, cy + outer - 6],
+        [cx - outer + 7, cy - outer + 7, cx + outer - 7, cy + outer - 7],
         outline=rim, width=2,
     )
 
-    # Inner hub + spinner cross
     draw.ellipse([cx - inner, cy - inner, cx + inner, cy + inner], fill=(36, 44, 62), outline=gold, width=2)
-    arm = inner - 6
-    draw.line([(cx - arm, cy), (cx + arm, cy)], fill=(200, 208, 225), width=3)
-    draw.line([(cx, cy - arm), (cx, cy + arm)], fill=(200, 208, 225), width=3)
-    draw.ellipse([cx - 5, cy - 5, cx + 5, cy + 5], fill=gold)
-
-    # Pocket numbers
-    text_r = (outer + inner) * 0.52
-    for i, num in enumerate(HTW_WHEEL_ORDER):
-        mid_rad = math.radians(90 - (i + 0.5) * step)
-        tx = cx + text_r * math.cos(mid_rad)
-        ty = cy + text_r * math.sin(mid_rad)
-        ns = str(num)
-        try:
-            tw = draw.textlength(ns, font=font_pocket)
-        except Exception:
-            tw = len(ns) * 6
-        draw.text((tx - tw / 2, ty - 7), ns, font=font_pocket, fill=(255, 255, 255))
+    arm = inner - 8
+    draw.line([(cx - arm, cy), (cx + arm, cy)], fill=(210, 218, 235), width=3)
+    draw.line([(cx, cy - arm), (cx, cy + arm)], fill=(210, 218, 235), width=3)
+    draw.ellipse([cx - 6, cy - 6, cx + 6, cy + 6], fill=gold)
 
     _htw_wheel_cache[size] = img
     return img
@@ -821,8 +818,8 @@ async def render_htw_gif(
     outcome: str,
 ) -> io.BytesIO:
     """Two roulette wheels side-by-side with spin animation + WIN/LOSE/PUSH."""
-    W, H = 620, 360
-    WHEEL = 200
+    W, H = 640, 380
+    WHEEL = 188
     BG = (10, 14, 28)
     PANEL = (16, 22, 40)
     WHITE = (245, 247, 255)
@@ -832,14 +829,14 @@ async def render_htw_gif(
     GOLD = (255, 196, 0)
     CYAN = (56, 189, 248)
 
-    left_cx, right_cx = 155, 465
-    wheel_cy = 210
-    spin_frames = 16
-    frame_ms = 50
+    left_cx, right_cx = W // 4, 3 * W // 4
+    wheel_cy = 218
+    spin_frames = 22
+    frame_ms = max(40, HTW_SPIN_MS // spin_frames)
 
     font_hdr = _font(14, bold=True)
     font_name = _font(13, bold=True)
-    font_num = _font(22, bold=True)
+    font_num = _font(26, bold=True)
     font_res = _font(44, bold=True)
     font_sub = _font(16, bold=True)
 
@@ -895,14 +892,14 @@ async def render_htw_gif(
         draw.rounded_rectangle([W // 2 - 28, wheel_cy - 18, W // 2 + 28, wheel_cy + 18], radius=12, fill=(28, 36, 58))
         draw.text((W // 2 - 10, wheel_cy - 10), "VS", font=font_name, fill=GOLD)
 
-        # Number badges
+        # Result numbers (large badges — wheel has no cramped labels)
         for cx, num in ((left_cx, left_num), (right_cx, right_num)):
             ns = str(num)
             ncol = _htw_num_color(num)
-            nw = _tw(draw, ns, font_num) + 24
-            bx1, by1 = cx - nw // 2, wheel_cy + WHEEL // 2 + 10
-            draw.rounded_rectangle([bx1, by1, bx1 + nw, by1 + 34], radius=8, fill=ncol)
-            draw.text((bx1 + 12, by1 + 4), ns, font=font_num, fill=WHITE)
+            nw = _tw(draw, ns, font_num) + 28
+            bx1, by1 = cx - nw // 2, wheel_cy + WHEEL // 2 + 12
+            draw.rounded_rectangle([bx1, by1, bx1 + nw, by1 + 40], radius=10, fill=ncol)
+            draw.text((bx1 + 14, by1 + 5), ns, font=font_num, fill=WHITE)
 
         bet_s = f"Bet {_fmt(bet)} pts"
         bw = _tw(draw, bet_s, font_name)
@@ -934,14 +931,14 @@ async def render_htw_gif(
         durations.append(frame_ms)
 
     frames.append(make_frame(left_target, right_target, show_result=True))
-    durations.append(4_500)
+    durations.append(HTW_RESULT_HOLD_MS)
 
     buf = io.BytesIO()
     frames[0].save(
         buf, format="GIF", save_all=True,
         append_images=frames[1:],
         duration=durations,
-        loop=1,
+        loop=0,
         optimize=False,
         disposal=2,
     )
