@@ -1732,6 +1732,320 @@ async def render_crystals_gif(
     return buf
 
 
+# ── Chicken Road Game ─────────────────────────────────────────────────────────
+
+CHICKEN_MULTS: dict[str, list[float]] = {
+    "easy":   [1.06, 1.14, 1.23, 1.33, 1.44, 1.56, 1.69, 1.83, 1.98, 2.15, 2.33, 2.52],
+    "normal": [1.15, 1.35, 1.58, 1.86, 2.18, 2.56, 3.01, 3.54, 4.16, 4.88],
+    "hard":   [1.28, 1.68, 2.20, 2.88, 3.77, 4.93, 6.45, 8.44],
+}
+CHICKEN_CRASH_PROB: dict[str, float] = {"easy": 0.08, "normal": 0.15, "hard": 0.25}
+
+
+def chicken_road_num_steps(mode: str) -> int:
+    return len(CHICKEN_MULTS.get(mode, CHICKEN_MULTS["easy"]))
+
+
+def _draw_chicken_sprite(
+    draw: "ImageDraw.ImageDraw",
+    cx: int,
+    cy: int,
+    *,
+    walk_phase: int = 0,
+    squashed: bool = False,
+) -> None:
+    """Procedural chicken — body, head, comb, beak, legs."""
+    if squashed:
+        draw.ellipse([cx - 16, cy + 4, cx + 16, cy + 14], fill=(255, 210, 60), outline=(180, 120, 20), width=2)
+        draw.ellipse([cx - 10, cy + 2, cx + 6, cy + 10], fill=(255, 180, 40), outline=(160, 90, 10), width=1)
+        for dx, dy in [(-12, -4), (8, -6), (0, -10), (14, 0)]:
+            draw.line([(cx, cy + 6), (cx + dx, cy + dy)], fill=(255, 255, 255), width=2)
+        return
+
+    bob = -2 if walk_phase % 2 else 0
+    cy += bob
+    # body
+    draw.ellipse([cx - 14, cy - 6, cx + 14, cy + 14], fill=(255, 220, 70), outline=(200, 140, 20), width=2)
+    # head
+    draw.ellipse([cx + 6, cy - 16, cx + 22, cy], fill=(255, 200, 50), outline=(180, 110, 10), width=2)
+    # comb
+    draw.polygon([(cx + 10, cy - 18), (cx + 14, cy - 24), (cx + 18, cy - 17)], fill=(220, 40, 40))
+    # beak
+    draw.polygon([(cx + 22, cy - 10), (cx + 30, cy - 7), (cx + 22, cy - 4)], fill=(255, 160, 0))
+    # eye
+    draw.ellipse([cx + 14, cy - 12, cx + 18, cy - 8], fill=(20, 20, 20))
+    # legs
+    leg_off = 4 if walk_phase % 2 == 0 else -4
+    draw.line([(cx - 4, cy + 14), (cx - 4 + leg_off, cy + 24)], fill=(255, 140, 0), width=3)
+    draw.line([(cx + 6, cy + 14), (cx + 6 - leg_off, cy + 24)], fill=(255, 140, 0), width=3)
+
+
+def _draw_car_sprite(
+    draw: "ImageDraw.ImageDraw",
+    cx: int,
+    cy: int,
+    *,
+    scale: float = 1.0,
+) -> None:
+    w = int(38 * scale)
+    h = int(22 * scale)
+    x1, y1 = cx - w // 2, cy - h // 2
+    x2, y2 = cx + w // 2, cy + h // 2
+    draw.rounded_rectangle([x1, y1, x2, y2], radius=4, fill=(210, 45, 45), outline=(140, 20, 20), width=2)
+    draw.rounded_rectangle([x1 + 6, y1 + 3, x2 - 6, y1 + h // 2], radius=2, fill=(80, 160, 230))
+    for wx in (x1 + 8, x2 - 14):
+        draw.ellipse([wx, y2 - 4, wx + 10, y2 + 6], fill=(30, 30, 30))
+    # headlights
+    draw.ellipse([x2 - 6, y1 + 6, x2 - 2, y1 + 12], fill=(255, 255, 180))
+
+
+async def render_chicken_road_gif(
+    cleared_steps: int,
+    mode: str,
+    bet: float,
+    username: str,
+    *,
+    cross_lane: "int | None" = None,
+    cross_result: str = "",
+    result: str = "",
+    net_change: float = 0.0,
+) -> io.BytesIO:
+    """Animated Chicken Road GIF — walk, safe crossing, or car crash.
+
+    cleared_steps: lanes already crossed (0 = at start).
+    cross_lane: when set, animate crossing this lane index (0-based).
+    cross_result: "safe" or "crash" for the animated crossing.
+    result: final overlay — "CRASH", "CASHOUT", or "WIN".
+    """
+    num_steps = chicken_road_num_steps(mode)
+    mults = CHICKEN_MULTS.get(mode, CHICKEN_MULTS["easy"])
+
+    W, H = 560, 220
+    HDR_H = 44
+    ROAD_TOP = 72
+    ROAD_H = 88
+    INFO_H = 40
+    START_X = 36
+    FINISH_W = 44
+    lane_area = W - START_X - FINISH_W - 12
+    lane_w = max(28, lane_area // max(num_steps, 1))
+
+    BG = (13, 17, 30)
+    PANEL = (18, 24, 42)
+    WHITE = (255, 255, 255)
+    MUTED = (110, 120, 145)
+    GREEN = (46, 213, 96)
+    RED = (231, 76, 60)
+    GOLD = (255, 196, 0)
+    ROAD = (45, 48, 58)
+    GRASS = (28, 72, 38)
+    SIDEWALK = (90, 90, 98)
+    LANE_LINE = (200, 200, 210)
+
+    from modules.economy import get_coins_per_usd
+    pts_per_usd = get_coins_per_usd() or 100.0
+
+    font_hdr = _font(14, bold=True)
+    font_info = _font(12)
+    font_res = _font(40, bold=True)
+    font_sub = _font(18, bold=True)
+    font_mult = _font(11, bold=True)
+
+    def _chicken_x(cleared: int) -> int:
+        if cleared <= 0:
+            return START_X + 10
+        if cleared >= num_steps:
+            return W - FINISH_W // 2 - 4
+        return START_X + (cleared - 1) * lane_w + lane_w // 2
+
+    def _text_w(draw_obj: "ImageDraw.ImageDraw", text: str, font: "ImageFont.FreeTypeFont") -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 7.5
+
+    def make_frame(
+        chicken_x: int,
+        *,
+        walk_phase: int = 0,
+        squashed: bool = False,
+        car_x: "int | None" = None,
+        car_y: "int | None" = None,
+        cleared: int = 0,
+        flash_lane: "int | None" = None,
+        overlay: str = "",
+        net_chg: float = 0.0,
+    ) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+
+        # Header
+        draw.rectangle([0, 0, W, HDR_H], fill=PANEL)
+        draw.text((14, 12), "CHICKEN ROAD", font=font_hdr, fill=WHITE)
+        draw.text((155, 12), f"│  {mode.upper()}", font=font_hdr, fill=MUTED)
+        if cleared > 0:
+            cur_m = mults[cleared - 1]
+            cash = f"💰  {_fmt(bet * cur_m)} pts"
+            cw = _text_w(draw, cash, font_hdr)
+            draw.text((W - 14 - cw, 12), cash, font=font_hdr, fill=GOLD)
+        else:
+            hint = "Tap Cross to start"
+            hw = _text_w(draw, hint, font_info)
+            draw.text((W - 14 - hw, 15), hint, font=font_info, fill=MUTED)
+
+        # Grass + sidewalk
+        draw.rectangle([0, HDR_H, W, ROAD_TOP], fill=GRASS)
+        draw.rectangle([0, ROAD_TOP + ROAD_H, W, H - INFO_H], fill=GRASS)
+        draw.rectangle([0, ROAD_TOP - 6, START_X, ROAD_TOP + ROAD_H + 6], fill=SIDEWALK)
+
+        # Road surface
+        draw.rectangle([START_X, ROAD_TOP, W - FINISH_W, ROAD_TOP + ROAD_H], fill=ROAD)
+
+        # Lane markers + cleared highlights
+        for i in range(num_steps):
+            lx = START_X + i * lane_w
+            if i < cleared:
+                draw.rectangle([lx + 2, ROAD_TOP + 4, lx + lane_w - 2, ROAD_TOP + ROAD_H - 4], fill=(22, 55, 32))
+            elif flash_lane == i:
+                draw.rectangle([lx + 2, ROAD_TOP + 4, lx + lane_w - 2, ROAD_TOP + ROAD_H - 4], fill=(55, 45, 18))
+            # dashed center line
+            for dy in range(ROAD_TOP + 8, ROAD_TOP + ROAD_H - 8, 14):
+                draw.rectangle([lx + lane_w - 2, dy, lx + lane_w, dy + 8], fill=LANE_LINE)
+
+        # Finish zone (golden egg)
+        fx = W - FINISH_W
+        draw.rectangle([fx, ROAD_TOP, W, ROAD_TOP + ROAD_H], fill=(35, 30, 18))
+        egg_cx = fx + FINISH_W // 2
+        egg_cy = ROAD_TOP + ROAD_H // 2
+        draw.ellipse([egg_cx - 14, egg_cy - 18, egg_cx + 14, egg_cy + 18], fill=(255, 215, 80), outline=(200, 160, 30), width=2)
+        draw.ellipse([egg_cx - 5, egg_cy - 10, egg_cx + 2, egg_cy - 3], fill=(255, 240, 180))
+
+        # Multiplier labels under lanes
+        for i in range(num_steps):
+            lx = START_X + i * lane_w + lane_w // 2
+            m_str = f"{mults[i]:.2f}x"
+            mw = _text_w(draw, m_str, font_mult)
+            col = GREEN if i < cleared else (GOLD if flash_lane == i else MUTED)
+            draw.text((lx - mw // 2, ROAD_TOP + ROAD_H + 8), m_str, font=font_mult, fill=col)
+
+        chicken_y = ROAD_TOP + ROAD_H // 2 + 8
+        _draw_chicken_sprite(draw, chicken_x, chicken_y, walk_phase=walk_phase, squashed=squashed)
+
+        if car_x is not None and car_y is not None:
+            _draw_car_sprite(draw, car_x, car_y)
+
+        # Info bar
+        iy = H - INFO_H
+        draw.rectangle([0, iy, W, H], fill=(8, 12, 22))
+        uname = (username[:24] + "…") if len(username) > 24 else username
+        draw.text((14, iy + 12), uname, font=font_info, fill=MUTED)
+        if bet > 0:
+            bs = f"Bet: {_fmt(bet)} pts  •  Step {cleared}/{num_steps}"
+            bw = _text_w(draw, bs, font_info)
+            draw.text((W - 14 - bw, iy + 12), bs, font=font_info, fill=MUTED)
+
+        if overlay:
+            rc = RED if overlay == "CRASH" else GOLD
+            ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(ov)
+            od.rectangle([0, HDR_H, W, iy], fill=(0, 0, 0, 155))
+            img = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            mid = (HDR_H + iy) // 2
+            rw = _text_w(draw, overlay, font_res)
+            draw.text(((W - rw) // 2, mid - 32), overlay, font=font_res, fill=rc)
+            if net_chg != 0.0:
+                pfx = "+" if net_chg > 0 else ""
+                sub = f"{pfx}{_fmt(net_chg)} pts"
+                sw = _text_w(draw, sub, font_sub)
+                sc = GREEN if net_chg > 0 else RED
+                draw.text(((W - sw) // 2, mid + 14), sub, font=font_sub, fill=sc)
+
+        return img
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+
+    road_cy = ROAD_TOP + ROAD_H // 2
+
+    if cross_lane is not None and cross_result:
+        lane = cross_lane
+        from_x = _chicken_x(cross_lane)
+        to_x = _chicken_x(cross_lane + 1)
+        walk_frames = 5
+
+        for wf in range(walk_frames):
+            t = (wf + 1) / walk_frames
+            cx = int(from_x + (to_x - from_x) * t)
+            if cross_result == "crash" and wf >= walk_frames - 1:
+                break
+            frames.append(make_frame(
+                cx, walk_phase=wf, cleared=cleared_steps,
+                flash_lane=lane,
+            ))
+            durations.append(140)
+
+        if cross_result == "safe":
+            frames.append(make_frame(
+                to_x, walk_phase=0, cleared=cleared_steps,
+                flash_lane=lane,
+            ))
+            durations.append(600)
+            frames.append(make_frame(
+                to_x, walk_phase=0, cleared=cleared_steps,
+            ))
+            durations.append(4_000)
+        else:
+            # Car crash sequence
+            impact_x = int(from_x + (to_x - from_x) * 0.72)
+            crash_y = road_cy - 28
+            for cf in range(4):
+                car_x = impact_x + 80 - cf * 22
+                car_y = crash_y - cf * 8
+                cx = int(from_x + (to_x - from_x) * (0.55 + cf * 0.05))
+                frames.append(make_frame(
+                    cx, walk_phase=cf, cleared=cleared_steps,
+                    flash_lane=lane, car_x=car_x, car_y=car_y,
+                ))
+                durations.append(120)
+            # Impact
+            frames.append(make_frame(
+                impact_x, squashed=True, cleared=cleared_steps,
+                flash_lane=lane, car_x=impact_x + 8, car_y=crash_y + 10,
+            ))
+            durations.append(350)
+            frames.append(make_frame(
+                impact_x, squashed=True, cleared=cleared_steps,
+                overlay=result or "CRASH", net_chg=net_change,
+            ))
+            durations.append(20_000)
+
+    elif result in ("CASHOUT", "WIN"):
+        cx = _chicken_x(cleared_steps)
+        frames.append(make_frame(
+            cx, cleared=cleared_steps,
+            overlay=result, net_chg=net_change,
+        ))
+        durations.append(20_000)
+
+    else:
+        cx = _chicken_x(cleared_steps)
+        frames.append(make_frame(cx, cleared=cleared_steps))
+        durations.append(5_000)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=1,
+        optimize=False,
+        disposal=2,
+    )
+    buf.seek(0)
+    return buf
+
+
 # ── Case Opening Card ──────────────────────────────────────────────────────────
 
 def render_case_open_card(item_name: str, item_value: float, case_name: str) -> io.BytesIO:

@@ -1,6 +1,6 @@
 """All casino games as prefix commands.
 
-Games: coinflip, dice, roulette, mines, hilo, blackjack, limbo, slots, crash
+Games: coinflip, dice, roulette, mines, hilo, blackjack, limbo, slots, crash, chickenroad
 """
 from __future__ import annotations
 
@@ -1539,6 +1539,55 @@ class Games(commands.Cog):
         view2 = _TowersView(ctx.author.id, str(msg.id), mode, can_cashout=False)
         await msg.edit(view=view2)
 
+    # ── Chicken Road ───────────────────────────────────────────────────────────
+
+    @commands.command(name="chickenroad", aliases=["chicken", "chkn", "crroad"])
+    async def chickenroad(self, ctx: commands.Context, amount: str = "", mode: str = "easy"):
+        """Cross the road — cash out anytime.  .chickenroad <bet> [easy|normal|hard]"""
+        if not amount:
+            return await ctx.send(embed=_err("Usage: `.chickenroad <bet> [easy|normal|hard]`"))
+
+        try:
+            bet = float(amount.replace(",", ""))
+        except ValueError:
+            return await ctx.send(embed=_err("Invalid bet amount."))
+
+        mode = mode.lower()
+        if mode not in ("easy", "normal", "hard"):
+            return await ctx.send(embed=_err(
+                "Mode must be **easy**, **normal**, or **hard**.  `.chickenroad <bet> [easy|normal|hard]`"
+            ))
+
+        await db.ensure_user(ctx.author.id, ctx.author.name)
+        if not await _check_game(ctx, "chicken_road", bet):
+            return
+
+        num = image_gen.chicken_road_num_steps(mode)
+        prob = image_gen.CHICKEN_CRASH_PROB[mode]
+        lanes = ["crash" if random.random() < prob else "safe" for _ in range(num)]
+
+        state = {
+            "mode": mode,
+            "step": 0,
+            "lanes": lanes,
+            "username": ctx.author.display_name,
+        }
+        await db.set_game_session(ctx.author.id, "chicken_road", bet, json.dumps(state))
+        await db.add_balance(ctx.author.id, -bet, note="chicken road bet")
+
+        gif = await image_gen.render_chicken_road_gif(
+            0, mode, bet, ctx.author.display_name,
+        )
+        view = _ChickenRoadView(ctx.author.id, "", mode, can_cashout=False)
+        msg = await ctx.send(
+            file=discord.File(gif, "chickenroad.gif"),
+            view=view,
+        )
+        _cr_msg_to_user[str(msg.id)] = ctx.author.id
+        _cache_cr_msg(ctx.author.id, msg)
+        view2 = _ChickenRoadView(ctx.author.id, str(msg.id), mode, can_cashout=False)
+        await msg.edit(view=view2)
+
     async def _mines_cashout(self, ctx: commands.Context, sess: dict):
         """Prefix fallback cashout for mines."""
         state = json.loads(sess["state"])
@@ -1956,3 +2005,305 @@ async def _towers_do_cashout(interaction: discord.Interaction):
     )
     _tw_user_msg.pop(int(user_id), None)
     _tw_user_msg.pop(int(user_id), None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CHICKEN ROAD — cross lanes, rising multiplier, car crash GIF
+# ─────────────────────────────────────────────────────────────────────────────
+
+_cr_msg_to_user: dict[str, int] = {}
+_cr_user_msg: dict[int, discord.Message] = {}
+
+
+def _cache_cr_msg(user_id: int, msg: discord.Message | None) -> None:
+    if msg is not None:
+        _cr_user_msg[int(user_id)] = msg
+
+
+async def _chicken_start_from_interaction(
+    interaction: discord.Interaction, user_id: int, bet: float, mode: str,
+):
+    if not await _check_game_interaction(interaction, user_id, "chicken_road", bet):
+        return
+
+    num = image_gen.chicken_road_num_steps(mode)
+    prob = image_gen.CHICKEN_CRASH_PROB[mode]
+    lanes = ["crash" if random.random() < prob else "safe" for _ in range(num)]
+
+    state = {
+        "mode": mode,
+        "step": 0,
+        "lanes": lanes,
+        "username": interaction.user.display_name,
+    }
+    await db.set_game_session(user_id, "chicken_road", bet, json.dumps(state))
+    await db.add_balance(user_id, -bet, note="chicken road re-bet")
+
+    gif = await image_gen.render_chicken_road_gif(0, mode, bet, interaction.user.display_name)
+    view = _ChickenRoadView(user_id, str(interaction.message.id), mode, can_cashout=False)
+    _cr_msg_to_user[str(interaction.message.id)] = user_id
+    await interaction.response.edit_message(
+        attachments=[discord.File(gif, "chickenroad.gif")],
+        view=view,
+    )
+    _cache_cr_msg(user_id, interaction.message)
+
+
+class _ChickenRoadResultView(discord.ui.LayoutView):
+    def __init__(self, user_id: int = 0, bet: float = 0.0, mode: str = "easy"):
+        super().__init__(timeout=GAME_TIMEOUT)
+        c = discord.ui.Container(accent_colour=discord.Colour.orange())
+        g = discord.ui.MediaGallery()
+        g.add_item(media="attachment://chickenroad.gif")
+        c.add_item(g)
+
+        if user_id and bet > 0:
+            row = discord.ui.ActionRow()
+            rb = discord.ui.Button(label="Re-bet", style=discord.ButtonStyle.secondary, emoji="🔄")
+            rb.callback = self._make_cb(user_id, bet, mode)
+            row.add_item(rb)
+            x2 = discord.ui.Button(label="2× Bet", style=discord.ButtonStyle.primary, emoji="⬆️")
+            x2.callback = self._make_cb(user_id, bet * 2, mode)
+            row.add_item(x2)
+            c.add_item(row)
+
+        self.add_item(c)
+
+    def _make_cb(self, user_id: int, bet: float, mode: str):
+        async def _cb(interaction: discord.Interaction):
+            if interaction.user.id != user_id:
+                return await interaction.response.send_message(
+                    embed=utils.error_embed("Not your game."), ephemeral=True,
+                )
+            await _chicken_start_from_interaction(interaction, user_id, bet, mode)
+        return _cb
+
+
+class _ChickenRoadView(discord.ui.LayoutView):
+    """Cross + Cash Out buttons."""
+
+    def __init__(self, user_id: int, message_id: str, mode: str = "easy", can_cashout: bool = False):
+        super().__init__(timeout=GAME_TIMEOUT)
+        self.user_id = user_id
+        self.message_id = message_id
+        self.mode = mode
+
+        container = discord.ui.Container(accent_colour=discord.Colour.orange())
+        gallery = discord.ui.MediaGallery()
+        gallery.add_item(media="attachment://chickenroad.gif")
+        container.add_item(gallery)
+
+        row = discord.ui.ActionRow()
+        cross = discord.ui.Button(
+            label="Cross", style=discord.ButtonStyle.primary, emoji="🐔",
+        )
+        cross.callback = self._on_cross
+        row.add_item(cross)
+
+        cash = discord.ui.Button(
+            label="Cash Out", style=discord.ButtonStyle.success, emoji="💰",
+            disabled=not can_cashout,
+        )
+        cash.callback = self._on_cashout
+        row.add_item(cash)
+        container.add_item(row)
+
+        self.add_item(container)
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                embed=utils.error_embed("Not your game."), ephemeral=True,
+            )
+            return False
+        return True
+
+    async def _on_cross(self, interaction: discord.Interaction):
+        if await self._guard(interaction):
+            await _chicken_do_cross(interaction)
+
+    async def _on_cashout(self, interaction: discord.Interaction):
+        if await self._guard(interaction):
+            await _chicken_do_cashout(interaction)
+
+    async def on_timeout(self):
+        sess = await db.get_game_session(self.user_id)
+        if not sess or sess["game"] != "chicken_road":
+            return
+        state = json.loads(sess["state"])
+        bet = float(sess["bet"])
+        mode = state.get("mode", self.mode)
+        username = state.get("username", "")
+        await _refund_game(self.user_id, bet, "chicken_road", note="chicken road timeout refund")
+        msg = _cr_user_msg.get(self.user_id)
+        if msg:
+            _cr_msg_to_user.pop(str(msg.id), None)
+            _cr_user_msg.pop(self.user_id, None)
+            step = int(state.get("step", 0))
+            gif = await image_gen.render_chicken_road_gif(step, mode, bet, username)
+            try:
+                await msg.edit(
+                    attachments=[discord.File(gif, "chickenroad.gif")],
+                    view=_ChickenRoadResultView(self.user_id, bet, mode),
+                )
+            except Exception:
+                pass
+
+
+async def _chicken_do_cross(interaction: discord.Interaction):
+    user_id = _cr_msg_to_user.get(str(interaction.message.id))
+    if not user_id:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("Game not found."), ephemeral=True,
+        )
+
+    sess = await _ensure_session_active(user_id, "chicken_road")
+    if not sess:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("No active Chicken Road game (may have timed out)."), ephemeral=True,
+        )
+
+    state = json.loads(sess["state"])
+    step = int(state["step"])
+    lanes = state["lanes"]
+    mode = state["mode"]
+    bet = float(sess["bet"])
+    username = state.get("username", str(interaction.user.display_name))
+    num = len(lanes)
+    mults = image_gen.CHICKEN_MULTS[mode]
+
+    if step >= num:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("You already finished the road."), ephemeral=True,
+        )
+
+    outcome = lanes[step]
+    if await bc.should_rig_outcome(user_id, "chicken_road", bet):
+        outcome = "crash"
+        lanes[step] = "crash"
+        state["lanes"] = lanes
+
+    if outcome == "crash":
+        await db.clear_game_session(user_id)
+        _cr_msg_to_user.pop(str(interaction.message.id), None)
+
+        await db.add_wager(user_id, bet)
+        await _earn_rakeback(
+            user_id, bet,
+            interaction.user if isinstance(interaction.user, discord.Member) else None,
+        )
+        await _record(user_id, False, bet, 0.0)
+
+        gif = await image_gen.render_chicken_road_gif(
+            step, mode, bet, username,
+            cross_lane=step, cross_result="crash",
+            result="CRASH", net_change=-bet,
+        )
+        await interaction.response.edit_message(
+            attachments=[discord.File(gif, "chickenroad.gif")],
+            view=_ChickenRoadResultView(user_id, bet, mode),
+        )
+        _cr_user_msg.pop(int(user_id), None)
+        return
+
+    new_step = step + 1
+    state["step"] = new_step
+
+    if new_step >= num:
+        await db.clear_game_session(user_id)
+        _cr_msg_to_user.pop(str(interaction.message.id), None)
+
+        game_cfg = await db.get_game_config("chicken_road")
+        he = float(game_cfg["house_edge"]) if game_cfg else 0.02
+        gross = bet * mults[-1]
+        net = gross * (1 - he)
+        user = await db.get_user(user_id)
+        cur_bal = float((user or {}).get("balance", 0))
+        net = max(0.0, (await bc.apply_balance_cap(user_id, cur_bal + net)) - cur_bal)
+        await db.add_balance(user_id, net, note="chicken road finish win")
+        await db.add_wager(user_id, bet)
+        await _earn_rakeback(
+            user_id, bet,
+            interaction.user if isinstance(interaction.user, discord.Member) else None,
+        )
+        await _record(user_id, True, bet, net)
+
+        gif = await image_gen.render_chicken_road_gif(
+            new_step, mode, bet, username,
+            cross_lane=step, cross_result="safe",
+            result="WIN", net_change=net - bet,
+        )
+        await interaction.response.edit_message(
+            attachments=[discord.File(gif, "chickenroad.gif")],
+            view=_ChickenRoadResultView(user_id, bet, mode),
+        )
+        _cr_user_msg.pop(int(user_id), None)
+        return
+
+    await db.set_game_session(user_id, "chicken_road", bet, json.dumps(state))
+    gif = await image_gen.render_chicken_road_gif(
+        new_step, mode, bet, username,
+        cross_lane=step, cross_result="safe",
+    )
+    view = _ChickenRoadView(user_id, str(interaction.message.id), mode, can_cashout=True)
+    await interaction.response.edit_message(
+        attachments=[discord.File(gif, "chickenroad.gif")],
+        view=view,
+    )
+    _cache_cr_msg(user_id, interaction.message)
+
+
+async def _chicken_do_cashout(interaction: discord.Interaction):
+    user_id = _cr_msg_to_user.get(str(interaction.message.id))
+    if not user_id:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("Game not found."), ephemeral=True,
+        )
+
+    sess = await _ensure_session_active(user_id, "chicken_road")
+    if not sess:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("No active Chicken Road game (may have timed out)."), ephemeral=True,
+        )
+
+    state = json.loads(sess["state"])
+    step = int(state["step"])
+    mode = state["mode"]
+    bet = float(sess["bet"])
+    username = state.get("username", str(interaction.user.display_name))
+    mults = image_gen.CHICKEN_MULTS[mode]
+
+    if step == 0:
+        await db.clear_game_session(user_id)
+        _cr_msg_to_user.pop(str(interaction.message.id), None)
+        await db.add_balance(user_id, bet, note="chicken road refund (no lanes crossed)")
+        return await interaction.response.send_message(
+            embed=_ok("No lanes crossed — bet refunded."), ephemeral=True,
+        )
+
+    game_cfg = await db.get_game_config("chicken_road")
+    he = float(game_cfg["house_edge"]) if game_cfg else 0.02
+    gross = bet * mults[step - 1]
+    net = gross * (1 - he)
+    user = await db.get_user(user_id)
+    cur_bal = float((user or {}).get("balance", 0))
+    net = max(0.0, (await bc.apply_balance_cap(user_id, cur_bal + net)) - cur_bal)
+    await db.add_balance(user_id, net, note="chicken road cashout")
+    await db.add_wager(user_id, bet)
+    await _earn_rakeback(
+        user_id, bet,
+        interaction.user if isinstance(interaction.user, discord.Member) else None,
+    )
+    await _record(user_id, True, bet, net)
+    await db.clear_game_session(user_id)
+    _cr_msg_to_user.pop(str(interaction.message.id), None)
+
+    gif = await image_gen.render_chicken_road_gif(
+        step, mode, bet, username,
+        result="CASHOUT", net_change=net - bet,
+    )
+    await interaction.response.edit_message(
+        attachments=[discord.File(gif, "chickenroad.gif")],
+        view=_ChickenRoadResultView(user_id, bet, mode),
+    )
+    _cr_user_msg.pop(int(user_id), None)
