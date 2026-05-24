@@ -12,7 +12,7 @@ import discord
 from discord.ext import commands, tasks
 
 from database import db
-from modules import image_gen, utils
+from modules import image_gen, flip_utils as utils
 import config
 
 log = logging.getLogger("flipbot.affiliate")

@@ -26,6 +26,27 @@ def create_error_embed(error_message):
     embed.set_footer(text=FOOTER_TEXT.format(değişken="Hata"))
     return embed
 
+
+def error_embed(msg: str) -> discord.Embed:
+    """FlipBot-style compact error embed (alias for flip_utils.error_embed)."""
+    from modules.flip_utils import error_embed as _error_embed
+    return _error_embed(msg)
+
+
+def success_embed(msg: str) -> discord.Embed:
+    from modules.flip_utils import success_embed as _success_embed
+    return _success_embed(msg)
+
+
+def info_embed(title: str, msg: str) -> discord.Embed:
+    from modules.flip_utils import info_embed as _info_embed
+    return _info_embed(title, msg)
+
+
+def fmt_pts(n: float) -> str:
+    from modules.flip_utils import fmt_pts as _fmt_pts
+    return _fmt_pts(n)
+
 def create_warning_embed(warning_message):
     """Create a standardized warning embed."""
     embed = discord.Embed(
