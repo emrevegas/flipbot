@@ -733,7 +733,23 @@ HTW_POINTER_DEG = 270.0  # 12 o'clock in Pillow (0° = 3 o'clock, clockwise)
 HTW_ANGLE_OFFSET = -2.0   # fine-tune pointer vs pocket (empirical)
 HTW_SPIN_MS = 2_400
 HTW_RESULT_HOLD_MS = 20_000
-_htw_wheel_cache: dict[int, Image.Image] = {}
+_HTW_WHEEL_REV = 3
+_htw_wheel_cache: dict[tuple[int, int], Image.Image] = {}
+
+
+def _htw_draw_outlined_text(
+    draw: ImageDraw.ImageDraw,
+    x: float,
+    y: float,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    *,
+    fill: tuple[int, int, int] = (255, 255, 255),
+) -> None:
+    ix, iy = int(x), int(y)
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1)):
+        draw.text((ix + dx, iy + dy), text, font=font, fill=(0, 0, 0))
+    draw.text((ix, iy), text, font=font, fill=fill)
 
 
 def _htw_pocket_fill(n: int) -> tuple[int, int, int]:
@@ -756,18 +772,20 @@ def _htw_ease_out(t: float) -> float:
 
 
 def _htw_build_wheel(size: int) -> Image.Image:
-    """Procedural European roulette wheel (RGBA, no cramped pocket labels)."""
-    if size in _htw_wheel_cache:
-        return _htw_wheel_cache[size]
+    """Procedural European roulette wheel (RGBA) with readable pocket numbers."""
+    key = (size, _HTW_WHEEL_REV)
+    if key in _htw_wheel_cache:
+        return _htw_wheel_cache[key]
 
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     cx = cy = size // 2
     outer = size // 2 - 4
-    inner = max(22, int(outer * 0.34))
+    inner = max(20, int(outer * 0.42))
     step = HTW_POCKET_STEP
     gold = (255, 196, 0)
     rim = (58, 66, 88)
+    font_pocket = _font(max(9, size // 22), bold=True)
 
     bbox = [cx - outer, cy - outer, cx + outer, cy + outer]
     top = HTW_POINTER_DEG
@@ -784,6 +802,21 @@ def _htw_build_wheel(size: int) -> Image.Image:
         y1 = cy + outer * math.sin(a)
         draw.line([(x0, y0), (x1, y1)], fill=(0, 0, 0, 140), width=1)
 
+    # Pocket numbers on outer ring (outlined for contrast)
+    text_r = inner + (outer - inner) * 0.58
+    for i, num in enumerate(HTW_WHEEL_ORDER):
+        mid = top + (i + 0.5) * step
+        rad = math.radians(mid)
+        tx = cx + text_r * math.cos(rad)
+        ty = cy + text_r * math.sin(rad)
+        ns = str(num)
+        try:
+            tw = draw.textlength(ns, font=font_pocket)
+        except Exception:
+            tw = len(ns) * 6
+        th = font_pocket.size if hasattr(font_pocket, "size") else 10
+        _htw_draw_outlined_text(draw, tx - tw / 2, ty - th / 2, ns, font_pocket)
+
     draw.ellipse(bbox, outline=gold, width=max(2, size // 56))
     draw.ellipse(
         [cx - outer + 7, cy - outer + 7, cx + outer - 7, cy + outer - 7],
@@ -796,7 +829,7 @@ def _htw_build_wheel(size: int) -> Image.Image:
     draw.line([(cx, cy - arm), (cx, cy + arm)], fill=(210, 218, 235), width=3)
     draw.ellipse([cx - 6, cy - 6, cx + 6, cy + 6], fill=gold)
 
-    _htw_wheel_cache[size] = img
+    _htw_wheel_cache[key] = img
     return img
 
 
@@ -818,8 +851,8 @@ async def render_htw_gif(
     outcome: str,
 ) -> io.BytesIO:
     """Two roulette wheels side-by-side with spin animation + WIN/LOSE/PUSH."""
-    W, H = 640, 380
-    WHEEL = 188
+    W, H = 660, 390
+    WHEEL = 216
     BG = (10, 14, 28)
     PANEL = (16, 22, 40)
     WHITE = (245, 247, 255)
@@ -831,8 +864,8 @@ async def render_htw_gif(
 
     left_cx, right_cx = W // 4, 3 * W // 4
     wheel_cy = 218
-    spin_frames = 22
-    frame_ms = max(40, HTW_SPIN_MS // spin_frames)
+    spin_frames = 24
+    frame_ms = max(45, HTW_SPIN_MS // spin_frames)
 
     font_hdr = _font(14, bold=True)
     font_name = _font(13, bold=True)
@@ -930,8 +963,13 @@ async def render_htw_gif(
         frames.append(make_frame(la, ra))
         durations.append(frame_ms)
 
-    frames.append(make_frame(left_target, right_target, show_result=True))
+    final_frame = make_frame(left_target, right_target, show_result=True)
+    frames.append(final_frame)
     durations.append(HTW_RESULT_HOLD_MS)
+    # Extra still frames so clients hold the result (Towers-style) before any loop
+    for _ in range(2):
+        frames.append(final_frame.copy())
+        durations.append(HTW_RESULT_HOLD_MS // 2)
 
     buf = io.BytesIO()
     frames[0].save(
