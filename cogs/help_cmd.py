@@ -17,6 +17,8 @@ CATEGORIES = {
             ("Coin Flip", f"`{PREFIX}coinflip <amount> [hot/cold]`\nFlip a coin — hot (heads) or cold (tails)."),
             ("Dice", f"`{PREFIX}dice <amount>`\nRoll a dice — highest roll wins."),
             ("Roulette", f"`{PREFIX}roulette <amount>`\nBet on a roulette spin."),
+            ("HTW", f"`{PREFIX}htw <bet>` — vs **{config.BOT_DISPLAY_NAME}**\n"
+                     f"`{PREFIX}htw @user <bet>` — PvP challenge (higher wheel wins, tie = push)."),
             ("Blackjack", f"`{PREFIX}blackjack <amount>`  or  `{PREFIX}bj <amount>`\nPlay blackjack with interactive buttons (Hit / Stand / Double)."),
             ("Mines", f"`{PREFIX}mines <amount> [mine_count]`\nClick the grid to reveal gems. Cashout button in the grid."),
             ("Hi-Lo", f"`{PREFIX}hilo <amount>`\nPredict higher or lower cards. Use `.higher` / `.lower` / `.cashout`."),

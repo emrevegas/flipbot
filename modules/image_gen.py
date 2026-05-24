@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import io
 import math
+import random
 from pathlib import Path
 from typing import Tuple
 
@@ -706,6 +707,186 @@ async def render_limbo_gif(
     result_label = "WIN" if won else "LOSS"
     frames.append(make_frame(crash, result_text=result_label, net_chg=net_change))
     durations.append(5_000)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=1,
+        optimize=False,
+        disposal=2,
+    )
+    buf.seek(0)
+    return buf
+
+
+# ── HTW (Head-to-Head Wheel) GIF ─────────────────────────────────────────────
+
+HTW_WHEEL_ORDER: list[int] = [
+    0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30,
+    8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26,
+]
+HTW_RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+HTW_WHEEL_ANGLE_OFFSET = 0.0  # tweak if pointer alignment is off on the asset
+_htw_wheel_src: Image.Image | None = None
+
+
+def _htw_wheel_src_image() -> Image.Image:
+    global _htw_wheel_src
+    if _htw_wheel_src is None:
+        path = Path(__file__).parent.parent / "assets" / "games" / "roulette_wheel.png"
+        _htw_wheel_src = Image.open(path).convert("RGBA")
+    return _htw_wheel_src
+
+
+def _htw_angle_for_number(num: int) -> float:
+    idx = HTW_WHEEL_ORDER.index(int(num))
+    step = 360.0 / 37.0
+    return HTW_WHEEL_ANGLE_OFFSET - idx * step
+
+
+def _htw_ease_out(t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return 1.0 - (1.0 - t) ** 3.0
+
+
+def _htw_wheel_rotated(size: int, angle_deg: float) -> Image.Image:
+    src = _htw_wheel_src_image().resize((size, size), Image.LANCZOS)
+    return src.rotate(angle_deg, resample=Image.BICUBIC, center=(size // 2, size // 2))
+
+
+def _htw_num_color(n: int) -> tuple[int, int, int]:
+    if n == 0:
+        return (46, 180, 90)
+    if n in HTW_RED_NUMBERS:
+        return (220, 55, 55)
+    return (235, 235, 245)
+
+
+async def render_htw_gif(
+    left_name: str,
+    right_name: str,
+    left_num: int,
+    right_num: int,
+    bet: float,
+    outcome: str,
+) -> io.BytesIO:
+    """Two roulette wheels side-by-side with spin animation + WIN/LOSE/PUSH."""
+    W, H = 620, 360
+    WHEEL = 200
+    BG = (10, 14, 28)
+    PANEL = (16, 22, 40)
+    WHITE = (245, 247, 255)
+    MUTED = (110, 120, 145)
+    GREEN = (46, 213, 96)
+    RED = (231, 76, 60)
+    GOLD = (255, 196, 0)
+    CYAN = (56, 189, 248)
+
+    left_cx, right_cx = 155, 465
+    wheel_cy = 210
+    spin_frames = 28
+    frame_ms = 70
+
+    font_hdr = _font(14, bold=True)
+    font_name = _font(13, bold=True)
+    font_num = _font(22, bold=True)
+    font_res = _font(44, bold=True)
+    font_sub = _font(16, bold=True)
+
+    def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 8
+
+    def _short(name: str, mx: int = 14) -> str:
+        name = (name or "Player").strip()
+        return (name[: mx - 1] + "…") if len(name) > mx else name
+
+    left_target = _htw_angle_for_number(left_num) + 360.0 * 5
+    right_target = _htw_angle_for_number(right_num) + 360.0 * 5
+    left_start = random.uniform(0, 360)
+    right_start = random.uniform(0, 360)
+
+    def _paste_wheel(base: Image.Image, cx: int, cy: int, angle: float) -> None:
+        wheel = _htw_wheel_rotated(WHEEL, angle)
+        x = cx - WHEEL // 2
+        y = cy - WHEEL // 2
+        base.paste(wheel, (x, y), wheel)
+        # Pointer
+        draw = ImageDraw.Draw(base)
+        px = [cx - 10, cy - WHEEL // 2 - 6, cx + 10, cy - WHEEL // 2 - 6, cx, cy - WHEEL // 2 + 8]
+        draw.polygon(px, fill=GOLD)
+        draw.rectangle([cx - 2, cy - WHEEL // 2 - 10, cx + 2, cy - WHEEL // 2 - 4], fill=GOLD)
+
+    def make_frame(
+        left_angle: float,
+        right_angle: float,
+        *,
+        show_result: bool = False,
+    ) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+
+        draw.rectangle([0, 0, W, 44], fill=PANEL)
+        title = "HTW  •  HEAD TO WHEEL"
+        tw = _tw(draw, title, font_hdr)
+        draw.text(((W - tw) // 2, 12), title, font=font_hdr, fill=CYAN)
+
+        ln, rn = _short(left_name), _short(right_name)
+        lw, rw = _tw(draw, ln, font_name), _tw(draw, rn, font_name)
+        draw.text((left_cx - lw // 2, 52), ln, font=font_name, fill=WHITE)
+        draw.text((right_cx - rw // 2, 52), rn, font=font_name, fill=WHITE)
+
+        _paste_wheel(img, left_cx, wheel_cy, left_angle)
+        _paste_wheel(img, right_cx, wheel_cy, right_angle)
+
+        # VS badge
+        draw.rounded_rectangle([W // 2 - 28, wheel_cy - 18, W // 2 + 28, wheel_cy + 18], radius=12, fill=(28, 36, 58))
+        draw.text((W // 2 - 10, wheel_cy - 10), "VS", font=font_name, fill=GOLD)
+
+        # Number badges
+        for cx, num in ((left_cx, left_num), (right_cx, right_num)):
+            ns = str(num)
+            ncol = _htw_num_color(num)
+            nw = _tw(draw, ns, font_num) + 24
+            bx1, by1 = cx - nw // 2, wheel_cy + WHEEL // 2 + 10
+            draw.rounded_rectangle([bx1, by1, bx1 + nw, by1 + 34], radius=8, fill=ncol)
+            draw.text((bx1 + 12, by1 + 4), ns, font=font_num, fill=WHITE)
+
+        bet_s = f"Bet {_fmt(bet)} pts"
+        bw = _tw(draw, bet_s, font_name)
+        draw.text((W - 14 - bw, H - 28), bet_s, font=font_name, fill=MUTED)
+
+        if show_result:
+            ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(ov)
+            od.rectangle([20, 88, W - 20, H - 50], fill=(0, 0, 0, 170))
+            img = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            oc = GREEN if outcome == "WIN" else (GOLD if outcome == "PUSH" else RED)
+            rw = _tw(draw, outcome, font_res)
+            draw.text(((W - rw) // 2, 130), outcome, font=font_res, fill=oc)
+            sub = f"{left_num}  vs  {right_num}"
+            sw = _tw(draw, sub, font_sub)
+            draw.text(((W - sw) // 2, 188), sub, font=font_sub, fill=WHITE)
+
+        return img
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+
+    for i in range(spin_frames):
+        t = _htw_ease_out((i + 1) / spin_frames)
+        la = left_start + (left_target - left_start) * t
+        ra = right_start + (right_target - right_start) * t
+        frames.append(make_frame(la, ra))
+        durations.append(frame_ms)
+
+    frames.append(make_frame(left_target, right_target, show_result=True))
+    durations.append(4_500)
 
     buf = io.BytesIO()
     frames[0].save(

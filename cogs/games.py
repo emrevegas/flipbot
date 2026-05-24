@@ -1,6 +1,6 @@
 """All casino games as prefix commands.
 
-Games: coinflip, dice, roulette, mines, hilo, blackjack, limbo, slots, chickenroad
+Games: coinflip, dice, roulette, htw, mines, hilo, blackjack, limbo, slots, chickenroad
 """
 from __future__ import annotations
 
@@ -289,6 +289,247 @@ async def _payout(user_id: int | str, game_id: str, bet: float, gross_payout: fl
 async def _record(user_id: int | str, won: bool, bet: float, net: float):
     profit = net - bet if won else -bet
     await db.record_game_result(user_id, won, profit)
+
+
+# ── HTW (Head-to-Head Wheel) ───────────────────────────────────────────────────
+
+_HTW_RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+
+
+def _parse_htw_args(ctx: commands.Context) -> tuple[discord.Member | None, float | None]:
+    """`.htw <bet>` or `.htw @user <bet>`."""
+    parts = ctx.message.content.split()
+    tokens = parts[1:] if len(parts) > 1 else []
+    opponent = ctx.message.mentions[0] if ctx.message.mentions else None
+    bet = None
+    for tok in reversed(tokens):
+        try:
+            bet = float(tok.replace(",", ""))
+            break
+        except ValueError:
+            continue
+    return opponent, bet
+
+
+def _htw_spin_pair(
+    left_id: int,
+    bet: float,
+    *,
+    rig_vs_bot: bool = False,
+) -> tuple[int, int, str]:
+    """Return (left_spin, right_spin, outcome for left: WIN|LOSE|PUSH)."""
+    left_spin = random.randint(0, 36)
+    right_spin = random.randint(0, 36)
+    if rig_vs_bot:
+        right_spin = random.randint(max(left_spin, 0), 36)
+    if left_spin > right_spin:
+        return left_spin, right_spin, "WIN"
+    if left_spin < right_spin:
+        return left_spin, right_spin, "LOSE"
+    return left_spin, right_spin, "PUSH"
+
+
+async def _htw_run_animation(
+    channel: discord.abc.Messageable,
+    *,
+    left_name: str,
+    right_name: str,
+    left_num: int,
+    right_num: int,
+    bet: float,
+    outcome: str,
+    content: str = "",
+) -> discord.Message:
+    gif = await image_gen.render_htw_gif(
+        left_name, right_name, left_num, right_num, bet, outcome,
+    )
+    return await channel.send(
+        content=content or None,
+        file=discord.File(gif, "htw.gif"),
+    )
+
+
+async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
+    await db.ensure_user(ctx.author.id, ctx.author.name)
+    if not await _check_game(ctx, "htw", bet):
+        return
+
+    rigged = await bc.should_rig_outcome(ctx.author.id, "htw", bet)
+    left_n, right_n, outcome = _htw_spin_pair(ctx.author.id, bet, rig_vs_bot=rigged)
+
+    if outcome == "WIN":
+        gross = bet * 2
+        won = True
+    elif outcome == "PUSH":
+        gross = bet
+        won = False
+    else:
+        gross = 0
+        won = False
+
+    net = await _payout(ctx.author.id, "htw", bet, gross)
+    await _record(ctx.author.id, won, bet, net)
+
+    house_name = getattr(config, "BOT_DISPLAY_NAME", "VegasBet")
+    await _htw_run_animation(
+        ctx.channel,
+        left_name=ctx.author.display_name,
+        right_name=house_name,
+        left_num=left_n,
+        right_num=right_n,
+        bet=bet,
+        outcome=outcome,
+        content=ctx.author.mention,
+    )
+
+
+async def _htw_settle_pvp(
+    challenger_id: int,
+    opponent_id: int,
+    bet: float,
+    left_n: int,
+    right_n: int,
+) -> tuple[int | None, str]:
+    """Deduct bets already done. Pay winner. Returns (winner_id or None for tie, outcome for challenger)."""
+    game_cfg = await db.get_game_config("htw")
+    he = float(game_cfg["house_edge"]) if game_cfg else 0.05
+
+    if left_n > right_n:
+        outcome = "WIN"
+        winner_id = challenger_id
+    elif left_n < right_n:
+        outcome = "LOSE"
+        winner_id = opponent_id
+    else:
+        outcome = "PUSH"
+        winner_id = None
+
+    if winner_id is None:
+        await db.add_balance(challenger_id, bet, note="htw pvp push refund")
+        await db.add_balance(opponent_id, bet, note="htw pvp push refund")
+    else:
+        pool = bet * 2
+        payout = pool * (1 - he)
+        loser_id = opponent_id if winner_id == challenger_id else challenger_id
+        wuser = await db.get_user(winner_id)
+        cur = float((wuser or {}).get("balance", 0))
+        capped = await bc.apply_balance_cap(winner_id, cur + payout)
+        payout = max(0.0, capped - cur)
+        if payout > 0:
+            await db.add_balance(winner_id, payout, note="htw pvp win")
+
+    await db.add_wager(challenger_id, bet)
+    await db.add_wager(opponent_id, bet)
+    await _earn_rakeback(challenger_id, bet)
+    await _earn_rakeback(opponent_id, bet)
+
+    win_payout = bet * 2 * (1 - he)
+    if winner_id == challenger_id:
+        await _record(challenger_id, True, bet, win_payout)
+        await _record(opponent_id, False, bet, 0)
+    elif winner_id == opponent_id:
+        await _record(challenger_id, False, bet, 0)
+        await _record(opponent_id, True, bet, win_payout)
+    else:
+        await _record(challenger_id, False, bet, bet)
+        await _record(opponent_id, False, bet, bet)
+
+    return winner_id, outcome
+
+
+class HTWChallengeView(discord.ui.View):
+    def __init__(self, challenger_id: int, opponent_id: int, bet: float):
+        super().__init__(timeout=120)
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
+        self.bet = bet
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in (self.challenger_id, self.opponent_id):
+            await interaction.response.send_message(
+                "This challenge is not for you.", ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.opponent_id:
+            return await interaction.response.send_message(
+                "Only the challenged player can accept.", ephemeral=True,
+            )
+
+        await db.ensure_user(self.challenger_id, "challenger")
+        await db.ensure_user(self.opponent_id, "opponent")
+
+        if not await db.get_game_config("htw"):
+            return await interaction.response.send_message(
+                embed=_err("HTW is disabled."), ephemeral=True,
+            )
+
+        for uid in (self.challenger_id, self.opponent_id):
+            user = await db.get_user(uid)
+            if not user or float(user["balance"]) < self.bet:
+                return await interaction.response.send_message(
+                    embed=_err("One of you no longer has enough balance."),
+                    ephemeral=True,
+                )
+
+        await interaction.response.defer()
+
+        await db.add_balance(self.challenger_id, -self.bet, note="htw pvp bet")
+        await db.add_balance(self.opponent_id, -self.bet, note="htw pvp bet")
+
+        left_n, right_n, outcome = _htw_spin_pair(self.challenger_id, self.bet)
+        winner_id, _ = await _htw_settle_pvp(
+            self.challenger_id, self.opponent_id, self.bet, left_n, right_n,
+        )
+
+        challenger = interaction.guild.get_member(self.challenger_id) if interaction.guild else None
+        opponent = interaction.user if isinstance(interaction.user, discord.Member) else None
+        left_name = challenger.display_name if challenger else str(self.challenger_id)
+        right_name = opponent.display_name if opponent else str(self.opponent_id)
+
+        if winner_id is None:
+            result_txt = f"🤝 **PUSH** — both refunded ({utils.fmt_pts(self.bet)} pts)."
+        elif winner_id == self.challenger_id:
+            result_txt = f"🏆 {left_name} **wins** vs {right_name}!"
+        else:
+            result_txt = f"🏆 {right_name} **wins** vs {left_name}!"
+
+        self.stop()
+        try:
+            await interaction.message.edit(view=None)
+        except Exception:
+            pass
+
+        await _htw_run_animation(
+            interaction.channel,
+            left_name=left_name,
+            right_name=right_name,
+            left_num=left_n,
+            right_num=right_n,
+            bet=self.bet,
+            outcome=outcome,
+            content=f"{result_txt}\n{challenger.mention if challenger else ''} {opponent.mention if opponent else ''}",
+        )
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger, emoji="❌")
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.opponent_id:
+            return await interaction.response.send_message(
+                "Only the challenged player can decline.", ephemeral=True,
+            )
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"❌ {interaction.user.display_name} declined the HTW challenge.",
+            embed=None,
+            view=None,
+        )
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -991,6 +1232,48 @@ class Games(commands.Cog):
             content=f"{'🏆' if won else ('⚖️' if outcome == 'TIE' else '💔')} **{outcome}!** {ctx.author.mention}",
             file=discord.File(img_buf, "roulette.png"),
         )
+
+    # ── HTW (Head-to-Head Wheel) ──────────────────────────────────────────────
+
+    @commands.command(name="htw", aliases=["wheel", "htwheel"])
+    async def htw(self, ctx: commands.Context):
+        """Spin vs house or challenge a player. `.htw <bet>` or `.htw @user <bet>`"""
+        opponent, bet = _parse_htw_args(ctx)
+        if bet is None or bet <= 0:
+            return await ctx.send(embed=_err("Usage: `.htw <bet>` vs bot  •  `.htw @user <bet>` PvP"))
+
+        if opponent is None:
+            return await _htw_play_vs_bot(ctx, bet)
+
+        if opponent.bot:
+            return await ctx.send(embed=_err(
+                "You can't challenge a bot. Use `.htw <bet>` to play vs the house."
+            ))
+        if opponent.id == ctx.author.id:
+            return await ctx.send(embed=_err("You can't challenge yourself."))
+
+        await db.ensure_user(ctx.author.id, ctx.author.name)
+        await db.ensure_user(opponent.id, opponent.name)
+        if not await _check_game(ctx, "htw", bet):
+            return
+
+        opp_row = await db.get_user(opponent.id)
+        if not opp_row or float(opp_row["balance"]) < bet:
+            return await ctx.send(embed=_err(
+                f"{opponent.mention} doesn't have enough balance for this bet."
+            ))
+
+        embed = discord.Embed(
+            title="🎡 HTW Challenge",
+            description=(
+                f"{ctx.author.mention} challenges {opponent.mention} to **Head-to-Head Wheel**!\n\n"
+                f"**Bet:** {utils.fmt_pts(bet)} pts\n"
+                f"Higher spin wins • tie = push\n\n"
+                f"{opponent.mention} — press **Accept** to play."
+            ),
+            color=0xF1C40F,
+        )
+        await ctx.send(embed=embed, view=HTWChallengeView(ctx.author.id, opponent.id, bet))
 
     # ── Limbo ─────────────────────────────────────────────────────────────────
 
