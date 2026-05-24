@@ -23,6 +23,12 @@ class LimboGame(BaseGame):
         return (1.0 - HOUSE_EDGE) / target_multiplier
 
     @staticmethod
+    def roll_result_value() -> float:
+        """Random multiplier: (1 - house_edge) / U(0,1], min 1.00x (Stake-style limbo)."""
+        f = max(random.random(), 0.000001)
+        return max(1.00, round((1.0 - HOUSE_EDGE) / f, 2))
+
+    @staticmethod
     def generate_result(server_seed: str, client_seed: str, nonce: int) -> float:
         """
         Provably fair sonuç üret.
@@ -47,8 +53,7 @@ class LimboGame(BaseGame):
             raw = (1.0 - HOUSE_EDGE) / f
             result_value = max(1.00, round(raw, 2))
         else:
-            chance = self.win_chance(target_multiplier)
-            result_value = max(1.00, round((1.0 - HOUSE_EDGE) / max(random.random(), 0.000001), 2))
+            result_value = self.roll_result_value()
 
         result = "win" if result_value >= target_multiplier else "lose"
         payout = int(bet * target_multiplier) if result == "win" else 0

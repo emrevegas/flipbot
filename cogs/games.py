@@ -996,7 +996,9 @@ class Games(commands.Cog):
 
     @commands.command(name="limbo")
     async def limbo(self, ctx: commands.Context, amount: float, target: float = 2.0):
-        """Limbo — crash below target to win. .limbo 100 2.5"""
+        """Limbo — land at or above target to win. .limbo 100 2.5"""
+        from Games.limbo import LimboGame
+
         await db.ensure_user(ctx.author.id, ctx.author.name)
         if not await _check_game(ctx, "limbo", amount):
             return
@@ -1005,10 +1007,9 @@ class Games(commands.Cog):
 
         rigged = await bc.should_rig_outcome(ctx.author.id, "limbo", amount)
         if rigged:
-            crash = round(random.uniform(1.0, max(1.01, target - 0.01)), 2)
+            crash = round(random.uniform(1.00, max(1.01, target - 0.01)), 2)
         else:
-            crash = round(random.uniform(1.0, target * 2), 2)
-            crash = max(1.0, crash)
+            crash = LimboGame.roll_result_value()
 
         won = crash >= target
         gross = amount * target if won else 0
