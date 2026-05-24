@@ -8,15 +8,22 @@ from database import db
 from modules import flip_utils as utils
 
 
+def _thread_tag(user_id: int) -> str:
+    return f"priv-{user_id}"
+
+
+def _thread_matches(thread: discord.Thread, user_id: int) -> bool:
+    tag = _thread_tag(user_id)
+    return thread.name.endswith(tag) or tag in thread.name
+
+
 async def _get_user_thread(guild: discord.Guild, user_id: int) -> discord.Thread | None:
-    """Find the private thread owned by this user (tagged by name convention)."""
-    tag = f"priv-{user_id}"
+    """Find the private thread owned by this user (tagged in thread name)."""
     for thread in guild.threads:
-        if thread.name.endswith(tag) or tag in (thread.topic or ""):
+        if _thread_matches(thread, user_id):
             return thread
-    # search archived threads
     async for thread in guild.active_threads():
-        if thread.name.endswith(tag):
+        if _thread_matches(thread, user_id):
             return thread
     return None
 
@@ -65,8 +72,8 @@ class Threads(commands.Cog):
                 "Use `.thread close` to archive it first."
             ))
 
-        tag = f"priv-{ctx.author.id}"
-        thread_name = f"{name or ctx.author.display_name} • {ctx.author.id}"[:100]
+        tag = _thread_tag(ctx.author.id)
+        thread_name = f"{name or ctx.author.display_name} • {tag}"[:100]
 
         try:
             thread = await ctx.channel.create_thread(
