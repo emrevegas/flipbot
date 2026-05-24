@@ -451,25 +451,15 @@ class Deposit(commands.Cog):
 
     @commands.command(name="withdraw", aliases=["wd"])
     async def withdraw(self, ctx: commands.Context):
-        """Open the withdrawal panel. .withdraw"""
+        """Crypto withdrawal — pick coin, address, amount; staff approves from log channel."""
         await db.ensure_user(ctx.author.id, ctx.author.name)
         if await db.is_banned(ctx.author.id):
             return await ctx.send(embed=utils.error_embed("You are banned."))
 
-        user = await db.get_user(ctx.author.id)
-        balance = float(user["balance"]) if user else 0.0
-
-        embed = discord.Embed(
-            title="💸 Withdrawal",
-            description=(
-                f"**Your balance:** `{utils.fmt_pts(balance)}` (${utils.pts_to_usd(balance):.2f})\n"
-                f"**Minimum:** 100 pts\n\n"
-                "Click below to request a withdrawal. Funds will be held until staff approves."
-            ),
-            color=0xF59E0B,
-        )
-        view = WithdrawView(ctx.author.id, balance)
-        await ctx.send(embed=embed, view=view)
+        cog = ctx.bot.get_cog("CryptoWithdraw")
+        if cog is None:
+            return await ctx.send(embed=utils.error_embed("Crypto withdraw module is not loaded."))
+        await cog.start_withdrawal_from_ctx(ctx)
 
     @commands.command(name="addmethod")
     async def add_method(self, ctx: commands.Context, name: str, *, details: str = ""):

@@ -1323,6 +1323,51 @@ def send_ltc_from_treasury(to_address: str, amount_satoshis: int) -> str | None:
         raise
 
 
+def send_eth_from_treasury(to_address: str, amount_wei: int) -> str | None:
+    """Send ETH from the treasury wallet (TREASURY_MNEMONIC) to to_address."""
+    fee_wei = eth_transfer_fee_wei()
+    if amount_wei <= fee_wei:
+        raise ValueError(f"Amount ({amount_wei} wei) is below the fee threshold.")
+    try:
+        acct = _eth_account_from_index(0, treasury=True)
+        from_addr = acct.address
+        bal = _eth_balance_wei(from_addr)
+        if bal < amount_wei:
+            raise ValueError(f"Insufficient treasury ETH: {bal} wei, need {amount_wei} wei.")
+
+        send_wei = amount_wei - fee_wei
+        nonce_data = _eth_rpc_call("eth_getTransactionCount", [from_addr, "pending"])
+        if "error" in nonce_data:
+            raise RuntimeError(f"nonce error: {nonce_data}")
+        nonce = int(nonce_data["result"], 16)
+
+        tx = {
+            "nonce": nonce,
+            "to": to_address,
+            "value": send_wei,
+            "gas": ETH_GAS_LIMIT,
+            "gasPrice": _eth_gas_price_wei(),
+            "chainId": 1,
+        }
+        signed = acct.sign_transaction(tx)
+        raw = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction", None)
+        if raw is None:
+            return None
+        raw_hex = raw.hex() if isinstance(raw, bytes) else str(raw)
+        if not raw_hex.startswith("0x"):
+            raw_hex = "0x" + raw_hex
+
+        send_data = _eth_rpc_call("eth_sendRawTransaction", [raw_hex])
+        if "error" in send_data:
+            raise RuntimeError(str(send_data["error"]))
+        tx_hash = send_data.get("result")
+        print(f"[Treasury SendETH] → {to_address}  tx={tx_hash}")
+        return tx_hash
+    except Exception as e:
+        print(f"[Treasury SendETH] Error: {e}")
+        raise
+
+
 # ── Transaction confirmation checks ───────────────────────────────────────────
 
 def check_sol_tx_finalized(signature: str) -> bool:
@@ -1347,6 +1392,20 @@ def check_ltc_tx_confirmed(txid: str, min_confirmations: int = 3) -> bool:
             timeout=10,
         )
         return int(r.json().get("confirmations", 0)) >= min_confirmations
+    except Exception:
+        return False
+
+
+def check_eth_tx_confirmed(tx_hash: str) -> bool:
+    """Return True if ETH tx has a successful receipt."""
+    try:
+        data = _eth_rpc_call("eth_getTransactionReceipt", [tx_hash])
+        if "error" in data:
+            return False
+        receipt = data.get("result")
+        if not receipt:
+            return False
+        return int(receipt.get("status", "0x0"), 16) == 1
     except Exception:
         return False
 

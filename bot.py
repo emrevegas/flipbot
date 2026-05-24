@@ -41,6 +41,7 @@ COGS = [
     "cogs.threads",
     "cogs.help_cmd",
     "cogs.crypto_deposit",
+    "cogs.crypto_withdraw",
     "cogs.ingame_deposit",
     "cogs.private_rooms",
     "cogs.live_blackjack",
@@ -76,6 +77,20 @@ class FlipBot(commands.Bot):
                 log.info(f"Loaded {cog}")
             except Exception:
                 log.error(f"Failed to load {cog}:\n{traceback.format_exc()}")
+        # Re-register pending crypto withdrawal approval buttons
+        try:
+            from cogs.crypto_withdraw import WithdrawApprovalView
+            from modules.database import get_data
+
+            withdrawals = get_data("server/crypto_withdrawals") or {}
+            n = sum(1 for w in withdrawals.values() if w.get("status") == "pending")
+            for wid, w in withdrawals.items():
+                if w.get("status") == "pending":
+                    self.add_view(WithdrawApprovalView(wid))
+            if n:
+                log.info(f"Registered {n} pending crypto withdrawal views")
+        except Exception:
+            log.error(f"Failed to register withdrawal views:\n{traceback.format_exc()}")
         # Sync slash commands
         synced = await self.tree.sync()
         log.info(f"Synced {len(synced)} slash commands")
