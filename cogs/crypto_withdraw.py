@@ -568,16 +568,15 @@ class CryptoWithdraw(commands.Cog):
 
     async def start_withdrawal_from_ctx(self, ctx: commands.Context) -> None:
         from cogs.crypto_withdraw_v2 import build_withdraw_coin_layout, build_withdraw_disabled_layout
+        from modules.ui_v2 import send_channel_v2
 
         ok, msg, warning = self._validate_crypto_ready()
         if not ok:
             layout = build_withdraw_disabled_layout("Unavailable", msg, warning=warning)
-            return await ctx.send(view=layout)
+            return await send_channel_v2(ctx.channel, layout)
 
-        await ctx.send(
-            content=f"<@{ctx.author.id}> — select a coin to withdraw (only you can use this menu).",
-            view=build_withdraw_coin_layout(ctx.author.id),
-        )
+        layout = build_withdraw_coin_layout(ctx.author.id)
+        await send_channel_v2(ctx.channel, layout)
 
 
 async def setup(bot: discord.Client):

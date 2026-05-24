@@ -121,7 +121,8 @@ def build_withdraw_coin_layout(user_id: int) -> ui.LayoutView:
         title="Crypto Withdrawal",
         body=(
             "Select the cryptocurrency you want to withdraw.\n"
-            "Your balance is deducted when you submit the request."
+            "Your balance is deducted when you submit the request.\n\n"
+            "*Only you can use this menu — others cannot interact with it.*"
         ),
         footer="VegasBet | Crypto",
         emoji="💸",
