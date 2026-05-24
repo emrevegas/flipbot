@@ -1480,7 +1480,10 @@ class Games(commands.Cog):
             return
 
         await db.add_balance(ctx.author.id, -bet, note="crystals bet")
-        gif, _ = await _crystals_play(bet, ctx.author.display_name, ctx.author.id)
+        gif, _ = await _crystals_play(
+            bet, ctx.author.display_name, ctx.author.id,
+            ctx.author if isinstance(ctx.author, discord.Member) else None,
+        )
         await ctx.send(
             file=discord.File(gif, "crystals.gif"),
             view=_CrystalsResultView(ctx.author.id, bet),
@@ -1615,7 +1618,10 @@ class Games(commands.Cog):
         net = max(0.0, net_capped_bal - current_bal)
         await db.add_balance(user_id, net, note="mines cashout")
         await db.add_wager(user_id, bet)
-        await _earn_rakeback(user_id, bet, interaction.user if isinstance(interaction.user, discord.Member) else None)
+        await _earn_rakeback(
+            user_id, bet,
+            ctx.author if isinstance(ctx.author, discord.Member) else None,
+        )
         await _record(user_id, True, bet, net)
         await db.clear_game_session(user_id)
         for mid, uid in list(_mines_msg_to_user.items()):
@@ -1638,7 +1644,12 @@ async def setup(bot: commands.Bot):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def _crystals_play(bet: float, username: str, user_id: int) -> tuple[io.BytesIO, float]:
+async def _crystals_play(
+    bet: float,
+    username: str,
+    user_id: int,
+    member: discord.Member | None = None,
+) -> tuple[io.BytesIO, float]:
     """Run crystals round: deduct bet, compute outcome, return reveal GIF + net_change."""
     crystals = random.choices(image_gen.CRYSTAL_TYPES, k=5)
     combo    = image_gen.crystals_get_combo(crystals)
@@ -1674,7 +1685,12 @@ async def _crystals_start_from_interaction(
         return
 
     await db.add_balance(user_id, -bet, note="crystals re-bet")
-    gif, _ = await _crystals_play(bet, interaction.user.display_name, user_id)
+    gif, _ = await _crystals_play(
+        bet,
+        interaction.user.display_name,
+        user_id,
+        interaction.user if isinstance(interaction.user, discord.Member) else None,
+    )
     await interaction.response.edit_message(
         attachments=[discord.File(gif, "crystals.gif")],
         view=_CrystalsResultView(user_id, bet),
