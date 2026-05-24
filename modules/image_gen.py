@@ -728,40 +728,88 @@ HTW_WHEEL_ORDER: list[int] = [
     8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26,
 ]
 HTW_RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-HTW_WHEEL_ANGLE_OFFSET = 0.0  # tweak if pointer alignment is off on the asset
-_htw_wheel_src: Image.Image | None = None
+HTW_POCKET_STEP = 360.0 / 37.0
+_htw_wheel_cache: dict[int, Image.Image] = {}
 
 
-def _htw_wheel_src_image() -> Image.Image:
-    global _htw_wheel_src
-    if _htw_wheel_src is None:
-        path = Path(__file__).parent.parent / "assets" / "games" / "roulette_wheel.png"
-        _htw_wheel_src = Image.open(path).convert("RGBA")
-    return _htw_wheel_src
+def _htw_pocket_fill(n: int) -> tuple[int, int, int]:
+    if n == 0:
+        return (32, 150, 78)
+    if n in HTW_RED_NUMBERS:
+        return (196, 42, 48)
+    return (18, 22, 32)
 
 
 def _htw_angle_for_number(num: int) -> float:
+    """Rotation (degrees) so this pocket sits under the top pointer."""
     idx = HTW_WHEEL_ORDER.index(int(num))
-    step = 360.0 / 37.0
-    return HTW_WHEEL_ANGLE_OFFSET - idx * step
+    return -idx * HTW_POCKET_STEP
 
 
 def _htw_ease_out(t: float) -> float:
     t = min(1.0, max(0.0, t))
-    return 1.0 - (1.0 - t) ** 3.0
+    return 1.0 - (1.0 - t) ** 2.6
+
+
+def _htw_build_wheel(size: int) -> Image.Image:
+    """Procedural European roulette wheel (RGBA). Cached per size."""
+    if size in _htw_wheel_cache:
+        return _htw_wheel_cache[size]
+
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    cx = cy = size // 2
+    outer = size // 2 - 3
+    inner = max(18, int(outer * 0.30))
+    step = HTW_POCKET_STEP
+    font_pocket = _font(max(8, size // 20), bold=True)
+    gold = (255, 196, 0)
+    rim = (58, 66, 88)
+
+    bbox = [cx - outer, cy - outer, cx + outer, cy + outer]
+    for i, num in enumerate(HTW_WHEEL_ORDER):
+        start = 90 - (i + 1) * step
+        end = 90 - i * step
+        draw.pieslice(bbox, start, end, fill=_htw_pocket_fill(num))
+        draw.pieslice(bbox, start, end, outline=(0, 0, 0, 90), width=1)
+
+    draw.ellipse(bbox, outline=gold, width=max(2, size // 64))
+    draw.ellipse(
+        [cx - outer + 6, cy - outer + 6, cx + outer - 6, cy + outer - 6],
+        outline=rim, width=2,
+    )
+
+    # Inner hub + spinner cross
+    draw.ellipse([cx - inner, cy - inner, cx + inner, cy + inner], fill=(36, 44, 62), outline=gold, width=2)
+    arm = inner - 6
+    draw.line([(cx - arm, cy), (cx + arm, cy)], fill=(200, 208, 225), width=3)
+    draw.line([(cx, cy - arm), (cx, cy + arm)], fill=(200, 208, 225), width=3)
+    draw.ellipse([cx - 5, cy - 5, cx + 5, cy + 5], fill=gold)
+
+    # Pocket numbers
+    text_r = (outer + inner) * 0.52
+    for i, num in enumerate(HTW_WHEEL_ORDER):
+        mid_rad = math.radians(90 - (i + 0.5) * step)
+        tx = cx + text_r * math.cos(mid_rad)
+        ty = cy + text_r * math.sin(mid_rad)
+        ns = str(num)
+        try:
+            tw = draw.textlength(ns, font=font_pocket)
+        except Exception:
+            tw = len(ns) * 6
+        draw.text((tx - tw / 2, ty - 7), ns, font=font_pocket, fill=(255, 255, 255))
+
+    _htw_wheel_cache[size] = img
+    return img
 
 
 def _htw_wheel_rotated(size: int, angle_deg: float) -> Image.Image:
-    src = _htw_wheel_src_image().resize((size, size), Image.LANCZOS)
-    return src.rotate(angle_deg, resample=Image.BICUBIC, center=(size // 2, size // 2))
+    base = _htw_build_wheel(size)
+    return base.rotate(angle_deg, resample=Image.BILINEAR, center=(size // 2, size // 2))
 
 
 def _htw_num_color(n: int) -> tuple[int, int, int]:
-    if n == 0:
-        return (46, 180, 90)
-    if n in HTW_RED_NUMBERS:
-        return (220, 55, 55)
-    return (235, 235, 245)
+    return _htw_pocket_fill(n)
 
 
 async def render_htw_gif(
@@ -786,8 +834,8 @@ async def render_htw_gif(
 
     left_cx, right_cx = 155, 465
     wheel_cy = 210
-    spin_frames = 28
-    frame_ms = 70
+    spin_frames = 16
+    frame_ms = 50
 
     font_hdr = _font(14, bold=True)
     font_name = _font(13, bold=True)
@@ -805,8 +853,8 @@ async def render_htw_gif(
         name = (name or "Player").strip()
         return (name[: mx - 1] + "…") if len(name) > mx else name
 
-    left_target = _htw_angle_for_number(left_num) + 360.0 * 5
-    right_target = _htw_angle_for_number(right_num) + 360.0 * 5
+    left_target = _htw_angle_for_number(left_num) + 360.0 * 4
+    right_target = _htw_angle_for_number(right_num) + 360.0 * 4
     left_start = random.uniform(0, 360)
     right_start = random.uniform(0, 360)
 
@@ -831,7 +879,7 @@ async def render_htw_gif(
         draw = ImageDraw.Draw(img)
 
         draw.rectangle([0, 0, W, 44], fill=PANEL)
-        title = "HTW  •  HEAD TO WHEEL"
+        title = "HTW  •  HEAD TO HEAD WHEEL"
         tw = _tw(draw, title, font_hdr)
         draw.text(((W - tw) // 2, 12), title, font=font_hdr, fill=CYAN)
 
