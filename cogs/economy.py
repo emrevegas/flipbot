@@ -5,7 +5,7 @@ import discord
 from discord.ext import commands
 
 from database import db
-from modules import image_gen, utils
+from modules import image_gen, flip_utils as utils
 
 
 class Economy(commands.Cog):

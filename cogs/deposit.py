@@ -238,7 +238,7 @@ class _WithdrawModal(discord.ui.Modal):
 
         cashier_embed = discord.Embed(title="💸 Withdrawal Request", color=0xE74C3C)
         cashier_embed.add_field(name="User", value=f"<@{self.user_id}>", inline=True)
-        cashier_embed.add_field(name="Amount", value=f"`{utils.fmt_pts(amount)} pts` (${amount/config.POINTS_PER_USD:.2f})", inline=True)
+        cashier_embed.add_field(name="Amount", value=f"`{utils.fmt_pts(amount)}` (${utils.pts_to_usd(amount):.2f})", inline=True)
         cashier_embed.add_field(name="Method/Address", value=self.method_input.value, inline=False)
         cashier_embed.add_field(name="Ref ID", value=f"`{req_id}`", inline=True)
         cashier_embed.set_footer(text="Funds held. Approve = send & release | Deny = refund.")
@@ -422,31 +422,31 @@ class Deposit(commands.Cog):
 
     @commands.command(name="deposit", aliases=["dep"])
     async def deposit(self, ctx: commands.Context):
-        """Open the deposit panel. .deposit"""
+        """Open deposit hub — crypto, in-game (Growtopia), and panel payment methods."""
         await db.ensure_user(ctx.author.id, ctx.author.name)
         if await db.is_banned(ctx.author.id):
             return await ctx.send(embed=utils.error_embed("You are banned."))
+        if ctx.guild is None:
+            return await ctx.send(embed=utils.error_embed("Use this command in a server channel."))
 
-        methods = await db.get_active_payment_methods()
-        embed = discord.Embed(
-            title="💳 Deposit",
-            description=(
-                f"**Rate:** {int(config.POINTS_PER_USD)} pts = $1.00 USD\n"
-                f"**Minimum:** 100 pts ($1.00)\n\n"
-                "Select a payment method below to submit a deposit request."
-            ),
-            color=0x2ECC71,
+        from modules.deposit_hub import (
+            build_deposit_hub_embed,
+            collect_deposit_methods,
+            PrefixDepositView,
+            resolve_user_lang,
         )
-        if methods:
-            embed.add_field(
-                name="Available Methods",
-                value="\n".join(f"• **{m['name']}**" + (f" — {m['details'][:60]}" if m.get("details") else "") for m in methods),
-                inline=False,
-            )
-        else:
-            embed.add_field(name="Methods", value="Contact staff — no self-serve methods configured yet.", inline=False)
 
-        view = DepositView(methods, ctx.author.id)
+        methods = collect_deposit_methods()
+        if not methods:
+            return await ctx.send(
+                embed=utils.error_embed(
+                    "No deposit methods are available. Ask staff to configure crypto or payment methods in `/panel`."
+                )
+            )
+
+        lang = resolve_user_lang(ctx.author.id)
+        embed = build_deposit_hub_embed(lang)
+        view = PrefixDepositView(ctx.author.id, methods, lang)
         await ctx.send(embed=embed, view=view)
 
     @commands.command(name="withdraw", aliases=["wd"])
@@ -462,7 +462,7 @@ class Deposit(commands.Cog):
         embed = discord.Embed(
             title="💸 Withdrawal",
             description=(
-                f"**Your balance:** `{utils.fmt_pts(balance)} pts` (${balance/config.POINTS_PER_USD:.2f})\n"
+                f"**Your balance:** `{utils.fmt_pts(balance)}` (${utils.pts_to_usd(balance):.2f})\n"
                 f"**Minimum:** 100 pts\n\n"
                 "Click below to request a withdrawal. Funds will be held until staff approves."
             ),

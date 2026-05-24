@@ -1,54 +1,54 @@
-"""Shared utilities."""
+"""Shared utilities — rakeback tiers from /panel, USD via exchange rate."""
+
 from __future__ import annotations
 
 import discord
+
 import config
-
-# ── Rakeback tier cache ────────────────────────────────────────────────────────
-# Loaded from DB at startup and refreshed whenever tiers are modified via /panel.
-# Sync callers (games, rakeback cog, etc.) read from this cache.
-
-_tier_cache: list[dict] = [
-    {"name": "Bronze",   "min_wagered": 0,       "rate": 0.03},
-    {"name": "Silver",   "min_wagered": 5_000,   "rate": 0.05},
-    {"name": "Gold",     "min_wagered": 25_000,  "rate": 0.08},
-    {"name": "Platinum", "min_wagered": 100_000, "rate": 0.12},
-    {"name": "Diamond",  "min_wagered": 500_000, "rate": 0.18},
-]
+from modules import rakeback_engine
 
 
 async def refresh_tier_cache() -> None:
-    """Reload tier cache from DB. Call after any tier add/edit/delete."""
-    from database import db as _db
-    rows = await _db.get_rakeback_tiers()
-    if rows:
-        global _tier_cache
-        _tier_cache = sorted(rows, key=lambda r: r["min_wagered"])
+    """Tiers are read live from panel settings."""
+    return
 
 
-def get_rakeback_tier(total_wagered: float) -> dict:
-    best = _tier_cache[0]
-    for tier in _tier_cache:
-        if total_wagered >= tier["min_wagered"]:
-            best = tier
-    return best
+def get_rakeback_tier(
+    total_wagered: float,
+    member: discord.Member | None = None,
+) -> dict:
+    return rakeback_engine.resolve_tier(total_wagered, member)
 
 
-def get_next_rakeback_tier(total_wagered: float) -> dict | None:
-    for tier in _tier_cache:
-        if total_wagered < tier["min_wagered"]:
-            return tier
-    return None
+def get_next_rakeback_tier(
+    total_wagered: float,
+    member: discord.Member | None = None,
+) -> dict | None:
+    nxt = rakeback_engine.next_tier_goal(total_wagered, member)
+    if not nxt:
+        return None
+    return {"name": nxt["name"], "min_wagered": nxt["min_wagered"], "rate": nxt["rate"]}
 
 
 def get_all_tiers() -> list[dict]:
-    return list(_tier_cache)
+    tiers = rakeback_engine.all_tiers_display()
+    if tiers:
+        return [
+            {
+                "name": t["role_name"],
+                "min_wagered": t["min_wagered"],
+                "rate": t["rate"],
+                "percentage": t["percentage"],
+                "role_id": t["role_id"],
+            }
+            for t in tiers
+        ]
+    return [{"name": "Default", "min_wagered": 0, "rate": 0.03, "percentage": 3.0, "role_id": None}]
 
-
-# ── General helpers ────────────────────────────────────────────────────────────
 
 def pts_to_usd(pts: float) -> float:
-    return pts / config.POINTS_PER_USD
+    from modules.economy import coins_to_usd
+    return coins_to_usd(pts)
 
 
 def fmt_pts(n: float) -> str:

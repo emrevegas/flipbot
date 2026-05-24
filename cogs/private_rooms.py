@@ -434,33 +434,25 @@ class EntertainmentSelect(discord.ui.Select):
 
     async def show_rakeback_info(self, interaction: discord.Interaction):
         """Show the user's rakeback status and withdrawal button."""
-        from modules.player import Player
-        from modules.utils import format_balance, get_user_lang
+        from database import db as flip_db
+        from modules.rakeback_engine import get_min_withdrawal, resolve_tier
+        from modules.utils import get_user_lang
 
         user_id = interaction.user.id
         lang = get_user_lang(user_id)
-        player = Player(user_id)
-        rakeback_data = player.get_rakeback_data()
-        accumulated = int(rakeback_data.get("accumulated", 0))
-        total_earned = int(rakeback_data.get("total_earned", 0))
+        user = await flip_db.get_user(user_id)
+        accumulated = int(float((user or {}).get("rakeback_accumulated", 0)))
+        total_earned = int(float((user or {}).get("rakeback_accumulated", 0)) + float((user or {}).get("rakeback_total_claimed", 0)))
+        total_wagered = int(float((user or {}).get("total_wagered", 0)))
+        min_withdrawal = get_min_withdrawal()
 
-        settings = get_data("server/rakeback_settings") or {}
-        tiers = settings.get("tiers", [])
-        min_withdrawal = int(settings.get("min_withdrawal", 100))
-
-        # Find the player's best qualifying tier
-        stats = get_user_data(user_id, "stats") or {}
-        total_wagered = int(stats.get("total_wagered", 0))
-        member_role_ids = {str(role.id) for role in interaction.user.roles}
-
-        best_tier = None
-        for tier in tiers:
-            if str(tier.get("role_id")) not in member_role_ids:
-                continue
-            if total_wagered < int(tier.get("min_wagered", 0)):
-                continue
-            if best_tier is None or tier.get("percentage", 0) > best_tier.get("percentage", 0):
-                best_tier = tier
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        tier = resolve_tier(float(total_wagered), member)
+        best_tier = {
+            "role_id": tier.get("role_id"),
+            "role_name": tier.get("name"),
+            "percentage": tier.get("percentage", tier.get("rate", 0) * 100),
+        } if float(tier.get("rate", 0)) > 0 else None
 
         from cogs.room_panels_v2 import build_rakeback_layout
         from modules.ui_v2 import send_ephemeral
@@ -2857,11 +2849,12 @@ class DepositMethodFlowSelect(discord.ui.Select):
 class GrowIDDepositModal(discord.ui.Modal):
     """Collect / confirm GrowID, then show in-game deposit instructions."""
 
-    def __init__(self, user_id: str, lang: str, ingame_cfg: dict):
+    def __init__(self, user_id: str, lang: str, ingame_cfg: dict, *, skip_bonus: bool = False):
         super().__init__(title=t("deposit.growid_modal_title", lang=lang))
         self.user_id = user_id
         self.lang = lang
         self.ingame_cfg = ingame_cfg
+        self.skip_bonus = skip_bonus
 
         existing = get_user_data(int(user_id), "growid") or {}
         current = (existing.get("growid") or "") if isinstance(existing, dict) else ""
@@ -2895,12 +2888,15 @@ class GrowIDDepositModal(discord.ui.Modal):
         bot_name = str(self.ingame_cfg.get("bot_name", "")).strip()
         rate = float(self.ingame_cfg.get("dl_to_coin_rate", 0) or 0)
 
-        from cogs.deposit_bonus_ui import show_bonus_picker_or_skip
-        from modules.ui_v2 import build_detail_panel, send_ephemeral
-
         instructions_view = build_ingame_instructions_view(
             self.lang, world, bot_name, growid, rate
         )
+
+        if self.skip_bonus:
+            return await interaction.response.send_message(view=instructions_view)
+
+        from cogs.deposit_bonus_ui import show_bonus_picker_or_skip
+        from modules.ui_v2 import send_ephemeral
 
         async def _after_bonus(inter: discord.Interaction, _bonus_id: str | None):
             await send_ephemeral(inter, instructions_view)
@@ -2981,7 +2977,15 @@ class DepositAmountModal(discord.ui.Modal, title="💳 Start Deposit"):
         max_length=10,
     )
 
-    def __init__(self, user_id: str, method_key: str, method_info: dict, lang: str):
+    def __init__(
+        self,
+        user_id: str,
+        method_key: str,
+        method_info: dict,
+        lang: str,
+        *,
+        skip_bonus_field: bool = False,
+    ):
         super().__init__()
         self.user_id = user_id
         self.method_key = method_key
@@ -2989,15 +2993,16 @@ class DepositAmountModal(discord.ui.Modal, title="💳 Start Deposit"):
         self.lang = lang
 
         self.bonus_select = None
-        enabled_bonuses = bonus_engine.get_enabled_bonus_templates()
-        if enabled_bonuses:
-            bonus_select_comp = BonusSelect(enabled_bonuses, lang=self.lang)
-            bonus_label = discord.ui.Label(
-                text=t("bonus.modal_label", lang=self.lang),
-                component=bonus_select_comp,
-            )
-            self.bonus_select = bonus_label
-            self.add_item(bonus_label)
+        if not skip_bonus_field:
+            enabled_bonuses = bonus_engine.get_enabled_bonus_templates()
+            if enabled_bonuses:
+                bonus_select_comp = BonusSelect(enabled_bonuses, lang=self.lang)
+                bonus_label = discord.ui.Label(
+                    text=t("bonus.modal_label", lang=self.lang),
+                    component=bonus_select_comp,
+                )
+                self.bonus_select = bonus_label
+                self.add_item(bonus_label)
 
     async def on_submit(self, inter: discord.Interaction):
         if str(inter.user.id) != str(self.user_id):
@@ -3040,6 +3045,8 @@ class DepositAmountModal(discord.ui.Modal, title="💳 Start Deposit"):
             val = self.bonus_select.component.values[0]
             if val != "__none__":
                 selected_bonus_id = val
+        if not selected_bonus_id:
+            selected_bonus_id = bonus_engine.get_pending_deposit_bonus(int(self.user_id))
 
         # Create ticket-like deposit request
         user_id_int = int(self.user_id)
@@ -4092,50 +4099,21 @@ class PromoCodeInputModal(discord.ui.Modal, title="🎟️ Redeem Promo Code"):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         ptype = template.get("type", "balance")
-
+        new_balance = None
         if ptype == "balance":
             reward = int(template.get("reward_amount", 0))
-            wager_req = int(reward * float(template.get("wager_multiplier", 1.0)))
-            # Credit balance immediately
             player = Player(self.user_id)
             player.add_balance("real", reward)
+            new_balance = float(player.get_balance("real"))
 
-            embed = discord.Embed(
-                title="🎉  Promo Code Redeemed!",
-                description=(
-                    f"**Code:** `{code}`\n\n"
-                    f"✅ **{format_balance(reward, 'real')}** has been added to your balance!\n\n"
-                    f"⚠️ **Wagering Requirement:** You must wager **{format_balance(wager_req, 'real')}** "
-                    f"in real-money games before this bonus is considered complete.\n\n"
-                    f"> Start playing to clear your wager requirement!"
-                ),
-                color=discord.Color.green(),
-            )
-            embed.set_thumbnail(url=interaction.user.display_avatar.url)
-            embed.set_footer(text="Vegas Casino | Promo Code System")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        else:  # freegame
-            game      = template.get("game", "mines").title()
-            rounds    = int(template.get("rounds", 0))
-            bet_amt   = int(template.get("bet_amount", 0))
-            wager_m   = float(template.get("wager_multiplier", 1.0))
-
-            embed = discord.Embed(
-                title="🎮  Free Bet Activated!",
-                description=(
-                    f"**Code:** `{code}`\n\n"
-                    f"You have **{rounds}** free rounds of **{game}**!\n"
-                    f"Bet per round: **{format_balance(bet_amt, 'real')}**\n\n"
-                    f"⚠️ After all rounds are played, your total winnings will be credited to your balance "
-                    f"with a **{wager_m}× wager requirement**.\n\n"
-                    f"> Go to the **🎲 Games** menu and select **{game}** to start your free rounds!"
-                ),
-                color=0x9b59b6,
-            )
-            embed.set_thumbnail(url=interaction.user.display_avatar.url)
-            embed.set_footer(text="Vegas Casino | Free Bet System")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        await promo_engine.send_promo_redeemed_image(
+            interaction,
+            user=interaction.user,
+            code=code,
+            template=template,
+            new_balance=new_balance,
+            ephemeral=True,
+        )
 
 
 class PromoRedeemView(discord.ui.View):

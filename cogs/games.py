@@ -18,8 +18,75 @@ from discord.ext import commands
 import config
 from database import db
 from modules import image_gen, flip_utils as utils, flip_balance_cap as bc
+from modules.database import get_data
 
 GAME_TIMEOUT = 120  # seconds for interactive games
+
+
+async def _earn_rakeback(
+    user_id: int | str,
+    wager_amount: float,
+    member: discord.Member | None = None,
+) -> None:
+    if wager_amount <= 0:
+        return
+    user = await db.get_user(user_id)
+    total_wagered = float((user or {}).get("total_wagered", 0))
+    tier = utils.get_rakeback_tier(total_wagered, member)
+    rate = float(tier.get("rate", 0))
+    if rate > 0:
+        await db.add_rakeback(user_id, wager_amount * rate)
+
+
+def _parse_btn_emoji(s: str):
+    """Unicode or <:name:id> custom emoji for discord.ui.Button."""
+    if not s:
+        return "❓"
+    s = str(s).strip()
+    if s.startswith("<") and ":" in s:
+        try:
+            return discord.PartialEmoji.from_str(s)
+        except Exception:
+            return "❓"
+    return s
+
+
+def _get_mines_settings() -> dict:
+    """Mines house edge + emojis from panel (server/games.mines)."""
+    games_data = get_data("server/games") or {}
+    mines_data = games_data.get("mines", {}) if isinstance(games_data, dict) else {}
+    if not isinstance(mines_data, dict):
+        mines_data = {}
+
+    house_edge_percent = mines_data.get("house_edge", 15.0)
+    try:
+        house_edge_percent = float(house_edge_percent)
+    except (TypeError, ValueError):
+        house_edge_percent = 15.0
+    house_edge_percent = max(0.0, min(99.99, house_edge_percent))
+
+    emojis = mines_data.get("emojis", {}) if isinstance(mines_data.get("emojis"), dict) else {}
+    game_emoji = str(mines_data.get("emoji", "💣") or "💣")
+    hidden_emoji = str(emojis.get("hidden", "❓") or "❓")
+    gem_emoji = str(emojis.get("gem", "💎") or "💎")
+    mine_emoji = str(emojis.get("mine", "💣") or "💣")
+
+    rigged_chance = mines_data.get("rigged_chance", 5.0)
+    try:
+        rigged_chance = float(rigged_chance)
+    except (TypeError, ValueError):
+        rigged_chance = 5.0
+    rigged_chance = max(0.0, min(100.0, rigged_chance))
+
+    return {
+        "house_edge_percent": house_edge_percent,
+        "house_edge_decimal": house_edge_percent / 100.0,
+        "game": game_emoji,
+        "hidden": hidden_emoji,
+        "gem": gem_emoji,
+        "mine": mine_emoji,
+        "rigged_chance": rigged_chance,
+    }
 
 
 # ── shared helpers ─────────────────────────────────────────────────────────────
@@ -119,8 +186,7 @@ async def _bj_auto_stand(user_id: int, msg: discord.Message | None = None) -> No
         await db.add_balance(user_id, net, note="blackjack timeout payout")
 
     await db.add_wager(user_id, total_bet)
-    tier = utils.get_rakeback_tier(float((await db.get_user(user_id) or {}).get("total_wagered", 0)))
-    await db.add_rakeback(user_id, total_bet * tier["rate"])
+    await _earn_rakeback(user_id, total_bet)
     await _record(user_id, won, total_bet, net)
     await db.clear_game_session(user_id)
     for mid, uid in list(_bj_msg_to_user.items()):
@@ -212,11 +278,7 @@ async def _payout(user_id: int | str, game_id: str, bet: float, gross_payout: fl
         await db.add_balance(user_id, net, note=f"{game_id} payout")
     await db.add_wager(user_id, bet)
 
-    tier = utils.get_rakeback_tier(
-        float((await db.get_user(user_id) or {}).get("total_wagered", 0))
-    )
-    rb = bet * tier["rate"]
-    await db.add_rakeback(user_id, rb)
+    await _earn_rakeback(user_id, bet)
 
     return net
 
@@ -234,9 +296,10 @@ _mines_msg_to_user: dict[str, int] = {}  # message_id -> user_id
 
 
 class _MinesCell(discord.ui.Button):
-    def __init__(self, r: int, c: int, message_id: str):
+    def __init__(self, r: int, c: int, message_id: str, *, hidden_emoji):
         super().__init__(
-            style=discord.ButtonStyle.secondary, emoji="⬜",
+            style=discord.ButtonStyle.secondary,
+            emoji=hidden_emoji,
             row=r, custom_id=f"mc_{r}{c}_{message_id}",
         )
         self.r = r
@@ -287,6 +350,10 @@ class MinesGridView(discord.ui.View):
         self._game_over = game_over
         mine_set = set(state["mines"])
         revealed = set(state["revealed"])
+        ms = _get_mines_settings()
+        gem_emoji = _parse_btn_emoji(ms["gem"])
+        mine_emoji = _parse_btn_emoji(ms["mine"])
+        hidden_emoji = _parse_btn_emoji(ms["hidden"])
 
         for r in range(4):
             for c in range(5):
@@ -295,7 +362,7 @@ class MinesGridView(discord.ui.View):
                     is_mine = idx in mine_set
                     btn = discord.ui.Button(
                         style=discord.ButtonStyle.danger if is_mine else discord.ButtonStyle.success,
-                        emoji="💣" if is_mine else "💎",
+                        emoji=mine_emoji if is_mine else gem_emoji,
                         row=r, disabled=True,
                         custom_id=f"mr_{r}{c}_{message_id}",
                     )
@@ -303,12 +370,12 @@ class MinesGridView(discord.ui.View):
                     is_mine = idx in mine_set
                     btn = discord.ui.Button(
                         style=discord.ButtonStyle.danger if is_mine else discord.ButtonStyle.secondary,
-                        emoji="💣" if is_mine else "💎",
+                        emoji=mine_emoji if is_mine else gem_emoji,
                         row=r, disabled=True,
                         custom_id=f"mo_{r}{c}_{message_id}",
                     )
                 else:
-                    btn = _MinesCell(r, c, message_id)
+                    btn = _MinesCell(r, c, message_id, hidden_emoji=hidden_emoji)
                 self.add_item(btn)
 
         mult = state["multiplier"]
@@ -376,17 +443,15 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
     if hit_mine:
         await db.clear_game_session(user_id)
         await db.add_wager(user_id, bet)
-        tier = utils.get_rakeback_tier(
-            float((await db.get_user(user_id) or {}).get("total_wagered", 0))
-        )
-        await db.add_rakeback(user_id, bet * tier["rate"])
+        await _earn_rakeback(user_id, bet)
         await _record(user_id, False, bet, 0)
         _mines_msg_to_user.pop(msg_id, None)
 
+        ms = _get_mines_settings()
         view = MinesGridView(state, msg_id, user_id, game_over=True)
-        embed = discord.Embed(title="💥 Mines — BOOM!", color=0xE74C3C)
+        embed = discord.Embed(title=f"💥 {ms['game']} — BOOM!", color=0xE74C3C)
         embed.add_field(name="Bet", value=f"`{utils.fmt_pts(bet)} pts`", inline=True)
-        embed.add_field(name="Result", value="💣 Mine hit!", inline=True)
+        embed.add_field(name="Result", value=f"{ms['mine']} Mine hit!", inline=True)
         embed.add_field(name="Lost", value=f"`{utils.fmt_pts(bet)} pts`", inline=True)
         await interaction.response.edit_message(embed=embed, view=view)
     else:
@@ -396,8 +461,9 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
         state["multiplier"] = mult
         await db.set_game_session(user_id, "mines", bet, json.dumps(state))
 
+        ms = _get_mines_settings()
         view = MinesGridView(state, msg_id, user_id)
-        embed = discord.Embed(title="💣 Mines", color=0x5865F2)
+        embed = discord.Embed(title=str(ms["game"]), color=0x5865F2)
         embed.add_field(name="Bet", value=f"`{utils.fmt_pts(bet)} pts`", inline=True)
         embed.add_field(name="Mines", value=str(state["mine_count"]), inline=True)
         embed.add_field(name="Multiplier", value=f"`{mult:.2f}x`", inline=True)
@@ -438,8 +504,7 @@ async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
 
     await db.add_balance(user_id, net, note="mines cashout")
     await db.add_wager(user_id, bet)
-    tier = utils.get_rakeback_tier(float((user or {}).get("total_wagered", 0)))
-    await db.add_rakeback(user_id, bet * tier["rate"])
+    await _earn_rakeback(user_id, bet)
     await _record(user_id, True, bet, net)
     await db.clear_game_session(user_id)
     _mines_msg_to_user.pop(msg_id, None)
@@ -736,8 +801,7 @@ async def _bj_finish_from_interaction(
         await db.add_balance(user_id, net, note="blackjack payout")
 
     await db.add_wager(user_id, total_bet)
-    tier = utils.get_rakeback_tier(float((await db.get_user(user_id) or {}).get("total_wagered", 0)))
-    await db.add_rakeback(user_id, total_bet * tier["rate"])
+    await _earn_rakeback(user_id, total_bet)
     await _record(user_id, won, total_bet, net)
     await db.clear_game_session(user_id)
     _bj_msg_to_user.pop(str(interaction.message.id), None)
@@ -795,8 +859,7 @@ async def _bj_finish_interaction_free(
         await db.add_balance(user_id, net, note="blackjack payout")
 
     await db.add_wager(user_id, total_bet)
-    tier = utils.get_rakeback_tier(float((await db.get_user(user_id) or {}).get("total_wagered", 0)))
-    await db.add_rakeback(user_id, total_bet * tier["rate"])
+    await _earn_rakeback(user_id, total_bet)
     await _record(user_id, won, total_bet, net)
     await db.clear_game_session(user_id)
     _bj_msg_to_user.pop(str(msg.id), None)
@@ -1186,8 +1249,7 @@ class Games(commands.Cog):
             net = max(0.0, net_capped - bal)
             await db.add_balance(ctx.author.id, net, note="blackjack payout")
         await db.add_wager(ctx.author.id, total_bet)
-        tier = utils.get_rakeback_tier(float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0)))
-        await db.add_rakeback(ctx.author.id, total_bet * tier["rate"])
+        await _earn_rakeback(ctx.author.id, total_bet, ctx.author)
         await _record(ctx.author.id, won, total_bet, net)
         await db.clear_game_session(ctx.author.id)
         for mid, uid in list(_bj_msg_to_user.items()):
@@ -1316,10 +1378,7 @@ class Games(commands.Cog):
         else:
             await db.clear_game_session(ctx.author.id)
             await db.add_wager(ctx.author.id, sess["bet"])
-            tier = utils.get_rakeback_tier(
-                float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0))
-            )
-            await db.add_rakeback(ctx.author.id, sess["bet"] * tier["rate"])
+            await _earn_rakeback(ctx.author.id, sess["bet"], ctx.author)
             await _record(ctx.author.id, False, sess["bet"], 0)
             embed = discord.Embed(title="🃏 Hi-Lo — WRONG!", color=0xE74C3C)
             embed.add_field(name="New Card", value=f"`{next_card}`", inline=True)
@@ -1348,10 +1407,7 @@ class Games(commands.Cog):
             actual_net = max(0.0, net_capped_bal - current_bal)
             await db.add_balance(ctx.author.id, actual_net, note="hilo cashout")
             await db.add_wager(ctx.author.id, sess["bet"])
-            tier = utils.get_rakeback_tier(
-                float((await db.get_user(ctx.author.id) or {}).get("total_wagered", 0))
-            )
-            await db.add_rakeback(ctx.author.id, sess["bet"] * tier["rate"])
+            await _earn_rakeback(ctx.author.id, sess["bet"], ctx.author)
             await _record(ctx.author.id, True, sess["bet"], actual_net)
             await db.clear_game_session(ctx.author.id)
             embed = discord.Embed(title="🃏 Hi-Lo — Cashed Out!", color=0x2ECC71)
@@ -1392,8 +1448,9 @@ class Games(commands.Cog):
         await db.set_game_session(ctx.author.id, "mines", amount, json.dumps(state))
         await db.add_balance(ctx.author.id, -amount, note="mines bet")
 
+        ms = _get_mines_settings()
         view = MinesGridView(state, "pending", ctx.author.id)
-        embed = discord.Embed(title="💣 Mines", color=0x5865F2)
+        embed = discord.Embed(title=str(ms["game"]), color=0x5865F2)
         embed.add_field(name="Bet", value=f"`{utils.fmt_pts(amount)} pts`", inline=True)
         embed.add_field(name="Mines", value=str(mine_count), inline=True)
         embed.add_field(name="Multiplier", value="`1.00x`", inline=True)
@@ -1509,8 +1566,7 @@ class Games(commands.Cog):
         net = max(0.0, net_capped_bal - current_bal)
         await db.add_balance(user_id, net, note="mines cashout")
         await db.add_wager(user_id, bet)
-        tier = utils.get_rakeback_tier(float((user or {}).get("total_wagered", 0)))
-        await db.add_rakeback(user_id, bet * tier["rate"])
+        await _earn_rakeback(user_id, bet, interaction.user if isinstance(interaction.user, discord.Member) else None)
         await _record(user_id, True, bet, net)
         await db.clear_game_session(user_id)
         for mid, uid in list(_mines_msg_to_user.items()):
@@ -1552,8 +1608,7 @@ async def _crystals_play(bet: float, username: str, user_id: int) -> tuple[io.By
         await db.add_balance(user_id, net, note="crystals payout")
 
     await db.add_wager(user_id, bet)
-    tier = utils.get_rakeback_tier(float((await db.get_user(user_id) or {}).get("total_wagered", 0)))
-    await db.add_rakeback(user_id, bet * tier["rate"])
+    await _earn_rakeback(user_id, bet, interaction.user if isinstance(interaction.user, discord.Member) else None)
     await _record(user_id, won, bet, net if won else 0.0)
 
     net_change = (net - bet) if won else -bet
@@ -1787,10 +1842,7 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
         _tw_msg_to_user.pop(str(interaction.message.id), None)
 
         await db.add_wager(user_id, bet)
-        tier = utils.get_rakeback_tier(
-            float((await db.get_user(user_id) or {}).get("total_wagered", 0))
-        )
-        await db.add_rakeback(user_id, bet * tier["rate"])
+        await _earn_rakeback(user_id, bet)
         await _record(user_id, False, bet, 0.0)
 
         gif = await image_gen.render_towers_gif(
@@ -1824,8 +1876,7 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
             net = max(0.0, (await bc.apply_balance_cap(user_id, cur_bal + net)) - cur_bal)
             await db.add_balance(user_id, net, note="towers top-floor win")
             await db.add_wager(user_id, bet)
-            tier = utils.get_rakeback_tier(float((user or {}).get("total_wagered", 0)))
-            await db.add_rakeback(user_id, bet * tier["rate"])
+            await _earn_rakeback(user_id, bet, interaction.user if isinstance(interaction.user, discord.Member) else None)
             await _record(user_id, True, bet, net)
 
             gif = await image_gen.render_towers_gif(
@@ -1890,8 +1941,7 @@ async def _towers_do_cashout(interaction: discord.Interaction):
     net = max(0.0, (await bc.apply_balance_cap(user_id, cur_bal + net)) - cur_bal)
     await db.add_balance(user_id, net, note="towers cashout")
     await db.add_wager(user_id, bet)
-    tier = utils.get_rakeback_tier(float((user or {}).get("total_wagered", 0)))
-    await db.add_rakeback(user_id, bet * tier["rate"])
+    await _earn_rakeback(user_id, bet)
     await _record(user_id, True, bet, net)
     await db.clear_game_session(user_id)
     _tw_msg_to_user.pop(str(interaction.message.id), None)

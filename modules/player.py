@@ -20,6 +20,23 @@ def _flip_get_balance(uid: str) -> float:
         conn.close()
 
 
+def _flip_get_rakeback(uid: str) -> tuple[float, float]:
+    """Return (accumulated, total_claimed) from flipbot.db."""
+    if not _FLIP_DB.exists():
+        return 0.0, 0.0
+    conn = sqlite3.connect(str(_FLIP_DB))
+    try:
+        row = conn.execute(
+            "SELECT rakeback_accumulated, rakeback_total_claimed FROM users WHERE user_id=?",
+            (str(uid),),
+        ).fetchone()
+        if not row:
+            return 0.0, 0.0
+        return float(row[0] or 0), float(row[1] or 0)
+    finally:
+        conn.close()
+
+
 def _flip_set_balance(uid: str, amount: float) -> None:
     if not _FLIP_DB.exists():
         return
@@ -247,28 +264,53 @@ class Player:
     # ── Rakeback helpers ──────────────────────────────────────────────────
 
     def get_rakeback_data(self) -> dict:
-        """Return the full rakeback dict for this player."""
-        return get_user_data(int(self.uid), "rakeback") or {}
+        """Return rakeback summary from flipbot.db."""
+        acc, claimed = _flip_get_rakeback(self.uid)
+        return {
+            "accumulated": int(acc),
+            "total_earned": int(acc + claimed),
+            "total_claimed": int(claimed),
+        }
 
     def get_accumulated_rakeback(self) -> int:
-        """Return pending (not-yet-withdrawn) rakeback."""
-        return int(self.get_rakeback_data().get("accumulated", 0))
+        acc, _ = _flip_get_rakeback(self.uid)
+        return int(acc)
 
     def add_rakeback(self, amount: int):
-        """Add earned rakeback to the player's pending wallet."""
+        """Add earned rakeback (flipbot.db). Prefer db.add_rakeback in async code."""
         amount = int(amount)
-        data = self.get_rakeback_data()
-        data["accumulated"] = int(data.get("accumulated", 0)) + amount
-        data["total_earned"] = int(data.get("total_earned", 0)) + amount
-        set_user_data(int(self.uid), "rakeback", data)
+        if amount <= 0 or not _FLIP_DB.exists():
+            return
+        conn = sqlite3.connect(str(_FLIP_DB))
+        try:
+            conn.execute(
+                "UPDATE users SET rakeback_accumulated=rakeback_accumulated+? WHERE user_id=?",
+                (amount, str(self.uid)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def withdraw_rakeback(self, amount: int):
-        """Move *amount* from rakeback wallet to real balance."""
+        """Move rakeback to real balance via flipbot.db claim path."""
         amount = int(amount)
-        data = self.get_rakeback_data()
-        data["accumulated"] = max(0, int(data.get("accumulated", 0)) - amount)
-        set_user_data(int(self.uid), "rakeback", data)
-        self.add_balance("real", amount)
+        if amount <= 0:
+            return
+        acc, _ = _flip_get_rakeback(self.uid)
+        take = min(amount, int(acc))
+        if take <= 0 or not _FLIP_DB.exists():
+            return
+        conn = sqlite3.connect(str(_FLIP_DB))
+        try:
+            conn.execute(
+                "UPDATE users SET rakeback_accumulated=rakeback_accumulated-?, "
+                "rakeback_total_claimed=rakeback_total_claimed+? WHERE user_id=?",
+                (take, take, str(self.uid)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.add_balance("real", take)
 
     def record_deposit(self, amount: float):
         """Increment total_deposit stat when a deposit is confirmed."""

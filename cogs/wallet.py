@@ -4,9 +4,9 @@ from __future__ import annotations
 import discord
 from discord.ext import commands
 
-import config
 from database import db
 from modules import flip_utils as utils
+from modules.economy import get_coins_per_usd, get_coin_usd_rate
 
 
 class Wallet(commands.Cog):
@@ -31,7 +31,7 @@ class Wallet(commands.Cog):
         )
         embed.add_field(
             name="Balance",
-            value=f"`{utils.fmt_pts(balance)} pts` (${balance / config.POINTS_PER_USD:.2f})",
+            value=f"`{utils.fmt_pts(balance)} coins` (${utils.pts_to_usd(balance):.2f})",
             inline=False,
         )
         embed.add_field(name="Total Deposited", value=f"`{utils.fmt_pts(deposited)} pts`", inline=True)
@@ -61,20 +61,24 @@ class Wallet(commands.Cog):
                 value=f"`{utils.fmt_pts(pending_amt)} pts`",
                 inline=True,
             )
-        embed.set_footer(text=f"Rate: {int(config.POINTS_PER_USD)} pts = $1.00 USD")
+        coins_per_usd = int(get_coins_per_usd())
+        embed.set_footer(text=f"Rate: {coins_per_usd} coins = $1.00 USD (panel)")
         await ctx.send(embed=embed)
 
     @commands.command(name="convert")
     async def convert(self, ctx: commands.Context, amount: float):
         """Convert pts <-> USD. .convert 1000"""
-        usd = amount / config.POINTS_PER_USD
+        usd = utils.pts_to_usd(amount)
+        rate = get_coin_usd_rate()
+        coins_per_usd = int(get_coins_per_usd())
         embed = discord.Embed(
             title="💱 Conversion",
             color=0x5865F2,
         )
-        embed.add_field(name="Points", value=f"`{utils.fmt_pts(amount)} pts`", inline=True)
+        embed.add_field(name="Coins", value=f"`{utils.fmt_pts(amount)}`", inline=True)
         embed.add_field(name="USD",    value=f"`${usd:.2f}`", inline=True)
-        embed.add_field(name="Rate",   value=f"`{int(config.POINTS_PER_USD)} pts = $1.00`", inline=True)
+        embed.add_field(name="Rate",   value=f"`{coins_per_usd} coins = $1.00`", inline=True)
+        embed.set_footer(text=f"1 coin = ${rate:.4g} USD")
         await ctx.send(embed=embed)
 
 

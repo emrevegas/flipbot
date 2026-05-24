@@ -82,7 +82,8 @@ def _default_avatar(size: int, color=(56, 189, 248)) -> Image.Image:
 
 
 def _pts_to_usd(pts: float) -> float:
-    return pts / config.POINTS_PER_USD
+    from modules.economy import coins_to_usd
+    return coins_to_usd(pts)
 
 
 def _fmt(n: float) -> str:
@@ -259,6 +260,109 @@ async def render_affiliate_card(
     settle_note = "Settled daily 00:00 UTC"
     sn_w = draw.textlength(settle_note, font=_font(10))
     draw.text((W - 22 - sn_w, row3_y + 30), settle_note, font=_font(10), fill=MUTED)
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    return buf
+
+
+# ── Promo Redeem Card ─────────────────────────────────────────────────────────
+
+def _wrap_text_lines(draw: ImageDraw.ImageDraw, text: str, font, max_width: int) -> list[str]:
+    words = text.split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        trial = f"{current} {word}"
+        if draw.textlength(trial, font=font) <= max_width:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+async def render_promo_redeemed_card(
+    username: str,
+    *,
+    title: str,
+    code: str,
+    reward_label: str,
+    reward_value: str,
+    reward_sub: str = "",
+    terms: list[str] | None = None,
+    new_balance: float | None = None,
+    avatar_url: str | None = None,
+) -> io.BytesIO:
+    """Card shown after a promo code is redeemed."""
+    W = 560
+    RADIUS = 18
+    BG = config.CARD_BG_COLOR
+    BORDER = config.CARD_BORDER
+    PURPLE = (155, 89, 182)
+    MUTED = config.CARD_TEXT_MUTED
+    WHITE = config.CARD_TEXT_PRIMARY
+    GREEN = config.CARD_ACCENT_COLOR
+    GOLD = config.CARD_GOLD
+    terms = terms or []
+
+    tmp = Image.new("RGBA", (W, 10))
+    tmp_draw = ImageDraw.Draw(tmp)
+    term_font = _font(13)
+    term_lines: list[str] = []
+    for line in terms:
+        term_lines.extend(_wrap_text_lines(tmp_draw, f"• {line}", term_font, W - 64))
+
+    base_h = 300
+    extra_h = max(0, len(term_lines) - 3) * 20
+    balance_h = 36 if new_balance is not None else 0
+    H = base_h + extra_h + balance_h
+
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    _rounded_rect(draw, (0, 0, W - 1, H - 1), RADIUS, BG, PURPLE, 2)
+    _rounded_rect(draw, (0, 0, W - 1, 58), RADIUS, (28, 18, 38), None)
+    draw.rectangle([0, RADIUS, W, 58], fill=(28, 18, 38))
+
+    AVATAR = 40
+    avatar_img = await _fetch_avatar(avatar_url, AVATAR) if avatar_url else None
+    if avatar_img is None:
+        avatar_img = _default_avatar(AVATAR, color=PURPLE)
+    img.paste(avatar_img, (W - AVATAR - 18, 9), avatar_img)
+
+    draw.text((22, 12), title.upper(), font=_font(16, bold=True), fill=PURPLE)
+    uname = username if len(username) <= 22 else username[:19] + "..."
+    draw.text((22, 34), uname, font=_font(12), fill=MUTED)
+
+    draw.text((22, 72), "PROMO CODE", font=_font(10), fill=MUTED)
+    code_upper = code.upper()
+    code_w = draw.textlength(code_upper, font=_font(28, bold=True)) + 32
+    _rounded_rect(draw, (22, 88, 22 + code_w, 128), 10, (22, 16, 34), PURPLE, 1)
+    draw.text((38, 94), code_upper, font=_font(28, bold=True), fill=WHITE)
+
+    reward_y = 144
+    _rounded_rect(draw, (22, reward_y, W - 22, reward_y + 72), 10, (18, 25, 40), BORDER, 1)
+    draw.text((36, reward_y + 10), reward_label, font=_font(10), fill=MUTED)
+    draw.text((36, reward_y + 28), reward_value, font=_font(24, bold=True), fill=GREEN)
+    if reward_sub:
+        draw.text((36, reward_y + 56), reward_sub, font=_font(12), fill=MUTED)
+
+    terms_y = reward_y + 88
+    draw.text((22, terms_y), "TERMS & CONDITIONS", font=_font(11, bold=True), fill=GOLD)
+    y = terms_y + 22
+    for line in term_lines:
+        draw.text((28, y), line, font=term_font, fill=WHITE)
+        y += 20
+
+    if new_balance is not None:
+        bal_y = H - 28
+        bal_txt = f"New balance: {_fmt(new_balance)} pts"
+        draw.text((22, bal_y), bal_txt, font=_font(13, bold=True), fill=GREEN)
 
     buf = io.BytesIO()
     img.save(buf, "PNG")
@@ -856,7 +960,8 @@ async def render_bj_gif(
     font_sub    = _font(20, bold=True)
     font_info   = _font(13)
 
-    pts_per_usd = config.POINTS_PER_USD or 100.0
+    from modules.economy import get_coins_per_usd
+    pts_per_usd = get_coins_per_usd() or 100.0
 
     def _draw_frame(ph: list[str], dh: list[str], is_final: bool = False) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
@@ -1120,7 +1225,8 @@ async def render_towers_gif(
     CELL_FUTURE_BR   = (30, 38, 60)
 
     mults          = TOWERS_MULTS.get(mode, TOWERS_MULTS["easy"])
-    pts_per_usd    = config.POINTS_PER_USD or 100.0
+    from modules.economy import get_coins_per_usd
+    pts_per_usd    = get_coins_per_usd() or 100.0
 
     font_hdr   = _font(14, bold=True)
     font_mult  = _font(11, bold=True)
@@ -1478,7 +1584,8 @@ async def render_crystals_gif(
     HIDDEN = (22, 28, 48)
     HIDDEN_BR = (42, 52, 82)
 
-    pts_per_usd = config.POINTS_PER_USD or 100.0
+    from modules.economy import get_coins_per_usd
+    pts_per_usd = get_coins_per_usd() or 100.0
 
     font_hdr  = _font(14, bold=True)
     font_slot = _font(11, bold=True)
