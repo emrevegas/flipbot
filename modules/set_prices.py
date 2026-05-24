@@ -59,8 +59,11 @@ def _sp(key: str, lang: str, **kwargs) -> str:
 
 
 def format_emoji_item_name(raw_name: str) -> str:
-    """Decayed_lock -> Decayed Lock"""
-    return " ".join(part.capitalize() for part in raw_name.replace("_", " ").split())
+    """AncestralLensOfRiches -> Ancestral Lens Of Riches; Decayed_lock -> Decayed Lock."""
+    s = raw_name.replace("_", " ")
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
+    s = re.sub(r"([A-Z])([A-Z][a-z])", r"\1 \2", s)
+    return " ".join(part.capitalize() for part in s.split() if part)
 
 
 def emoji_id_from_item_str(emoji_str: str) -> int | None:
