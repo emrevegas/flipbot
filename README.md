@@ -6,7 +6,6 @@ Prefix-command Discord bot with image-based responses.
 
 - `.balance [@user]` — balance card (Pillow image)
 - `.leaderboard` — top 10 balances card
-- `.pay @user amount` — transfer points
 - `.add @user amount [note]` — admin: add points
 - `.remove @user amount [note]` — admin: remove points
 - `.setbal @user amount` — admin: set exact balance

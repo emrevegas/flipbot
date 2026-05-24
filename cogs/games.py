@@ -1,6 +1,6 @@
 """All casino games as prefix commands.
 
-Games: coinflip, dice, roulette, mines, hilo, blackjack, limbo, slots, crash, chickenroad
+Games: coinflip, dice, roulette, mines, hilo, blackjack, limbo, slots, chickenroad
 """
 from __future__ import annotations
 
@@ -1012,19 +1012,19 @@ class Games(commands.Cog):
 
         won = crash >= target
         gross = amount * target if won else 0
-        outcome = "WIN" if won else "LOSS"
 
         net = await _payout(ctx.author.id, "limbo", amount, gross)
         await _record(ctx.author.id, won, amount, net)
 
-        img_buf = await image_gen.render_game_result_card(
-            "Limbo", outcome, amount, net,
-            details={"Target": f"{target:.2f}x", "Crash point": f"{crash:.2f}x"},
+        gif = await image_gen.render_limbo_gif(
+            username=ctx.author.display_name,
+            bet=amount,
+            target=target,
+            crash=crash,
+            won=won,
+            net_change=net - amount,
         )
-        await ctx.send(
-            content=f"{'🏆' if won else '💔'} **{outcome}!** {ctx.author.mention}",
-            file=discord.File(img_buf, "limbo.png"),
-        )
+        await ctx.send(file=discord.File(gif, "limbo.gif"))
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -1083,51 +1083,6 @@ class Games(commands.Cog):
         await ctx.send(
             content=f"{'🏆' if won else '💔'} **{outcome}!** {ctx.author.mention}",
             file=discord.File(img_buf, "slots.png"),
-        )
-
-    # ── Crash ─────────────────────────────────────────────────────────────────
-
-    @commands.command(name="crash")
-    async def crash(self, ctx: commands.Context, amount: float, auto_cashout: float = 0):
-        """Crash game. .crash 100 [auto_cashout_multiplier]"""
-        await db.ensure_user(ctx.author.id, ctx.author.name)
-        if not await _check_game(ctx, "crash", amount):
-            return
-        if auto_cashout and auto_cashout < 1.01:
-            return await ctx.send(embed=_err("Auto cashout must be >= 1.01."))
-
-        rigged = await bc.should_rig_outcome(ctx.author.id, "crash", amount)
-
-        if rigged:
-            crash_point = round(random.uniform(1.0, 1.8), 2)
-        else:
-            r = random.random()
-            crash_point = round(min(0.99 / max(1 - r, 0.01), 1000.0), 2)
-
-        if auto_cashout and auto_cashout <= crash_point:
-            multi = auto_cashout
-            won = True
-            outcome = f"CASHED OUT @ {multi:.2f}x"
-        elif not auto_cashout and crash_point > 1.0:
-            multi = round(random.uniform(1.0, crash_point), 2)
-            won = True
-            outcome = f"CASHED OUT @ {multi:.2f}x"
-        else:
-            multi = crash_point
-            won = False
-            outcome = f"CRASHED @ {crash_point:.2f}x"
-
-        gross = amount * multi if won else 0
-        net = await _payout(ctx.author.id, "crash", amount, gross)
-        await _record(ctx.author.id, won, amount, net)
-
-        img_buf = await image_gen.render_game_result_card(
-            "Crash", "WIN" if won else "CRASH", amount, net,
-            details={"Crash point": f"{crash_point:.2f}x", "Outcome": outcome},
-        )
-        await ctx.send(
-            content=f"{'🏆' if won else '💔'} **{outcome}!** {ctx.author.mention}",
-            file=discord.File(img_buf, "crash.png"),
         )
 
     # ── Blackjack ─────────────────────────────────────────────────────────────
@@ -1468,7 +1423,7 @@ class Games(commands.Cog):
 
     # ── Crystals ───────────────────────────────────────────────────────────────
 
-    @commands.command(name="crystals", aliases=["crystal", "cr"])
+    @commands.command(name="crystals", aliases=["crystal"])
     async def crystals(self, ctx: commands.Context, amount: str = ""):
         """Reveal 5 crystals and match for prizes.  .crystals <bet>"""
         if not amount:
@@ -1547,7 +1502,7 @@ class Games(commands.Cog):
 
     # ── Chicken Road ───────────────────────────────────────────────────────────
 
-    @commands.command(name="chickenroad", aliases=["chicken", "chkn", "crroad"])
+    @commands.command(name="chickenroad", aliases=["chicken", "chkn", "crroad", "cr"])
     async def chickenroad(self, ctx: commands.Context, amount: str = "", mode: str = "easy"):
         """Cross the road — cash out anytime.  .chickenroad <bet> [easy|normal|hard]"""
         if not amount:

@@ -1,4 +1,4 @@
-﻿import discord
+import discord
 from modules.constants import FOOTER_TEXT
 from modules.database import *
 from modules.player import Player

@@ -39,28 +39,6 @@ class Economy(commands.Cog):
         buf = await image_gen.render_leaderboard_card(rows, self.bot)
         await ctx.send(file=discord.File(buf, "leaderboard.png"))
 
-    @commands.command(name="pay")
-    async def pay(self, ctx: commands.Context, member: discord.Member, amount: float):
-        """Transfer points to another user."""
-        if amount <= 0:
-            return await ctx.send(embed=utils.error_embed("Amount must be positive."))
-        if member.id == ctx.author.id:
-            return await ctx.send(embed=utils.error_embed("You can't pay yourself."))
-
-        await db.ensure_user(ctx.author.id, ctx.author.name)
-        sender = await db.get_user(ctx.author.id)
-        if not sender or float(sender["balance"]) < amount:
-            return await ctx.send(embed=utils.error_embed("Insufficient balance."))
-
-        await db.add_balance(ctx.author.id, -amount, note=f"Pay to {member.id}", by=str(ctx.author.id))
-        await db.add_balance(member.id, amount, note=f"Pay from {ctx.author.id}", by=str(ctx.author.id))
-
-        embed = discord.Embed(
-            description=f"✅ Sent **{utils.fmt_pts(amount)} pts** to {member.mention}",
-            color=0x2ECC71,
-        )
-        await ctx.send(embed=embed)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Economy(bot))

@@ -12,6 +12,7 @@ from discord.ext import commands
 
 import config
 from database import db
+from modules.command_context import ReplyContext
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,6 +60,15 @@ class FlipBot(commands.Bot):
             intents=intents,
             help_command=None,  # replaced by cogs.help_cmd
         )
+
+    async def get_context(
+        self,
+        origin: discord.Message,
+        /,
+        *,
+        cls: type[commands.Context] = ReplyContext,
+    ) -> ReplyContext:
+        return await super().get_context(origin, cls=cls)
 
     async def setup_hook(self):
         # Init DB + caches

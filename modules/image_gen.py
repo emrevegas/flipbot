@@ -559,6 +559,172 @@ async def render_game_result_card(
     return buf
 
 
+# ── Limbo GIF ─────────────────────────────────────────────────────────────────
+
+def _limbo_anim_duration_sec(crash: float) -> float:
+    """Higher crash = faster count-up; low multipliers use up to 2.5s."""
+    max_d = 2.5
+    min_d = 0.45
+    c = max(1.01, float(crash))
+    t = min(1.0, max(0.0, (math.log(c) - math.log(1.01)) / (math.log(100.0) - math.log(1.01))))
+    return max_d - (max_d - min_d) * t
+
+
+def _limbo_ease_out(t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return 1.0 - (1.0 - t) ** 2.2
+
+
+async def render_limbo_gif(
+    username: str,
+    bet: float,
+    target: float,
+    crash: float,
+    won: bool,
+    net_change: float,
+) -> io.BytesIO:
+    """Animated limbo — multiplier rises to crash, then WIN / LOSS overlay."""
+    W, H = 500, 300
+    HDR_H = 48
+    INFO_H = 44
+
+    BG = (10, 14, 28)
+    PANEL = (16, 22, 40)
+    WHITE = (245, 247, 255)
+    MUTED = (110, 120, 145)
+    DIVIDER = (35, 45, 72)
+    GREEN = (46, 213, 96)
+    RED = (231, 76, 60)
+    GOLD = (255, 196, 0)
+    CYAN = (56, 189, 248)
+    PURPLE = (168, 85, 247)
+
+    from modules.economy import get_coins_per_usd
+    pts_per_usd = get_coins_per_usd() or 100.0
+
+    font_hdr = _font(15, bold=True)
+    font_big = _font(64, bold=True)
+    font_mid = _font(18, bold=True)
+    font_sm = _font(12)
+    font_res = _font(46, bold=True)
+    font_sub = _font(18, bold=True)
+
+    def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 8
+
+    bar_x1, bar_x2 = 56, W - 56
+    bar_y1, bar_y2 = HDR_H + 28, H - INFO_H - 36
+    bar_h = bar_y2 - bar_y1
+
+    scale_max = max(target * 1.35, crash * 1.1, 2.0)
+
+    def _y_for_mult(m: float) -> int:
+        m = max(1.0, min(m, scale_max))
+        ratio = (m - 1.0) / max(scale_max - 1.0, 0.01)
+        return int(bar_y2 - ratio * bar_h)
+
+    def make_frame(display_mult: float, *, result_text: str = "", net_chg: float = 0.0) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+
+        draw.rectangle([0, 0, W, HDR_H], fill=PANEL)
+        draw.text((18, 14), "LIMBO", font=font_hdr, fill=CYAN)
+        tgt_lbl = f"TARGET  {target:.2f}x"
+        tw = _tw(draw, tgt_lbl, font_mid)
+        draw.text((W - 18 - tw, 14), tgt_lbl, font=font_mid, fill=GOLD)
+
+        # Track
+        draw.rounded_rectangle(
+            [bar_x1, bar_y1, bar_x2, bar_y2], radius=14,
+            fill=(12, 18, 34), outline=(42, 52, 88), width=2,
+        )
+        # Fill to current multiplier
+        cur_y = _y_for_mult(display_mult)
+        if cur_y < bar_y2:
+            draw.rectangle([bar_x1 + 4, cur_y, bar_x2 - 4, bar_y2 - 4], fill=(28, 38, 72))
+
+        # Target line
+        ty = _y_for_mult(target)
+        draw.line([(bar_x1 - 8, ty), (bar_x2 + 8, ty)], fill=GOLD, width=3)
+        draw.text((bar_x2 + 12, ty - 10), f"{target:.2f}x", font=font_sm, fill=GOLD)
+
+        # Rocket marker
+        rx = (bar_x1 + bar_x2) // 2
+        draw.polygon(
+            [(rx, cur_y - 22), (rx - 14, cur_y + 6), (rx + 14, cur_y + 6)],
+            fill=PURPLE,
+        )
+        draw.ellipse([rx - 5, cur_y + 4, rx + 5, cur_y + 14], fill=(255, 120, 60))
+
+        mult_str = f"{display_mult:.2f}x"
+        mw = _tw(draw, mult_str, font_big)
+        draw.text(((W - mw) // 2, HDR_H + 52), mult_str, font=font_big, fill=WHITE)
+
+        # Info bar
+        iy = H - INFO_H
+        draw.rectangle([0, iy, W, H], fill=(8, 12, 22))
+        draw.line([(0, iy), (W, iy)], fill=DIVIDER, width=1)
+        uname = (username[:20] + "…") if len(username) > 20 else username
+        draw.text((16, iy + 14), uname, font=font_sm, fill=MUTED)
+        bet_s = f"Bet {_fmt(bet)}  •  ${bet / pts_per_usd:.2f}"
+        bw = _tw(draw, bet_s, font_sm)
+        draw.text((W - 16 - bw, iy + 14), bet_s, font=font_sm, fill=MUTED)
+
+        if result_text:
+            rc = GREEN if result_text == "WIN" else RED
+            ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(ov)
+            od.rectangle([0, HDR_H, W, iy], fill=(0, 0, 0, 175))
+            img = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            mid = HDR_H + (iy - HDR_H) // 2
+            rw = _tw(draw, result_text, font_res)
+            draw.text(((W - rw) // 2, mid - 40), result_text, font=font_res, fill=rc)
+            pfx = "+" if net_chg > 0 else ""
+            sub = f"{pfx}{_fmt(net_chg)} pts"
+            sw = _tw(draw, sub, font_sub)
+            sub_col = GREEN if net_chg > 0 else RED
+            draw.text(((W - sw) // 2, mid + 12), sub, font=font_sub, fill=sub_col)
+            land = f"Landed {crash:.2f}x"
+            lw = _tw(draw, land, font_mid)
+            draw.text(((W - lw) // 2, mid + 44), land, font=font_mid, fill=MUTED)
+
+        return img
+
+    duration_sec = _limbo_anim_duration_sec(crash)
+    fps = 20
+    n_anim = max(10, int(duration_sec * fps))
+    frame_ms = max(20, int(duration_sec * 1000 / n_anim))
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+
+    for i in range(n_anim):
+        t = _limbo_ease_out((i + 1) / n_anim)
+        display = 1.0 + (crash - 1.0) * t
+        frames.append(make_frame(display))
+        durations.append(frame_ms)
+
+    result_label = "WIN" if won else "LOSS"
+    frames.append(make_frame(crash, result_text=result_label, net_chg=net_change))
+    durations.append(5_000)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=1,
+        optimize=False,
+        disposal=2,
+    )
+    buf.seek(0)
+    return buf
+
+
 # ── Mines Grid Card ────────────────────────────────────────────────────────────
 
 def render_mines_grid(

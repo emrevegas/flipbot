@@ -2,7 +2,7 @@
 from __future__ import annotations
 import discord
 from discord.ext import commands
-from modules import flip_utils as utils
+from modules import utils
 import config
 
 PREFIX = config.PREFIX
@@ -20,9 +20,11 @@ CATEGORIES = {
             ("Blackjack", f"`{PREFIX}blackjack <amount>`  or  `{PREFIX}bj <amount>`\nPlay blackjack with interactive buttons (Hit / Stand / Double)."),
             ("Mines", f"`{PREFIX}mines <amount> [mine_count]`\nClick the grid to reveal gems. Cashout button in the grid."),
             ("Hi-Lo", f"`{PREFIX}hilo <amount>`\nPredict higher or lower cards. Use `.higher` / `.lower` / `.cashout`."),
-            ("Limbo", f"`{PREFIX}limbo <amount> <target_multiplier>`\nBeat the target multiplier."),
+            ("Limbo", f"`{PREFIX}limbo <amount> <target_multiplier>`\nAnimated multiplier — land at or above your target to win."),
             ("Slots", f"`{PREFIX}slots <amount>`\nSpin the slot machine."),
-            ("Crash", f"`{PREFIX}crash <amount> [multiplier]`\nBet on a crash multiplier."),
+            ("Crystals", f"`{PREFIX}crystals <bet>`\nReveal 5 crystals and match for prizes."),
+            ("Towers", f"`{PREFIX}towers <bet> [easy|normal|hard]`\nClimb the tower grid."),
+            ("Chicken Road", f"`{PREFIX}chickenroad <bet> [easy|normal|hard]`  (`{PREFIX}cr`)\nCross lanes before the car hits."),
         ],
     },
     "wallet": {
@@ -32,11 +34,10 @@ CATEGORIES = {
         "description": "Manage your balance, deposits, and withdrawals.",
         "fields": [
             ("Balance", f"`{PREFIX}balance`  or  `{PREFIX}bal`\nView your current balance as an image card."),
-            ("Deposit", f"`{PREFIX}deposit`  or  `{PREFIX}dep`\nOpen the deposit panel with payment methods."),
+            ("Deposit", f"`{PREFIX}deposit`  or  `{PREFIX}dep`\nCrypto, in-game (Growtopia), and panel payment methods — optional deposit bonus."),
             ("Withdraw", f"`{PREFIX}withdraw`  or  `{PREFIX}wd`\nRequest a withdrawal."),
             ("Wallet", f"`{PREFIX}wallet`\nView your full wallet card."),
             ("Convert", f"`{PREFIX}convert <amount>`\nConvert between points and USD."),
-            ("Pay", f"`{PREFIX}pay @user <amount>`\nSend points to another user."),
         ],
     },
     "rakeback": {

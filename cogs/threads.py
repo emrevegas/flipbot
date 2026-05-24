@@ -89,7 +89,8 @@ def _reply_channel(ctx: commands.Context, thread: discord.Thread) -> discord.abc
 async def _send_reply(ctx: commands.Context, thread: discord.Thread, *, embed: discord.Embed) -> None:
     ch = _reply_channel(ctx, thread)
     if ch is not None:
-        await ch.send(embed=embed)
+        ref = ctx.message.to_reference(fail_if_not_exists=False) if ctx.message else None
+        await ch.send(embed=embed, reference=ref, mention_author=True)
 
 
 class Threads(commands.Cog):
