@@ -1262,6 +1262,7 @@
       "btn_set_chances": "⚖️ Set Chances",
       "btn_edit_case": "✏️ Name / Edge",
       "btn_change_emoji": "🎨 Emoji",
+      "manage_emoji_need_items": "Add at least one item to the case before managing the emoji.",
       "btn_delete_case": "🗑️ Delete Case",
       "select_item": "📋 Select an item...",
       "select_case": "🗂️ Select a case...",

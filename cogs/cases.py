@@ -888,9 +888,10 @@ class OfficialCaseDetailView(View):
         edit.callback = self._on_edit
         self.add_item(edit)
 
-        emoji_btn = Button(label=_adm("btn_change_emoji", lang), style=discord.ButtonStyle.secondary, row=1)
-        emoji_btn.callback = self._on_emoji
-        self.add_item(emoji_btn)
+        if cur:
+            emoji_btn = Button(label="Manage Emoji", style=discord.ButtonStyle.primary, row=1)
+            emoji_btn.callback = self._on_manage_emoji
+            self.add_item(emoji_btn)
 
         del_btn = Button(label=_adm("btn_delete_case", lang), style=discord.ButtonStyle.danger, row=1)
         del_btn.callback = self._on_delete
@@ -960,8 +961,24 @@ class OfficialCaseDetailView(View):
         case = _get_case(db, self.case_id) or {}
         await interaction.response.send_modal(EditCaseModal(self.admin_id, self.case_id, case, lang=self.lang))
 
-    async def _on_emoji(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(_EmojiTextModal(self.admin_id, self.case_id, is_community=False, lang=self.lang))
+    async def _on_manage_emoji(self, interaction: discord.Interaction):
+        db = _get_db()
+        case = _get_case(db, self.case_id) or {}
+        if not case.get("item_ids"):
+            return await interaction.response.send_message(
+                _adm("manage_emoji_need_items", self.lang), ephemeral=True
+            )
+        from modules.case_emoji_manager import CaseEmojiManageView
+
+        view = CaseEmojiManageView(
+            self.admin_id,
+            self.case_id,
+            is_community=False,
+            lang=self.lang,
+            template_id=case.get("case_icon_template"),
+            selected_item_ids=case.get("case_icon_items") or [],
+        )
+        await interaction.response.edit_message(embed=view._embed(), view=view)
 
     async def _on_delete(self, interaction: discord.Interaction):
         db   = _get_db()
@@ -1127,6 +1144,10 @@ class ConfirmDeleteCaseView(View):
     async def _on_yes(self, interaction: discord.Interaction):
         db     = _get_db()
         bucket = "community_cases" if self.is_community else "cases"
+        case   = db.get(bucket, {}).get(self.case_id)
+        if case and not self.is_community:
+            from modules.case_emoji_manager import delete_case_app_emoji
+            await delete_case_app_emoji(interaction.client, case)
         db[bucket].pop(self.case_id, None)
         _save_db(db)
         if self.is_community:
@@ -1160,10 +1181,8 @@ class AddCaseModal(Modal):
         self.admin_id = admin_id
         self.lang     = lang
         self.name_in  = TextInput(label=_adm("case_name_label", lang), placeholder=_adm("case_name_ph", lang), max_length=50)
-        self.emoji_in = TextInput(label=_adm("case_emoji_label", lang), placeholder=_adm("case_emoji_ph", lang), default="📦", max_length=80)
         self.edge_in  = TextInput(label=_adm("house_edge_label", lang), placeholder=_adm("house_edge_ph", lang), default="5", max_length=5)
         self.add_item(self.name_in)
-        self.add_item(self.emoji_in)
         self.add_item(self.edge_in)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -1175,7 +1194,7 @@ class AddCaseModal(Modal):
         cid = str(uuid.uuid4())[:8]
         db["cases"][cid] = {
             "name":       self.name_in.value.strip() or "Case",
-            "emoji":      self.emoji_in.value.strip() or "📦",
+            "emoji":      "📦",
             "house_edge": edge,
             "price":      0,
             "item_ids":   [],

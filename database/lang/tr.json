@@ -1264,6 +1264,7 @@
       "btn_set_chances": "⚖️ Şans Ayarla",
       "btn_edit_case": "✏️ Ad / Edge",
       "btn_change_emoji": "🎨 Emoji",
+      "manage_emoji_need_items": "Emoji yönetmeden önce kasaya en az bir item ekleyin.",
       "btn_delete_case": "🗑️ Kasa Sil",
       "select_item": "📋 Item seçin...",
       "select_case": "🗂️ Kasa seçin...",
