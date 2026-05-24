@@ -79,12 +79,13 @@ def _build_rakeback_layout(
         footer=t("rakeback.footer", lang=lang),
         emoji="💸",
     )))
-    row = ui.ActionRow()
-    row.add_item(_RakebackClaimButton(
-        user_id, min_claim, lang,
-        disabled=accumulated < min_claim,
-    ))
-    add_action_row(c, row)
+    add_action_row(
+        c,
+        _RakebackClaimButton(
+            user_id, min_claim, lang,
+            disabled=accumulated < min_claim,
+        ),
+    )
     return build_layout(c, timeout=180)
 
 
