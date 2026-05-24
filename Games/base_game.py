@@ -51,62 +51,15 @@ def _apply_rakeback(member: discord.Member, player: Player, bet: int) -> None:
 
 
 async def _check_and_assign_tier_role(member: discord.Member, player: Player) -> None:
-    """Assign the single highest qualifying rakeback tier role to the member.
-
-    Rules:
-    - Read current total_wagered from stats (already updated for this bet).
-    - Collect every tier whose min_wagered <= total_wagered.
-    - Pick the best one: highest min_wagered; tie-break on highest percentage.
-    - Remove all other tier roles from the member.
-    - Add the best tier role if not already present.
-    - If no tier qualifies, do nothing (don't remove existing roles).
-    """
-    if _is_tracking_exempt_user(player.uid):
-        return
-
-    settings = get_data("server/rakeback_settings") or {}
-    tiers = settings.get("tiers", [])
-    if not tiers:
-        return
+    """Assign the highest wager-qualified rakeback tier role (panel settings)."""
+    from modules.rakeback_roles import get_flip_total_wagered, sync_rakeback_tier_roles
 
     stats = get_user_data(int(player.uid), "stats") or {}
-    total_wagered = int(stats.get("total_wagered", 0))
-
-    # Tiers the player wager-qualifies for (min_wagered == 0 counts as always qualifying)
-    qualified = [
-        t for t in tiers
-        if total_wagered >= int(t.get("min_wagered", 0))
-    ]
-    if not qualified:
-        return
-
-    # Best tier = highest min_wagered threshold reached; tie-break on highest percentage
-    best_tier = max(qualified, key=lambda t: (int(t.get("min_wagered", 0)), t.get("percentage", 0)))
-    best_role_id = int(best_tier["role_id"])
-
-    all_tier_role_ids = {int(t["role_id"]) for t in tiers}
-    current_tier_roles = [r for r in member.roles if r.id in all_tier_role_ids]
-
-    # Already the correct sole tier role — nothing to do
-    if len(current_tier_roles) == 1 and current_tier_roles[0].id == best_role_id:
-        return
-
-    # Remove any tier roles that are not the best one
-    for role in current_tier_roles:
-        if role.id != best_role_id:
-            try:
-                await member.remove_roles(role, reason="Rakeback tier upgrade")
-            except Exception:
-                pass
-
-    # Add best role if not already held
-    if not any(r.id == best_role_id for r in member.roles):
-        best_role = member.guild.get_role(best_role_id)
-        if best_role:
-            try:
-                await member.add_roles(best_role, reason="Rakeback tier upgrade")
-            except Exception:
-                pass
+    total_wagered = max(
+        int(stats.get("total_wagered", 0)),
+        int(get_flip_total_wagered(player.uid)),
+    )
+    await sync_rakeback_tier_roles(member, float(total_wagered))
 
 
 class GameResult:

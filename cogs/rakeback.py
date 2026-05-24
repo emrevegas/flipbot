@@ -108,8 +108,12 @@ class Rakeback(commands.Cog):
         total_claimed = float(user["rakeback_total_claimed"])
         min_claim = float(rakeback_engine.get_min_withdrawal())
 
-        tier = utils.get_rakeback_tier(total_wagered, member)
-        nxt = utils.get_next_rakeback_tier(total_wagered, member)
+        if member is not None:
+            from modules.rakeback_roles import sync_rakeback_tier_roles
+            await sync_rakeback_tier_roles(member, total_wagered)
+
+        tier = utils.get_rakeback_tier(total_wagered)
+        nxt = utils.get_next_rakeback_tier(total_wagered)
 
         buf = await image_gen.render_rakeback_card(
             username=ctx.author.display_name,
@@ -163,7 +167,11 @@ class Rakeback(commands.Cog):
         user = await db.get_user(ctx.author.id)
         total_wagered = float(user["total_wagered"]) if user else 0
         member = ctx.author if isinstance(ctx.author, discord.Member) else None
-        current = utils.get_rakeback_tier(total_wagered, member)
+        if member is not None:
+            from modules.rakeback_roles import sync_rakeback_tier_roles
+            await sync_rakeback_tier_roles(member, total_wagered)
+
+        current = utils.get_rakeback_tier(total_wagered)
 
         lines = []
         for tier in utils.get_all_tiers():

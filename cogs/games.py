@@ -32,10 +32,13 @@ async def _earn_rakeback(
         return
     user = await db.get_user(user_id)
     total_wagered = float((user or {}).get("total_wagered", 0))
-    tier = utils.get_rakeback_tier(total_wagered, member)
+    tier = utils.get_rakeback_tier(total_wagered)
     rate = float(tier.get("rate", 0))
     if rate > 0:
         await db.add_rakeback(user_id, wager_amount * rate)
+    if member is not None:
+        from modules.rakeback_roles import sync_rakeback_tier_roles
+        await sync_rakeback_tier_roles(member, total_wagered)
 
 
 def _parse_btn_emoji(s: str):

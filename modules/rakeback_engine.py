@@ -41,17 +41,11 @@ def _tier_list() -> list[dict]:
     return sorted(out, key=lambda x: (x["min_wagered"], x["percentage"]))
 
 
-def _member_role_ids(member: discord.Member | None) -> set[str]:
-    if member is None:
-        return set()
-    return {str(r.id) for r in member.roles}
-
-
 def resolve_tier(
     total_wagered: float,
-    member: discord.Member | None = None,
+    member: discord.Member | None = None,  # noqa: ARG001 — kept for call-site compat
 ) -> dict[str, Any]:
-    """Best qualifying panel tier for this player."""
+    """Best qualifying panel tier for this player (wager only; roles are assigned separately)."""
     tiers = _tier_list()
     if not tiers:
         return {
@@ -62,13 +56,10 @@ def resolve_tier(
             "rate": 0.03,
         }
 
-    role_ids = _member_role_ids(member)
     best: dict | None = None
 
     for tier in tiers:
         if total_wagered < tier["min_wagered"]:
-            continue
-        if member is not None and tier["role_id"] and tier["role_id"] not in role_ids:
             continue
         if best is None or tier["percentage"] > best["percentage"]:
             best = tier
@@ -93,35 +84,24 @@ def resolve_tier(
 
 def next_tier_goal(
     total_wagered: float,
-    member: discord.Member | None = None,
+    member: discord.Member | None = None,  # noqa: ARG001
 ) -> dict[str, Any] | None:
-    """Next tier the player can still unlock (by wager and/or role)."""
+    """Next tier the player can unlock by wagering more."""
     tiers = _tier_list()
     if not tiers:
         return None
 
     current = resolve_tier(total_wagered, member)
-    role_ids = _member_role_ids(member)
 
     for tier in tiers:
         if tier["percentage"] <= current.get("percentage", 0) and total_wagered >= tier["min_wagered"]:
-            if member is None or tier["role_id"] in role_ids:
-                continue
+            continue
         if total_wagered < tier["min_wagered"]:
             return {
                 "name": tier["role_name"],
                 "min_wagered": tier["min_wagered"],
                 "percentage": tier["percentage"],
                 "rate": tier["rate"],
-                "needs_role": member is not None and tier["role_id"] not in role_ids,
-            }
-        if member is not None and tier["role_id"] not in role_ids:
-            return {
-                "name": tier["role_name"],
-                "min_wagered": tier["min_wagered"],
-                "percentage": tier["percentage"],
-                "rate": tier["rate"],
-                "needs_role": True,
             }
     return None
 

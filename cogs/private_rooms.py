@@ -447,7 +447,11 @@ class EntertainmentSelect(discord.ui.Select):
         min_withdrawal = get_min_withdrawal()
 
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
-        tier = resolve_tier(float(total_wagered), member)
+        if member is not None:
+            from modules.rakeback_roles import sync_rakeback_tier_roles
+            await sync_rakeback_tier_roles(member, float(total_wagered))
+
+        tier = resolve_tier(float(total_wagered))
         best_tier = {
             "role_id": tier.get("role_id"),
             "role_name": tier.get("name"),
@@ -674,21 +678,26 @@ class PlayerStatsView(discord.ui.View):
         rakeback_data = player.get_rakeback_data()
         accumulated = int(rakeback_data.get('accumulated', 0))
         total_earned = int(rakeback_data.get('total_earned', 0))
+        from modules.rakeback_engine import resolve_tier
+        from modules.rakeback_roles import get_flip_total_wagered
+
         settings = get_data('server/rakeback_settings') or {}
         tiers = settings.get('tiers', [])
         min_withdrawal = int(settings.get('min_withdrawal', 100))
         stats = _gud(member.id, 'stats') or {}
-        total_wagered = int(stats.get('total_wagered', 0))
-        member_role_ids = {str(r.id) for r in getattr(member, 'roles', [])}
-
+        total_wagered = max(
+            int(stats.get('total_wagered', 0)),
+            int(get_flip_total_wagered(member.id)),
+        )
+        tier = resolve_tier(float(total_wagered))
         best_tier = None
-        for tier in tiers:
-            if str(tier.get('role_id')) not in member_role_ids:
-                continue
-            if total_wagered < int(tier.get('min_wagered', 0)):
-                continue
-            if best_tier is None or tier.get('percentage', 0) > best_tier.get('percentage', 0):
-                best_tier = tier
+        if float(tier.get('rate', 0)) > 0:
+            best_tier = {
+                'role_id': tier.get('role_id'),
+                'role_name': tier.get('name'),
+                'percentage': tier.get('percentage', tier.get('rate', 0) * 100),
+                'min_wagered': tier.get('min_wagered', 0),
+            }
 
         # ── Tier progression ────────────────────────────────────────────────
         sorted_tiers = sorted(tiers, key=lambda ti: int(ti.get('min_wagered', 0)))
