@@ -23,38 +23,73 @@ def _thread_matches(thread: discord.Thread, user_id: int) -> bool:
     return name.endswith(tag) or tag in name
 
 
-async def _get_user_thread(guild: discord.Guild, user_id: int) -> discord.Thread | None:
-    """Find the user's active (non-archived) private thread."""
-    seen: set[int] = set()
+async def _resolve_thread(guild: discord.Guild, thread: discord.Thread) -> discord.Thread | None:
+    """Return thread if it still exists on Discord; None if deleted/stale cache."""
+    try:
+        ch = guild.get_thread(thread.id)
+        if ch is None:
+            ch = await guild.fetch_channel(thread.id)
+        if isinstance(ch, discord.Thread) and not ch.archived:
+            return ch
+    except discord.NotFound:
+        pass
+    except discord.HTTPException:
+        pass
+    return None
 
-    def pick(threads) -> discord.Thread | None:
-        for thread in threads:
+
+async def _get_user_thread(guild: discord.Guild, user_id: int) -> discord.Thread | None:
+    """Find the user's active private thread (skips deleted/stale cache entries)."""
+    seen: set[int] = set()
+    candidates: list[discord.Thread] = []
+
+    for thread in guild.threads:
+        tid = thread.id
+        if tid in seen:
+            continue
+        seen.add(tid)
+        if _thread_matches(thread, user_id):
+            candidates.append(thread)
+
+    try:
+        active = await guild.active_threads()
+        for thread in active.threads:
             tid = thread.id
             if tid in seen:
                 continue
             seen.add(tid)
             if _thread_matches(thread, user_id):
-                return thread
-        return None
-
-    found = pick(guild.threads)
-    if found:
-        return found
-
-    try:
-        active = await guild.active_threads()
-        found = pick(active.threads)
-        if found:
-            return found
+                candidates.append(thread)
     except Exception:
         pass
 
+    for thread in candidates:
+        resolved = await _resolve_thread(guild, thread)
+        if resolved:
+            return resolved
     return None
 
 
-async def _delete_user_thread(thread: discord.Thread) -> None:
-    """Permanently delete the private thread."""
-    await thread.delete()
+async def _delete_user_thread(thread: discord.Thread) -> bool:
+    """Permanently delete the private thread. Returns True if deleted or already gone."""
+    try:
+        await thread.delete()
+        return True
+    except discord.NotFound:
+        return True
+
+
+def _reply_channel(ctx: commands.Context, thread: discord.Thread) -> discord.abc.Messageable | None:
+    """Channel to post command feedback (parent channel if cmd was run inside the thread)."""
+    if isinstance(ctx.channel, discord.Thread) and ctx.channel.id == thread.id:
+        return ctx.guild.get_channel(thread.parent_id) if ctx.guild else None
+    return ctx.channel
+
+
+async def _send_reply(ctx: commands.Context, thread: discord.Thread, *, embed: discord.Embed) -> None:
+    ch = _reply_channel(ctx, thread)
+    if ch is not None:
+        await ch.send(embed=embed)
 
 
 class Threads(commands.Cog):
@@ -208,21 +243,17 @@ class Threads(commands.Cog):
             return await ctx.send(embed=utils.error_embed("You don't have an active thread."))
 
         try:
-            await thread.send(embed=discord.Embed(
-                description="🔒 Thread is being deleted…",
-                color=0xE74C3C,
-            ))
-        except discord.HTTPException:
-            pass
-
-        try:
             await _delete_user_thread(thread)
         except discord.HTTPException as e:
-            return await ctx.send(embed=utils.error_embed(f"Failed to delete thread: {e}"))
+            await _send_reply(ctx, thread, embed=utils.error_embed(f"Failed to delete thread: {e}"))
+            return
 
-        await ctx.send(embed=utils.success_embed(
-            "Your thread has been deleted. You can create a new one with `.thread create`."
-        ))
+        await _send_reply(
+            ctx, thread,
+            embed=utils.success_embed(
+                "Your thread has been deleted. You can create a new one with `.thread create`."
+            ),
+        )
 
     # ── info ───────────────────────────────────────────────────────────────────
 
@@ -264,9 +295,13 @@ class Threads(commands.Cog):
         try:
             await _delete_user_thread(thread)
         except discord.HTTPException as e:
-            return await ctx.send(embed=utils.error_embed(f"Failed to delete thread: {e}"))
+            await _send_reply(ctx, thread, embed=utils.error_embed(f"Failed to delete thread: {e}"))
+            return
 
-        await ctx.send(embed=utils.success_embed(f"Deleted {member.mention}'s thread."))
+        await _send_reply(
+            ctx, thread,
+            embed=utils.success_embed(f"Deleted {member.mention}'s thread."),
+        )
 
 
 async def setup(bot: commands.Bot):
