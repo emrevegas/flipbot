@@ -2554,9 +2554,11 @@ CASE_SLOT = 72
 CASE_GAP = 10
 CASE_VISIBLE = 5
 CASE_CENTER_COL = 2
-CASE_SPIN_FRAMES = 14
-CASE_FRAME_MS = 42
-CASE_HOLD_MS = 4_500
+CASE_SPIN_FRAMES = 22
+CASE_FRAME_MS = 68
+CASE_HOLD_MS = 6_000
+CASE_ROW_GAP_MULTI = 26
+CASE_FRAME_PAD = 14
 CASE_LOSER_DIM = 0.38
 CASE_WINNER_SCALE = 1.14
 
@@ -2673,13 +2675,15 @@ async def render_case_open_gif(
     winners = winners[:count]
     pool = items if len(items) >= 4 else items * 4
 
-    W = CASE_SLOT * CASE_VISIBLE + CASE_GAP * (CASE_VISIBLE - 1) + 48
-    row_h = CASE_SLOT + 34
-    H = 44 + count * row_h + 16
-    cx_line = W // 2
+    inner_w = CASE_SLOT * CASE_VISIBLE + CASE_GAP * (CASE_VISIBLE - 1) + 48
+    row_gap = CASE_ROW_GAP_MULTI if count > 1 else 10
+    row_h = CASE_SLOT + 34 + row_gap
+    inner_h = 44 + count * row_h + 16
+    cx_line = inner_w // 2
 
-    BG = (10, 14, 28)
-    GOLD = (255, 196, 0)
+    BG = config.CARD_BG_COLOR
+    BORDER = config.CARD_BORDER
+    GOLD = config.CARD_GOLD
     GREEN = (46, 213, 96)
     RED = (231, 76, 60)
     MUTED = (120, 130, 155)
@@ -2709,16 +2713,25 @@ async def render_case_open_gif(
         frames: list[Image.Image] = []
         durations: list[int] = []
 
+        def _apply_frame(inner: Image.Image) -> Image.Image:
+            pad = CASE_FRAME_PAD
+            ow, oh = inner.width + pad * 2, inner.height + pad * 2
+            framed = Image.new("RGBA", (ow, oh), (0, 0, 0, 0))
+            fd = ImageDraw.Draw(framed)
+            _rounded_rect(fd, (0, 0, ow - 1, oh - 1), 18, BG, GOLD, 3)
+            framed.paste(inner, (pad, pad))
+            return framed.convert("RGB")
+
         def _draw_frame(progress: float, *, final: bool) -> Image.Image:
-            img = Image.new("RGB", (W, H), BG)
+            img = Image.new("RGB", (inner_w, inner_h), BG)
             draw = ImageDraw.Draw(img)
             title = f"CASE  •  {case_name.upper()[:24]}"
             tw = draw.textlength(title, font=font_lbl)
-            draw.text(((W - tw) / 2, 10), title, font=font_lbl, fill=GOLD)
-            draw.line([(cx_line, 38), (cx_line, H - 10)], fill=(255, 196, 0), width=2)
+            draw.text(((inner_w - tw) / 2, 10), title, font=font_lbl, fill=GOLD)
+            draw.line([(cx_line, 38), (cx_line, inner_h - 10)], fill=GOLD, width=2)
 
             view_w = CASE_VISIBLE * (CASE_SLOT + CASE_GAP) - CASE_GAP
-            left_x = (W - view_w) // 2
+            left_x = (inner_w - view_w) // 2
 
             for row_i, strip in enumerate(reels):
                 y0 = 44 + row_i * row_h
@@ -2752,25 +2765,25 @@ async def render_case_open_gif(
                         txt = f"-{_fmt(case_price - val)} pts"
                         col = RED
                     vw = draw.textlength(txt, font=font_val)
-                    draw.text(((W - vw) / 2, y0 + CASE_SLOT + 6), txt, font=font_val, fill=col)
+                    draw.text(((inner_w - vw) / 2, y0 + CASE_SLOT + 6), txt, font=font_val, fill=col)
                     usd = _pts_to_usd(abs(net if net >= 0 else case_price - val))
                     uline = f"${usd:,.2f}"
                     uw = draw.textlength(uline, font=font_lbl)
-                    draw.text(((W - uw) / 2, y0 + CASE_SLOT + 22), uline, font=font_lbl, fill=MUTED)
+                    draw.text(((inner_w - uw) / 2, y0 + CASE_SLOT + 22), uline, font=font_lbl, fill=MUTED)
                 elif count > 1:
                     lbl = f"#{row_i + 1}"
                     draw.text((12, y0 + CASE_SLOT // 2 - 6), lbl, font=font_lbl, fill=MUTED)
 
-            return img
+            return _apply_frame(img)
 
         for i in range(CASE_SPIN_FRAMES):
             t = (i + 1) / CASE_SPIN_FRAMES
             frames.append(_draw_frame(t, final=False))
             durations.append(CASE_FRAME_MS)
 
-        for _ in range(3):
+        for _ in range(4):
             frames.append(_draw_frame(1.0, final=True))
-            durations.append(CASE_HOLD_MS // 3)
+            durations.append(CASE_HOLD_MS // 4)
 
     buf = io.BytesIO()
     frames[0].save(

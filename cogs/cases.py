@@ -424,89 +424,8 @@ def _open_result_embed(item: dict, case: dict, paid: int, profit: int, is_commun
     return embed
 
 # ════════════════════════════════════════════════════════
-# GUILD EMOJI PICKER (eski sistem)
+# EMOJI PICKER (paginated guild + application)
 # ════════════════════════════════════════════════════════
-
-class _GuildEmojiSelect(discord.ui.Select):
-    """Sunucu emojilerinden bir sayfayı gösteren select menü."""
-    def __init__(self, emojis: list, row: int, page: int, total_pages: int, label_name: str, lang: str):
-        options = [
-            discord.SelectOption(label=e.name[:100], value=str(e.id), emoji=e)
-            for e in emojis
-        ]
-        placeholder = (
-            _adm("emoji_pick_ph", lang, name=label_name)
-            if total_pages == 1
-            else _adm("emoji_pick_ph_page", lang, name=label_name, page=page, pages=total_pages)
-        )
-        super().__init__(
-            placeholder=placeholder,
-            options=options,
-            min_values=0,
-            max_values=1,
-            custom_id=f"cases_emoji_sel:{row}:{os.urandom(4).hex()}",
-            row=row,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-
-class _CasesEmojiPickView(discord.ui.View):
-    """
-    Tek emoji seçimi için guild emoji sayfaları sunar.
-    save_fn(emoji_str) -> (discord.Embed, discord.ui.View | None)
-    """
-    def __init__(self, label_name: str, guild_emojis: list, save_fn, user_id: int, lang: str = "en"):
-        super().__init__(timeout=180)
-        self.guild_emojis = guild_emojis
-        self.save_fn = save_fn
-        self.user_id = user_id
-        self.lang = lang
-        self._selects: list = []
-
-        chunks = [guild_emojis[i:i + 25] for i in range(0, len(guild_emojis), 25)][:4]
-        for idx, chunk in enumerate(chunks):
-            sel = _GuildEmojiSelect(
-                chunk, row=idx, page=idx + 1,
-                total_pages=len(chunks), label_name=label_name, lang=lang,
-            )
-            self._selects.append(sel)
-            self.add_item(sel)
-
-        btn = discord.ui.Button(label=_adm("btn_confirm_select", lang), style=discord.ButtonStyle.success, row=4)
-        btn.callback = self._on_confirm
-        self.add_item(btn)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                t("cases.not_yours", user_id=str(interaction.user.id)), ephemeral=True
-            )
-            return False
-        return True
-
-    async def _on_confirm(self, interaction: discord.Interaction):
-        chosen = []
-        for sel in self._selects:
-            chosen.extend(sel.values)
-
-        uid = str(interaction.user.id)
-        if not chosen:
-            return await interaction.response.send_message(
-                t("cases.pick_one", user_id=uid), ephemeral=True
-            )
-        if len(chosen) > 1:
-            return await interaction.response.send_message(
-                t("cases.pick_one_only", user_id=uid), ephemeral=True
-            )
-
-        emoji_id  = int(chosen[0])
-        emoji_obj = discord.utils.get(self.guild_emojis, id=emoji_id)
-        emoji_str = str(emoji_obj) if emoji_obj else f"<:{emoji_id}>"
-
-        result_embed, result_view = await self.save_fn(emoji_str)
-        await interaction.response.edit_message(embed=result_embed, view=result_view)
 
 
 class _AddItemEmojiTextModal(Modal):
@@ -807,18 +726,19 @@ class AddItemModal(Modal):
             _save_db(db)
             return _item_library_embed(db, page, lang=lang), ItemLibraryView(admin_id, page, lang=lang)
 
-        guild_emojis = list(interaction.guild.emojis) if interaction.guild else []
-        if guild_emojis:
-            view  = _CasesEmojiPickView(label_name=name, guild_emojis=guild_emojis, save_fn=save_fn, user_id=interaction.user.id, lang=lang)
-            embed = discord.Embed(
-                title=t("cases.pick_emoji_title", user_id=uid),
-                description=t("cases.pick_emoji_desc", user_id=uid, name=name),
-                color=CLR_BRAND,
+        from modules.case_emoji_picker import open_emoji_picker_after_item_modal
+
+        ok = await open_emoji_picker_after_item_modal(
+            interaction,
+            label_name=name,
+            save_fn=save_fn,
+            user_id=interaction.user.id,
+            lang=lang,
+        )
+        if not ok:
+            await interaction.response.send_modal(
+                _AddItemEmojiTextModal(admin_id, name, value, page, lang)
             )
-            embed.set_footer(text=FOOTER_TEXT)
-            await interaction.response.edit_message(embed=embed, view=view)
-        else:
-            await interaction.response.send_modal(_AddItemEmojiTextModal(admin_id, name, value, page, lang))
 
 
 class EditItemModal(Modal):
@@ -863,18 +783,19 @@ class EditItemModal(Modal):
             _save_db(db)
             return _item_library_embed(db, page, lang=lang), ItemLibraryView(admin_id, page, lang=lang)
 
-        guild_emojis = list(interaction.guild.emojis) if interaction.guild else []
-        if guild_emojis:
-            view  = _CasesEmojiPickView(label_name=name, guild_emojis=guild_emojis, save_fn=save_fn, user_id=interaction.user.id, lang=lang)
-            embed = discord.Embed(
-                title=t("cases.pick_emoji_title", user_id=uid),
-                description=t("cases.pick_emoji_desc", user_id=uid, name=name),
-                color=CLR_BRAND,
+        from modules.case_emoji_picker import open_emoji_picker_after_item_modal
+
+        ok = await open_emoji_picker_after_item_modal(
+            interaction,
+            label_name=name,
+            save_fn=save_fn,
+            user_id=interaction.user.id,
+            lang=lang,
+        )
+        if not ok:
+            await interaction.response.send_modal(
+                _EditItemEmojiTextModal(admin_id, item_id, name, value, page, lang)
             )
-            embed.set_footer(text=FOOTER_TEXT)
-            await interaction.response.edit_message(embed=embed, view=view)
-        else:
-            await interaction.response.send_modal(_EditItemEmojiTextModal(admin_id, item_id, name, value, page, lang))
 
 # ════════════════════════════════════════════════════════
 # OFFICIAL CASE MANAGEMENT — ADMIN
@@ -1068,146 +989,115 @@ class OfficialCaseDetailView(View):
         )
 
 
-class AddItemToCaseView(View):
-    def __init__(self, user_id: int, case_id: str, available: list, is_community: bool, lang: str | None = None):
-        super().__init__(timeout=120)
-        self.user_id      = user_id
-        self.case_id      = case_id
-        self.is_community = is_community
-        self.lang         = lang or get_user_lang(user_id)
+def AddItemToCaseView(
+    user_id: int,
+    case_id: str,
+    available: list,
+    is_community: bool = False,
+    lang: str | None = None,
+):
+    from modules.case_emoji_picker import PaginatedItemListView
 
-        options = [
-            discord.SelectOption(
-                label=item.get("name", "?")[:50],
-                value=iid,
-                emoji=item.get("emoji", "❓"),
-                description=f"{format_balance(item.get('value',0),'real')}  •  {iid}"[:100],
-            )
-            for iid, item in available[:25]
-        ]
-        sel = Select(
-            placeholder=_adm("select_add_items", self.lang),
-            options=options,
-            min_values=1,
-            max_values=min(len(options), 10),
-            row=0,
-        )
-        sel.callback = self._on_select
-        self.add_item(sel)
+    lang = lang or get_user_lang(user_id)
+    entries = list(available)
 
-        back = Button(label=_adm("btn_cancel", self.lang), style=discord.ButtonStyle.secondary, row=1)
-        back.callback = self._on_back
-        self.add_item(back)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                t("cases.not_yours", user_id=str(interaction.user.id)), ephemeral=True
-            )
-            return False
-        return True
-
-    async def _on_select(self, interaction: discord.Interaction):
-        sel_ids = interaction.data["values"]
-        db      = _get_db()
-        bucket  = "community_cases" if self.is_community else "cases"
-        case    = db[bucket].get(self.case_id)
+    async def on_submit(interaction: discord.Interaction, sel_ids: list[str]) -> None:
+        db = _get_db()
+        bucket = "community_cases" if is_community else "cases"
+        case = db[bucket].get(case_id)
         if not case:
-            return await interaction.response.send_message(t("cases.community_not_found", user_id=str(interaction.user.id)), ephemeral=True)
+            return await interaction.response.send_message(
+                t("cases.community_not_found", user_id=str(interaction.user.id)), ephemeral=True
+            )
         cur = case.setdefault("item_ids", [])
         for iid in sel_ids:
             if iid not in cur and len(cur) < MAX_ITEMS_PER_CASE:
                 cur.append(iid)
-        _recalculate_case_price(db, self.case_id, bucket)
+        _recalculate_case_price(db, case_id, bucket)
         _save_db(db)
-        embed = _case_detail_embed(db, self.case_id, self.is_community, lang=self.lang)
-        view  = (
-            CommunityCaseDetailView(self.user_id, self.case_id)
-            if self.is_community
-            else OfficialCaseDetailView(self.user_id, self.case_id, lang=self.lang)
+        embed = _case_detail_embed(db, case_id, is_community, lang=lang)
+        view = (
+            CommunityCaseDetailView(user_id, case_id)
+            if is_community
+            else OfficialCaseDetailView(user_id, case_id, lang=lang)
         )
         await interaction.response.edit_message(embed=embed, view=view)
 
-    async def _on_back(self, interaction: discord.Interaction):
-        db    = _get_db()
-        embed = _case_detail_embed(db, self.case_id, self.is_community, lang=self.lang)
-        view  = (
-            CommunityCaseDetailView(self.user_id, self.case_id)
-            if self.is_community
-            else OfficialCaseDetailView(self.user_id, self.case_id, lang=self.lang)
+    async def on_back(interaction: discord.Interaction) -> None:
+        db = _get_db()
+        embed = _case_detail_embed(db, case_id, is_community, lang=lang)
+        view = (
+            CommunityCaseDetailView(user_id, case_id)
+            if is_community
+            else OfficialCaseDetailView(user_id, case_id, lang=lang)
         )
         await interaction.response.edit_message(embed=embed, view=view)
 
+    return PaginatedItemListView(
+        user_id=user_id,
+        entries=entries,
+        placeholder_key="select_add_items",
+        on_submit=on_submit,
+        on_back=on_back,
+        lang=lang,
+        accent=CLR_TEAL if is_community else CLR_BRAND,
+    )
 
-class RemoveItemFromCaseView(View):
-    def __init__(self, user_id: int, case_id: str, items: list, is_community: bool, lang: str | None = None):
-        super().__init__(timeout=120)
-        self.user_id      = user_id
-        self.case_id      = case_id
-        self.is_community = is_community
-        self.lang         = lang or get_user_lang(user_id)
 
-        options = [
-            discord.SelectOption(
-                label=item.get("name", "?")[:50],
-                value=item.get("id", item.get("name", "?")),
-                emoji=item.get("emoji", "❓"),
-                description=f"{format_balance(item.get('value',0),'real')}"[:100],
-            )
-            for item in items[:25]
-        ]
-        sel = Select(
-            placeholder=_adm("select_remove_items", self.lang),
-            options=options,
-            min_values=1,
-            max_values=len(options),
-            row=0,
-        )
-        sel.callback = self._on_select
-        self.add_item(sel)
+def RemoveItemFromCaseView(
+    user_id: int,
+    case_id: str,
+    items: list,
+    is_community: bool = False,
+    lang: str | None = None,
+):
+    from modules.case_emoji_picker import PaginatedItemListView
 
-        back = Button(label=_adm("btn_cancel", self.lang), style=discord.ButtonStyle.secondary, row=1)
-        back.callback = self._on_back
-        self.add_item(back)
+    lang = lang or get_user_lang(user_id)
+    entries = [(item.get("id", item.get("name", "?")), item) for item in items]
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                t("cases.not_yours", user_id=str(interaction.user.id)), ephemeral=True
-            )
-            return False
-        return True
-
-    async def _on_select(self, interaction: discord.Interaction):
-        remove = set(interaction.data["values"])
-        db     = _get_db()
-        bucket = "community_cases" if self.is_community else "cases"
-        case   = db[bucket].get(self.case_id)
+    async def on_submit(interaction: discord.Interaction, sel_ids: list[str]) -> None:
+        remove = set(sel_ids)
+        db = _get_db()
+        bucket = "community_cases" if is_community else "cases"
+        case = db[bucket].get(case_id)
         if not case:
-            return await interaction.response.send_message(t("cases.community_not_found", user_id=str(interaction.user.id)), ephemeral=True)
+            return await interaction.response.send_message(
+                t("cases.community_not_found", user_id=str(interaction.user.id)), ephemeral=True
+            )
         case["item_ids"] = [i for i in case.get("item_ids", []) if i not in remove]
         if "item_chances" in case:
             for iid in remove:
                 case["item_chances"].pop(iid, None)
-        _recalculate_case_price(db, self.case_id, bucket)
+        _recalculate_case_price(db, case_id, bucket)
         _save_db(db)
-        embed = _case_detail_embed(db, self.case_id, self.is_community, lang=self.lang)
-        view  = (
-            CommunityCaseDetailView(self.user_id, self.case_id)
-            if self.is_community
-            else OfficialCaseDetailView(self.user_id, self.case_id, lang=self.lang)
+        embed = _case_detail_embed(db, case_id, is_community, lang=lang)
+        view = (
+            CommunityCaseDetailView(user_id, case_id)
+            if is_community
+            else OfficialCaseDetailView(user_id, case_id, lang=lang)
         )
         await interaction.response.edit_message(embed=embed, view=view)
 
-    async def _on_back(self, interaction: discord.Interaction):
-        db    = _get_db()
-        embed = _case_detail_embed(db, self.case_id, self.is_community, lang=self.lang)
-        view  = (
-            CommunityCaseDetailView(self.user_id, self.case_id)
-            if self.is_community
-            else OfficialCaseDetailView(self.user_id, self.case_id, lang=self.lang)
+    async def on_back(interaction: discord.Interaction) -> None:
+        db = _get_db()
+        embed = _case_detail_embed(db, case_id, is_community, lang=lang)
+        view = (
+            CommunityCaseDetailView(user_id, case_id)
+            if is_community
+            else OfficialCaseDetailView(user_id, case_id, lang=lang)
         )
         await interaction.response.edit_message(embed=embed, view=view)
+
+    return PaginatedItemListView(
+        user_id=user_id,
+        entries=entries,
+        placeholder_key="select_remove_items",
+        on_submit=on_submit,
+        on_back=on_back,
+        lang=lang,
+        accent=CLR_TEAL if is_community else CLR_BRAND,
+    )
 
 
 class ConfirmDeleteCaseView(View):
@@ -2108,9 +1998,8 @@ class ConfirmOpenCaseView(View):
 
     async def _on_go(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        err = await _execute_case_opens(
+        err, gif_buf = await _settle_case_opens(
             interaction.user,
-            interaction.channel,
             self.case_id,
             self.is_community,
             1,
@@ -2132,7 +2021,8 @@ class ConfirmOpenCaseView(View):
             color=CLR_TEAL if self.is_community else CLR_BRAND,
         )
         embed.set_footer(text=FOOTER_TEXT)
-        await interaction.message.edit(embed=embed, view=_OpenAgainView(self.user_id, self.case_id, self.is_community))
+        files = [discord.File(gif_buf, "cases.gif")] if gif_buf else []
+        await interaction.message.edit(embed=embed, attachments=files, view=_OpenAgainView(self.user_id, self.case_id, self.is_community))
 
     async def _on_cancel(self, interaction: discord.Interaction):
         db   = _get_db()
@@ -2494,81 +2384,57 @@ def _hub_list_cases(db: dict, view_mode: str) -> list[tuple[str, dict, bool]]:
     return out
 
 
-def _hub_embed(
+def _hub_selected(
     db: dict,
-    user_id: int,
-    *,
-    view_mode: str,
-    selected: tuple[str, dict, bool] | None,
-    count: int,
-) -> discord.Embed:
-    player = Player(user_id)
-    bal = player.get_balance("real")
-    cases = _hub_list_cases(db, view_mode)
-    mode_lbl = "🏠 Official" if view_mode == "house" else "🌐 Community"
-    embed = discord.Embed(
-        title="📦 Case Opening",
-        description=(
-            f"{mode_lbl}  •  **{len(cases)}** cases\n"
-            f"**Balance:** {format_balance(bal, 'real')}\n"
-            f"{_divider()}"
-        ),
-        color=CLR_GOLD,
+    case_id: str | None,
+    is_community: bool,
+) -> tuple[str, dict, bool] | None:
+    if not case_id:
+        return None
+    getter = _get_community_case if is_community else _get_case
+    case = getter(db, case_id)
+    if not case:
+        return None
+    return case_id, case, is_community
+
+
+def _hub_item_preview(db: dict, case: dict) -> str:
+    items = _case_items_resolved(db, case.get("item_ids", []))
+    return " ".join(
+        f"{it.get('emoji', '?')}"
+        for it in sorted(items, key=lambda x: -x.get("value", 0))[:8]
     )
-    if selected:
-        cid, case, is_cc = selected
-        price = int(case.get("price", 0))
-        embed.add_field(
-            name=f"{case.get('emoji', '📦')} {case.get('name', 'Case')}",
-            value=(
-                f"**Price:** {format_balance(price, 'real')}  ×{count} = "
-                f"**{format_balance(price * count, 'real')}**"
-            ),
-            inline=False,
-        )
-        items = _case_items_resolved(db, case.get("item_ids", []))
-        preview = ", ".join(
-            f"{it.get('emoji', '?')}" for it in sorted(items, key=lambda x: -x.get("value", 0))[:8]
-        )
-        if preview:
-            embed.add_field(name="Items", value=preview, inline=False)
-    else:
-        embed.add_field(
-            name="Get started",
-            value="Select a case, choose quantity (1–4), then **Open**.",
-            inline=False,
-        )
-    embed.set_footer(text=f"{FOOTER_TEXT}  •  Max ×{MAX_CASE_OPEN_COUNT} per open")
-    return embed
 
 
-async def _execute_case_opens(
+async def _settle_case_opens(
     user: discord.User | discord.Member,
-    channel: discord.abc.Messageable,
     case_id: str,
     is_community: bool,
     count: int,
-) -> str | None:
-    """Deduct, roll, animate, credit. Returns error message or None."""
+) -> tuple[str | None, object | None]:
+    """Deduct, roll, credit, render GIF. Returns (error, gif_bytes_io)."""
     count = max(1, min(MAX_CASE_OPEN_COUNT, int(count)))
     db = _get_db()
     getter = _get_community_case if is_community else _get_case
     case = getter(db, case_id)
     if not case:
-        return t("cases.not_found", user_id=str(user.id))
+        return t("cases.not_found", user_id=str(user.id)), None
 
     items = _case_items_resolved(db, case.get("item_ids", []))
     if not items:
-        return t("cases.no_items_in_case", user_id=str(user.id))
+        return t("cases.no_items_in_case", user_id=str(user.id)), None
 
     unit = int(case.get("price", 0))
     total_cost = unit * count
     player = Player(user.id)
     if player.get_balance("real") < total_cost:
-        return t(
-            "cases.insufficient_balance",
-            user_id=str(user.id),
-            price=format_balance(total_cost, "real"),
+        return (
+            t(
+                "cases.insufficient_balance",
+                user_id=str(user.id),
+                price=format_balance(total_cost, "real"),
+            ),
+            None,
         )
 
     player.remove_balance("real", total_cost)
@@ -2592,144 +2458,7 @@ async def _execute_case_opens(
         float(unit),
         case_name=case.get("name", "Case"),
     )
-    await channel.send(file=discord.File(gif, "cases.gif"))
-    return None
-
-
-class CasesOpenHubView(View):
-    def __init__(
-        self,
-        user_id: int,
-        *,
-        view_mode: str = "house",
-        case_id: str | None = None,
-        is_community: bool = False,
-        count: int = 1,
-    ):
-        super().__init__(timeout=180)
-        self.user_id = user_id
-        self.view_mode = view_mode
-        self.case_id = case_id
-        self.is_community = is_community
-        self.count = max(1, min(MAX_CASE_OPEN_COUNT, count))
-        self._build()
-
-    def _selected(self, db: dict) -> tuple[str, dict, bool] | None:
-        if not self.case_id:
-            return None
-        getter = _get_community_case if self.is_community else _get_case
-        case = getter(db, self.case_id)
-        if not case:
-            return None
-        return self.case_id, case, self.is_community
-
-    def _build(self):
-        self.clear_items()
-        db = _get_db()
-        cases = _hub_list_cases(db, self.view_mode)
-
-        if cases:
-            opts = [
-                discord.SelectOption(
-                    label=c.get("name", "?")[:25],
-                    value=f"{'c' if is_cc else 'h'}:{cid}",
-                    emoji=c.get("emoji", "📦"),
-                    description=f"{format_balance(c.get('price', 0), 'real')}"[:100],
-                    default=(cid == self.case_id and is_cc == self.is_community),
-                )
-                for cid, c, is_cc in cases[:25]
-            ]
-            sel = Select(placeholder="📦 Select a case…", options=opts, row=0)
-            sel.callback = self._on_case_select
-            self.add_item(sel)
-
-        for n, em in [(1, "1️⃣"), (2, "2️⃣"), (3, "3️⃣"), (4, "4️⃣")]:
-            btn = Button(
-                label=f"×{n}",
-                emoji=em,
-                style=discord.ButtonStyle.primary if self.count == n else discord.ButtonStyle.secondary,
-                row=1,
-            )
-            btn.callback = self._make_count_cb(n)
-            self.add_item(btn)
-
-        toggle = Button(
-            label="🌐 Community" if self.view_mode == "house" else "🏠 Official",
-            style=discord.ButtonStyle.secondary,
-            row=2,
-        )
-        toggle.callback = self._on_toggle
-        self.add_item(toggle)
-
-        open_btn = Button(
-            label=f"🎰 Open ×{self.count}",
-            style=discord.ButtonStyle.success,
-            disabled=not self.case_id,
-            row=2,
-        )
-        open_btn.callback = self._on_open
-        self.add_item(open_btn)
-
-    def _make_count_cb(self, n: int):
-        async def _cb(interaction: discord.Interaction):
-            if interaction.user.id != self.user_id:
-                return await interaction.response.send_message("Not your panel.", ephemeral=True)
-            self.count = n
-            self._build()
-            db = _get_db()
-            await interaction.response.edit_message(
-                embed=_hub_embed(db, self.user_id, view_mode=self.view_mode, selected=self._selected(db), count=self.count),
-                view=self,
-            )
-        return _cb
-
-    async def _on_case_select(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("Not your panel.", ephemeral=True)
-        raw = interaction.data["values"][0]
-        self.is_community = raw.startswith("c:")
-        self.case_id = raw.split(":", 1)[1]
-        self._build()
-        db = _get_db()
-        await interaction.response.edit_message(
-            embed=_hub_embed(db, self.user_id, view_mode=self.view_mode, selected=self._selected(db), count=self.count),
-            view=self,
-        )
-
-    async def _on_toggle(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("Not your panel.", ephemeral=True)
-        self.view_mode = "community" if self.view_mode == "house" else "house"
-        self.case_id = None
-        self.is_community = self.view_mode == "community"
-        self._build()
-        db = _get_db()
-        await interaction.response.edit_message(
-            embed=_hub_embed(db, self.user_id, view_mode=self.view_mode, selected=None, count=self.count),
-            view=self,
-        )
-
-    async def _on_open(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("Not your panel.", ephemeral=True)
-        if not self.case_id:
-            return await interaction.response.send_message("Select a case first.", ephemeral=True)
-        await interaction.response.defer()
-        err = await _execute_case_opens(
-            interaction.user,
-            interaction.channel,
-            self.case_id,
-            self.is_community,
-            self.count,
-        )
-        if err:
-            return await interaction.followup.send(err, ephemeral=True)
-        db = _get_db()
-        self._build()
-        await interaction.message.edit(
-            embed=_hub_embed(db, self.user_id, view_mode=self.view_mode, selected=self._selected(db), count=self.count),
-            view=self,
-        )
+    return None, gif
 
 
 # ════════════════════════════════════════════════════════
@@ -2790,9 +2519,10 @@ class CasesCog(commands.Cog):
                     color=CLR_GREY,
                 )
             )
-        view = CasesOpenHubView(ctx.author.id)
-        embed = _hub_embed(db, ctx.author.id, view_mode=view.view_mode, selected=None, count=1)
-        await ctx.send(embed=embed, view=view)
+        from modules.cases_hub_v2 import make_cases_hub
+
+        layout = make_cases_hub(ctx.author.id)
+        await ctx.send(view=layout)
 
     @app_commands.command(name="community_cases", description="Community kasa panelini açar")
     async def community_cases(self, interaction: discord.Interaction):
