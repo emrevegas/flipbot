@@ -16,7 +16,6 @@ CATEGORIES = {
         "fields": [
             ("Coin Flip", f"`{PREFIX}coinflip <amount> [hot/cold]`\nFlip a coin — hot (heads) or cold (tails)."),
             ("Dice", f"`{PREFIX}dice <amount>`\nRoll a dice — highest roll wins."),
-            ("Roulette", f"`{PREFIX}roulette <amount>`\nBet on a roulette spin."),
             ("HTW", f"`{PREFIX}htw <bet>` — vs **{config.BOT_DISPLAY_NAME}**\n"
                      f"`{PREFIX}htw @user <bet>` — PvP challenge (higher wheel wins, tie = push)."),
             ("Blackjack", f"`{PREFIX}blackjack <amount>`  or  `{PREFIX}bj <amount>`\nPlay blackjack with interactive buttons (Hit / Stand / Double)."),
@@ -86,7 +85,7 @@ CATEGORIES = {
         "title": "📦 Cases",
         "description": "Open cases to win items or point rewards.",
         "fields": [
-            ("Browse & Open", f"`{PREFIX}cases`\nBrowse and open available cases with an interactive button menu."),
+            ("Browse & Open", f"`{PREFIX}cases`\nOfficial & community cases — pick a case, quantity ×1–×4, animated GIF reveal."),
             ("How it works", "Select a case from the dropdown, preview its items, then open it. Winnings are added to your balance automatically."),
         ],
     },

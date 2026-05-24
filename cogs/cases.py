@@ -33,10 +33,13 @@ from discord.ui import View, Select, Button, Modal, TextInput
 from typing import Optional
 
 from modules.database import get_data, set_data, replace_data, check_permission, get_user_data, set_user_data
+from modules import image_gen
 from modules.player import Player
 from modules.translator import t
 from modules.utils import format_balance, create_error_embed, create_success_embed, get_user_lang
 from modules.constants import FOOTER_TEXT
+
+MAX_CASE_OPEN_COUNT = 4
 
 # ════════════════════════════════════════════════════════
 # CONSTANTS & COLORS
@@ -2104,45 +2107,32 @@ class ConfirmOpenCaseView(View):
         return True
 
     async def _on_go(self, interaction: discord.Interaction):
-        uid    = str(interaction.user.id)
-        db     = _get_db()
+        await interaction.response.defer()
+        err = await _execute_case_opens(
+            interaction.user,
+            interaction.channel,
+            self.case_id,
+            self.is_community,
+            1,
+        )
+        if err:
+            return await interaction.followup.send(err, ephemeral=True)
+        lang = get_user_lang(interaction.user.id)
+        db = _get_db()
         getter = _get_community_case if self.is_community else _get_case
-        case   = getter(db, self.case_id)
-        if not case:
-            return await interaction.response.send_message(
-                t("cases.not_found", user_id=uid), ephemeral=True
-            )
-
-        items  = _case_items_resolved(db, case.get("item_ids", []))
-        if not items:
-            return await interaction.response.send_message(
-                t("cases.no_items_in_case", user_id=uid), ephemeral=True
-            )
-
-        price  = case.get("price", 0)
+        case = getter(db, self.case_id) or {}
+        price = case.get("price", 0)
         player = Player(interaction.user.id)
-        if player.get_balance("real") < price:
-            return await interaction.response.send_message(
-                t("cases.insufficient_balance", user_id=uid, price=format_balance(price, 'real')),
-                ephemeral=True,
-            )
-
-        player.remove_balance("real", price)
-
-        if self.is_community:
-            owner_id = case.get("owner_id")
-            fee      = round(price * (PLATFORM_FEE_PCT / 100))
-            if owner_id and owner_id != interaction.user.id:
-                Player(owner_id).add_balance("real", fee)
-
-        won       = _open_case_item(items, case.get("item_chances", {}))
-        won_value = won.get("value", 0)
-        player.add_balance("real", won_value)
-
-        net   = won_value - price
-        lang  = get_user_lang(interaction.user.id)
-        embed = _open_result_embed(won, case, price, net, self.is_community, lang=lang)
-        await interaction.response.edit_message(embed=embed, view=_OpenAgainView(self.user_id, self.case_id, self.is_community))
+        embed = discord.Embed(
+            title=f"{case.get('emoji', '📦')} {case.get('name', 'Case')}",
+            description=(
+                f"**Price:** {format_balance(price, 'real')}\n"
+                f"**Balance:** {format_balance(player.get_balance('real'), 'real')}"
+            ),
+            color=CLR_TEAL if self.is_community else CLR_BRAND,
+        )
+        embed.set_footer(text=FOOTER_TEXT)
+        await interaction.message.edit(embed=embed, view=_OpenAgainView(self.user_id, self.case_id, self.is_community))
 
     async def _on_cancel(self, interaction: discord.Interaction):
         db   = _get_db()
@@ -2484,6 +2474,265 @@ class AdminSetPublishFeeModal(Modal, title="💰  Yayınlama Ücreti Ayarla"):
         )
 
 # ════════════════════════════════════════════════════════
+# PREFIX — CASE OPEN HUB (.cases)
+# ════════════════════════════════════════════════════════
+
+def _hub_list_cases(db: dict, view_mode: str) -> list[tuple[str, dict, bool]]:
+    """(case_id, case_dict, is_community) with at least one item."""
+    out: list[tuple[str, dict, bool]] = []
+    if view_mode == "house":
+        for cid, case in db.get("cases", {}).items():
+            if _case_items_resolved(db, case.get("item_ids", [])):
+                out.append((cid, case, False))
+    else:
+        for cid, case in db.get("community_cases", {}).items():
+            if not case.get("published"):
+                continue
+            if _case_items_resolved(db, case.get("item_ids", [])):
+                out.append((cid, case, True))
+    out.sort(key=lambda x: x[1].get("price", 0))
+    return out
+
+
+def _hub_embed(
+    db: dict,
+    user_id: int,
+    *,
+    view_mode: str,
+    selected: tuple[str, dict, bool] | None,
+    count: int,
+) -> discord.Embed:
+    player = Player(user_id)
+    bal = player.get_balance("real")
+    cases = _hub_list_cases(db, view_mode)
+    mode_lbl = "🏠 Official" if view_mode == "house" else "🌐 Community"
+    embed = discord.Embed(
+        title="📦 Case Opening",
+        description=(
+            f"{mode_lbl}  •  **{len(cases)}** cases\n"
+            f"**Balance:** {format_balance(bal, 'real')}\n"
+            f"{_divider()}"
+        ),
+        color=CLR_GOLD,
+    )
+    if selected:
+        cid, case, is_cc = selected
+        price = int(case.get("price", 0))
+        embed.add_field(
+            name=f"{case.get('emoji', '📦')} {case.get('name', 'Case')}",
+            value=(
+                f"**Price:** {format_balance(price, 'real')}  ×{count} = "
+                f"**{format_balance(price * count, 'real')}**"
+            ),
+            inline=False,
+        )
+        items = _case_items_resolved(db, case.get("item_ids", []))
+        preview = ", ".join(
+            f"{it.get('emoji', '?')}" for it in sorted(items, key=lambda x: -x.get("value", 0))[:8]
+        )
+        if preview:
+            embed.add_field(name="Items", value=preview, inline=False)
+    else:
+        embed.add_field(
+            name="Get started",
+            value="Select a case, choose quantity (1–4), then **Open**.",
+            inline=False,
+        )
+    embed.set_footer(text=f"{FOOTER_TEXT}  •  Max ×{MAX_CASE_OPEN_COUNT} per open")
+    return embed
+
+
+async def _execute_case_opens(
+    user: discord.User | discord.Member,
+    channel: discord.abc.Messageable,
+    case_id: str,
+    is_community: bool,
+    count: int,
+) -> str | None:
+    """Deduct, roll, animate, credit. Returns error message or None."""
+    count = max(1, min(MAX_CASE_OPEN_COUNT, int(count)))
+    db = _get_db()
+    getter = _get_community_case if is_community else _get_case
+    case = getter(db, case_id)
+    if not case:
+        return t("cases.not_found", user_id=str(user.id))
+
+    items = _case_items_resolved(db, case.get("item_ids", []))
+    if not items:
+        return t("cases.no_items_in_case", user_id=str(user.id))
+
+    unit = int(case.get("price", 0))
+    total_cost = unit * count
+    player = Player(user.id)
+    if player.get_balance("real") < total_cost:
+        return t(
+            "cases.insufficient_balance",
+            user_id=str(user.id),
+            price=format_balance(total_cost, "real"),
+        )
+
+    player.remove_balance("real", total_cost)
+    chances = case.get("item_chances", {})
+    winners = [_open_case_item(items, chances) for _ in range(count)]
+
+    if is_community:
+        owner_id = case.get("owner_id")
+        fee_each = round(unit * (PLATFORM_FEE_PCT / 100))
+        if owner_id and owner_id != user.id and fee_each > 0:
+            for _ in range(count):
+                Player(owner_id).add_balance("real", fee_each)
+
+    total_won = sum(int(w.get("value", 0)) for w in winners)
+    if total_won > 0:
+        player.add_balance("real", total_won)
+
+    gif = await image_gen.render_case_open_gif(
+        items,
+        winners,
+        float(unit),
+        case_name=case.get("name", "Case"),
+    )
+    await channel.send(file=discord.File(gif, "cases.gif"))
+    return None
+
+
+class CasesOpenHubView(View):
+    def __init__(
+        self,
+        user_id: int,
+        *,
+        view_mode: str = "house",
+        case_id: str | None = None,
+        is_community: bool = False,
+        count: int = 1,
+    ):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.view_mode = view_mode
+        self.case_id = case_id
+        self.is_community = is_community
+        self.count = max(1, min(MAX_CASE_OPEN_COUNT, count))
+        self._build()
+
+    def _selected(self, db: dict) -> tuple[str, dict, bool] | None:
+        if not self.case_id:
+            return None
+        getter = _get_community_case if self.is_community else _get_case
+        case = getter(db, self.case_id)
+        if not case:
+            return None
+        return self.case_id, case, self.is_community
+
+    def _build(self):
+        self.clear_items()
+        db = _get_db()
+        cases = _hub_list_cases(db, self.view_mode)
+
+        if cases:
+            opts = [
+                discord.SelectOption(
+                    label=c.get("name", "?")[:25],
+                    value=f"{'c' if is_cc else 'h'}:{cid}",
+                    emoji=c.get("emoji", "📦"),
+                    description=f"{format_balance(c.get('price', 0), 'real')}"[:100],
+                    default=(cid == self.case_id and is_cc == self.is_community),
+                )
+                for cid, c, is_cc in cases[:25]
+            ]
+            sel = Select(placeholder="📦 Select a case…", options=opts, row=0)
+            sel.callback = self._on_case_select
+            self.add_item(sel)
+
+        for n, em in [(1, "1️⃣"), (2, "2️⃣"), (3, "3️⃣"), (4, "4️⃣")]:
+            btn = Button(
+                label=f"×{n}",
+                emoji=em,
+                style=discord.ButtonStyle.primary if self.count == n else discord.ButtonStyle.secondary,
+                row=1,
+            )
+            btn.callback = self._make_count_cb(n)
+            self.add_item(btn)
+
+        toggle = Button(
+            label="🌐 Community" if self.view_mode == "house" else "🏠 Official",
+            style=discord.ButtonStyle.secondary,
+            row=2,
+        )
+        toggle.callback = self._on_toggle
+        self.add_item(toggle)
+
+        open_btn = Button(
+            label=f"🎰 Open ×{self.count}",
+            style=discord.ButtonStyle.success,
+            disabled=not self.case_id,
+            row=2,
+        )
+        open_btn.callback = self._on_open
+        self.add_item(open_btn)
+
+    def _make_count_cb(self, n: int):
+        async def _cb(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                return await interaction.response.send_message("Not your panel.", ephemeral=True)
+            self.count = n
+            self._build()
+            db = _get_db()
+            await interaction.response.edit_message(
+                embed=_hub_embed(db, self.user_id, view_mode=self.view_mode, selected=self._selected(db), count=self.count),
+                view=self,
+            )
+        return _cb
+
+    async def _on_case_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("Not your panel.", ephemeral=True)
+        raw = interaction.data["values"][0]
+        self.is_community = raw.startswith("c:")
+        self.case_id = raw.split(":", 1)[1]
+        self._build()
+        db = _get_db()
+        await interaction.response.edit_message(
+            embed=_hub_embed(db, self.user_id, view_mode=self.view_mode, selected=self._selected(db), count=self.count),
+            view=self,
+        )
+
+    async def _on_toggle(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("Not your panel.", ephemeral=True)
+        self.view_mode = "community" if self.view_mode == "house" else "house"
+        self.case_id = None
+        self.is_community = self.view_mode == "community"
+        self._build()
+        db = _get_db()
+        await interaction.response.edit_message(
+            embed=_hub_embed(db, self.user_id, view_mode=self.view_mode, selected=None, count=self.count),
+            view=self,
+        )
+
+    async def _on_open(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("Not your panel.", ephemeral=True)
+        if not self.case_id:
+            return await interaction.response.send_message("Select a case first.", ephemeral=True)
+        await interaction.response.defer()
+        err = await _execute_case_opens(
+            interaction.user,
+            interaction.channel,
+            self.case_id,
+            self.is_community,
+            self.count,
+        )
+        if err:
+            return await interaction.followup.send(err, ephemeral=True)
+        db = _get_db()
+        self._build()
+        await interaction.message.edit(
+            embed=_hub_embed(db, self.user_id, view_mode=self.view_mode, selected=self._selected(db), count=self.count),
+            view=self,
+        )
+
+
+# ════════════════════════════════════════════════════════
 # COG
 # ════════════════════════════════════════════════════════
 
@@ -2522,6 +2771,28 @@ class CasesCog(commands.Cog):
             view=OfficialCasesView(interaction.user.id, lang=lang),
             ephemeral=True,
         )
+
+    @commands.command(name="cases", aliases=["case", "kasa"])
+    async def cases_prefix(self, ctx: commands.Context):
+        """Case opening hub — official & community cases."""
+        from database import db as flip_db
+
+        await flip_db.ensure_user(ctx.author.id, ctx.author.name)
+        if await flip_db.is_banned(ctx.author.id):
+            return await ctx.send(embed=create_error_embed("You are banned."))
+
+        db = _get_db()
+        if not _hub_list_cases(db, "house") and not _hub_list_cases(db, "community"):
+            return await ctx.send(
+                embed=discord.Embed(
+                    title="📦 Cases",
+                    description="No cases available yet.",
+                    color=CLR_GREY,
+                )
+            )
+        view = CasesOpenHubView(ctx.author.id)
+        embed = _hub_embed(db, ctx.author.id, view_mode=view.view_mode, selected=None, count=1)
+        await ctx.send(embed=embed, view=view)
 
     @app_commands.command(name="community_cases", description="Community kasa panelini açar")
     async def community_cases(self, interaction: discord.Interaction):

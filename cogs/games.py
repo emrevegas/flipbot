@@ -1,6 +1,6 @@
 """All casino games as prefix commands.
 
-Games: coinflip, dice, roulette, mines, hilo, blackjack, limbo, slots, chickenroad
+Games: coinflip, dice, mines, hilo, blackjack, limbo, slots, chickenroad
 """
 from __future__ import annotations
 
@@ -342,7 +342,6 @@ async def _htw_run_animation(
     right_payout: float,
     right_lost: float,
     is_push: bool = False,
-    content: str = "",
 ) -> discord.Message:
     gif = await image_gen.render_htw_gif(
         left_name, right_name, left_num, right_num, bet,
@@ -352,10 +351,7 @@ async def _htw_run_animation(
         right_lost=right_lost,
         is_push=is_push,
     )
-    return await channel.send(
-        content=content or None,
-        file=discord.File(gif, "htw.gif"),
-    )
+    return await channel.send(file=discord.File(gif, "htw.gif"))
 
 
 async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
@@ -399,7 +395,6 @@ async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
         right_payout=rp,
         right_lost=rl,
         is_push=push,
-        content=ctx.author.mention,
     )
 
 
@@ -512,13 +507,6 @@ class HTWChallengeView(discord.ui.View):
         left_name = challenger.display_name if challenger else str(self.challenger_id)
         right_name = opponent.display_name if opponent else str(self.opponent_id)
 
-        if winner_id is None:
-            result_txt = f"🤝 **PUSH** — both refunded ({utils.fmt_pts(self.bet)} pts)."
-        elif winner_id == self.challenger_id:
-            result_txt = f"🏆 {left_name} **wins** vs {right_name}!"
-        else:
-            result_txt = f"🏆 {right_name} **wins** vs {left_name}!"
-
         self.stop()
         try:
             await interaction.message.edit(view=None)
@@ -544,7 +532,6 @@ class HTWChallengeView(discord.ui.View):
             right_payout=rp,
             right_lost=rl,
             is_push=push,
-            content=f"{result_txt}\n{challenger.mention if challenger else ''} {opponent.mention if opponent else ''}",
         )
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger, emoji="❌")
@@ -1229,41 +1216,6 @@ class Games(commands.Cog):
         await ctx.send(
             content=f"{'🏆' if won else ('⚖️' if outcome == 'TIE' else '💔')} **{outcome}!** {ctx.author.mention}",
             file=discord.File(img_buf, "dice.png"),
-        )
-
-    # ── Roulette ──────────────────────────────────────────────────────────────
-
-    @commands.command(name="roulette", aliases=["rl"])
-    async def roulette(self, ctx: commands.Context, amount: float):
-        """Roulette vs house (highest number wins). .roulette 100"""
-        await db.ensure_user(ctx.author.id, ctx.author.name)
-        if not await _check_game(ctx, "roulette", amount):
-            return
-
-        player_num = random.randint(0, 36)
-        rigged = await bc.should_rig_outcome(ctx.author.id, "roulette", amount)
-        if rigged:
-            house_num = random.randint(max(player_num, 0), 36)
-        else:
-            house_num = random.randint(0, 36)
-
-        if player_num > house_num:
-            won, gross, outcome = True, amount * 2, "WIN"
-        elif player_num == house_num:
-            won, gross, outcome = False, amount, "TIE"
-        else:
-            won, gross, outcome = False, 0, "LOSS"
-
-        net = await _payout(ctx.author.id, "roulette", amount, gross)
-        await _record(ctx.author.id, won, amount, net)
-
-        img_buf = await image_gen.render_game_result_card(
-            "Roulette", outcome, amount, net,
-            details={"Your number": player_num, "House number": house_num},
-        )
-        await ctx.send(
-            content=f"{'🏆' if won else ('⚖️' if outcome == 'TIE' else '💔')} **{outcome}!** {ctx.author.mention}",
-            file=discord.File(img_buf, "roulette.png"),
         )
 
     # ── HTW (Head-to-Head Wheel) ──────────────────────────────────────────────

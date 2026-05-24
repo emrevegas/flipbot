@@ -869,14 +869,16 @@ async def render_htw_gif(
 
     left_cx, right_cx = W // 4, 3 * W // 4
     card_y = 118
-    card_w, card_h = 200, 130
+    card_w, card_h = 200, 148
     spin_frames = 22
     frame_ms = max(45, HTW_SPIN_MS // spin_frames)
+    loser_dim = 0.42
 
     font_hdr = _font(14, bold=True)
     font_name = _font(13, bold=True)
     font_spin = _font(72, bold=True)
-    font_amt = _font(20, bold=True)
+    font_amt = _font(19, bold=True)
+    font_usd = _font(13)
     font_push = _font(36, bold=True)
 
     left_won = left_payout > 0 and left_lost <= 0 and not is_push
@@ -893,18 +895,25 @@ async def render_htw_gif(
         return (name[: mx - 1] + "…") if len(name) > mx else name
 
     def _draw_player_card(
-        draw: ImageDraw.ImageDraw,
+        base: Image.Image,
         cx: int,
         num: int,
         *,
         spinning: bool,
         show_amounts: bool,
         side: str,
-    ) -> None:
+    ) -> Image.Image:
+        def _is_loser() -> bool:
+            if is_push or not show_amounts:
+                return False
+            return (side == "left" and not left_won) or (side == "right" and not right_won)
         x1 = cx - card_w // 2
         y1 = card_y
         x2 = x1 + card_w
         y2 = y1 + card_h
+
+        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
 
         if show_amounts:
             if is_push:
@@ -920,11 +929,12 @@ async def render_htw_gif(
         else:
             border, num_col = (58, 66, 88), WHITE
 
-        draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill=(18, 24, 42), outline=border, width=3)
+        fill = (14, 18, 30) if _is_loser() else (18, 24, 42)
+        draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill=fill, outline=border, width=3)
 
         ns = str(num)
         nw = _tw(draw, ns, font_spin)
-        draw.text((cx - nw / 2, y1 + 22), ns, font=font_spin, fill=num_col)
+        draw.text((cx - nw / 2, y1 + 18), ns, font=font_spin, fill=num_col)
 
         if show_amounts:
             if side == "left":
@@ -932,17 +942,33 @@ async def render_htw_gif(
             else:
                 payout, lost = right_payout, right_lost
             if payout > 0:
-                amt = f"+{_fmt(payout)}"
+                pts_val = payout
+                line1 = f"+{_fmt(pts_val)} pts"
                 col = GREEN
             elif lost > 0:
-                amt = f"-{_fmt(lost)}"
+                pts_val = lost
+                line1 = f"-{_fmt(pts_val)} pts"
                 col = RED
             else:
-                amt = ""
-                col = MUTED
-            if amt:
-                aw = _tw(draw, amt, font_amt)
-                draw.text((cx - aw / 2, y2 - 38), amt, font=font_amt, fill=col)
+                line1, col, pts_val = "", MUTED, 0.0
+            if line1:
+                usd = _pts_to_usd(pts_val)
+                line2 = f"${usd:,.2f}"
+                aw = _tw(draw, line1, font_amt)
+                draw.text((cx - aw / 2, y2 - 52), line1, font=font_amt, fill=col)
+                uw = _tw(draw, line2, font_usd)
+                usd_fill = (*col, 200) if col in (GREEN, RED, GOLD) else (*MUTED, 200)
+                draw.text((cx - uw / 2, y2 - 28), line2, font=font_usd, fill=usd_fill)
+
+        dim = loser_dim if _is_loser() else 1.0
+        if dim < 1.0:
+            r, g, b, a = layer.split()
+            a = a.point(lambda p: int(p * dim) if p else 0)
+            layer = Image.merge("RGBA", (r, g, b, a))
+
+        out = base.convert("RGBA")
+        out = Image.alpha_composite(out, layer)
+        return out.convert("RGB")
 
     def make_frame(
         l_display: int,
@@ -961,21 +987,29 @@ async def render_htw_gif(
 
         ln, rn = _short(left_name), _short(right_name)
         lw, rw = _tw(draw, ln, font_name), _tw(draw, rn, font_name)
-        draw.text((left_cx - lw // 2, 58), ln, font=font_name, fill=WHITE)
-        draw.text((right_cx - rw // 2, 58), rn, font=font_name, fill=WHITE)
+        dim_name = (100, 110, 128)
+        if final and not is_push:
+            draw.text((left_cx - lw // 2, 58), ln, font=font_name,
+                      fill=WHITE if left_won else dim_name)
+            draw.text((right_cx - rw // 2, 58), rn, font=font_name,
+                      fill=WHITE if right_won else dim_name)
+        else:
+            draw.text((left_cx - lw // 2, 58), ln, font=font_name, fill=WHITE)
+            draw.text((right_cx - rw // 2, 58), rn, font=font_name, fill=WHITE)
 
-        _draw_player_card(
-            draw, left_cx, l_display,
+        img = _draw_player_card(
+            img, left_cx, l_display,
             spinning=spinning and not final,
             show_amounts=final,
             side="left",
         )
-        _draw_player_card(
-            draw, right_cx, r_display,
+        img = _draw_player_card(
+            img, right_cx, r_display,
             spinning=spinning and not final,
             show_amounts=final,
             side="right",
         )
+        draw = ImageDraw.Draw(img)
 
         vs_y = card_y + card_h // 2 - 12
         draw.rounded_rectangle([W // 2 - 30, vs_y, W // 2 + 30, vs_y + 36], radius=12, fill=(28, 36, 58))
@@ -2509,6 +2543,239 @@ async def render_chicken_road_gif(
         loop=1,
         optimize=False,
         disposal=2,
+    )
+    buf.seek(0)
+    return buf
+
+
+# ── Case opening reel GIF ─────────────────────────────────────────────────────
+
+CASE_SLOT = 72
+CASE_GAP = 10
+CASE_VISIBLE = 5
+CASE_CENTER_COL = 2
+CASE_SPIN_FRAMES = 14
+CASE_FRAME_MS = 42
+CASE_HOLD_MS = 4_500
+CASE_LOSER_DIM = 0.38
+CASE_WINNER_SCALE = 1.14
+
+_emoji_img_cache: dict[str, Image.Image] = {}
+
+
+def _parse_emoji_token(emoji: str) -> tuple[str, str | None]:
+    """Return ('custom', id) or ('unicode', char)."""
+    s = (emoji or "❓").strip()
+    if s.startswith("<") and s.endswith(">"):
+        try:
+            pe = __import__("discord").PartialEmoji.from_str(s)
+            if pe.id:
+                return "custom", str(pe.id)
+        except Exception:
+            pass
+    return "unicode", s
+
+
+def _twemoji_url(char: str) -> str | None:
+    cps = "-".join(f"{ord(c):x}" for c in char if ord(c) != 0xFE0F)
+    if not cps:
+        return None
+    return f"https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/{cps}.png"
+
+
+async def _load_emoji_rgba(
+    emoji: str,
+    size: int,
+    session: aiohttp.ClientSession | None = None,
+) -> Image.Image:
+    key = f"{emoji}:{size}"
+    if key in _emoji_img_cache:
+        return _emoji_img_cache[key].copy()
+
+    kind, payload = _parse_emoji_token(emoji)
+    url = None
+    if kind == "custom" and payload:
+        url = f"https://cdn.discordapp.com/emojis/{payload}.png?size=128"
+    elif kind == "unicode" and payload:
+        url = _twemoji_url(payload)
+
+    img = Image.new("RGBA", (size, size), (32, 36, 52, 255))
+    if url:
+        own = session is None
+        if own:
+            session = aiohttp.ClientSession()
+        try:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    raw = await resp.read()
+                    em = Image.open(io.BytesIO(raw)).convert("RGBA")
+                    em = em.resize((size - 8, size - 8), Image.LANCZOS)
+                    ox = (size - em.width) // 2
+                    oy = (size - em.height) // 2
+                    img.paste(em, (ox, oy), em)
+        except Exception:
+            pass
+        finally:
+            if own:
+                await session.close()
+    else:
+        draw = ImageDraw.Draw(img)
+        draw.text((size // 2 - 6, size // 2 - 10), "?", font=_font(22, bold=True), fill=(200, 210, 230))
+
+    _emoji_img_cache[key] = img.copy()
+    return img
+
+
+def _case_ease_out(t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return 1.0 - (1.0 - t) ** 2.8
+
+
+def _draw_case_slot(
+    base: Image.Image,
+    xy: tuple[int, int],
+    emoji_img: Image.Image,
+    *,
+    dim: float = 1.0,
+    scale: float = 1.0,
+    highlight: bool = False,
+) -> None:
+    x, y = xy
+    sz = int(CASE_SLOT * scale)
+    em = emoji_img.resize((sz - 10, sz - 10), Image.LANCZOS)
+    layer = Image.new("RGBA", (CASE_SLOT, CASE_SLOT), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    fill = (22, 28, 44) if not highlight else (28, 40, 62)
+    border = (58, 66, 88) if not highlight else (46, 213, 96)
+    ld.rounded_rectangle([2, 2, CASE_SLOT - 3, CASE_SLOT - 3], radius=12, fill=fill, outline=border, width=3)
+    ox = (CASE_SLOT - em.width) // 2
+    oy = (CASE_SLOT - em.height) // 2
+    layer.paste(em, (ox, oy), em)
+    if dim < 1.0:
+        r, g, b, a = layer.split()
+        a = a.point(lambda p: int(p * dim) if p else 0)
+        layer = Image.merge("RGBA", (r, g, b, a))
+    base.paste(layer, (x, y), layer)
+
+
+async def render_case_open_gif(
+    items: list[dict],
+    winners: list[dict],
+    case_price: float,
+    *,
+    case_name: str = "Case",
+) -> io.BytesIO:
+    """CS-style reel GIF — center line, RTL scroll, up to 4 stacked rows."""
+    if not items or not winners:
+        raise ValueError("items and winners required")
+
+    count = min(4, len(winners))
+    winners = winners[:count]
+    pool = items if len(items) >= 4 else items * 4
+
+    W = CASE_SLOT * CASE_VISIBLE + CASE_GAP * (CASE_VISIBLE - 1) + 48
+    row_h = CASE_SLOT + 34
+    H = 44 + count * row_h + 16
+    cx_line = W // 2
+
+    BG = (10, 14, 28)
+    GOLD = (255, 196, 0)
+    GREEN = (46, 213, 96)
+    RED = (231, 76, 60)
+    MUTED = (120, 130, 155)
+    WHITE = (245, 247, 255)
+
+    font_lbl = _font(13, bold=True)
+    font_val = _font(14, bold=True)
+
+    async with aiohttp.ClientSession() as session:
+        emoji_cache: dict[str, Image.Image] = {}
+        for it in pool:
+            em = it.get("emoji", "❓")
+            if em not in emoji_cache:
+                emoji_cache[em] = await _load_emoji_rgba(str(em), CASE_SLOT, session)
+
+        step = CASE_SLOT + CASE_GAP
+        win_idx = 18
+        reels: list[list[dict]] = []
+        for w in winners:
+            strip = [random.choice(pool) for _ in range(win_idx)]
+            strip.append(w)
+            strip.extend(random.choice(pool) for _ in range(4))
+            reels.append(strip)
+
+        stop_offsets = [(win_idx - (CASE_CENTER_COL - 1)) * step for _ in range(count)]
+
+        frames: list[Image.Image] = []
+        durations: list[int] = []
+
+        def _draw_frame(progress: float, *, final: bool) -> Image.Image:
+            img = Image.new("RGB", (W, H), BG)
+            draw = ImageDraw.Draw(img)
+            title = f"CASE  •  {case_name.upper()[:24]}"
+            tw = draw.textlength(title, font=font_lbl)
+            draw.text(((W - tw) / 2, 10), title, font=font_lbl, fill=GOLD)
+            draw.line([(cx_line, 38), (cx_line, H - 10)], fill=(255, 196, 0), width=2)
+
+            view_w = CASE_VISIBLE * (CASE_SLOT + CASE_GAP) - CASE_GAP
+            left_x = (W - view_w) // 2
+
+            for row_i, strip in enumerate(reels):
+                y0 = 44 + row_i * row_h
+                off = int(stop_offsets[row_i] * _case_ease_out(progress)) if not final else stop_offsets[row_i]
+                start_col = off // (CASE_SLOT + CASE_GAP)
+
+                for col in range(CASE_VISIBLE + 2):
+                    idx = start_col + col - 1
+                    if idx < 0 or idx >= len(strip):
+                        continue
+                    it = strip[idx]
+                    em_key = str(it.get("emoji", "❓"))
+                    em_img = emoji_cache.get(em_key) or emoji_cache[list(emoji_cache.keys())[0]]
+                    x = left_x + col * (CASE_SLOT + CASE_GAP) - (off % (CASE_SLOT + CASE_GAP))
+                    is_center = (col == CASE_CENTER_COL) and final
+                    dim = 1.0 if is_center or not final else CASE_LOSER_DIM
+                    scale = CASE_WINNER_SCALE if is_center else 1.0
+                    _draw_case_slot(
+                        img, (x, y0), em_img,
+                        dim=dim, scale=scale, highlight=is_center,
+                    )
+
+                if final:
+                    w = winners[row_i]
+                    val = float(w.get("value", 0))
+                    net = val - case_price
+                    if net >= 0:
+                        txt = f"+{_fmt(val)} pts"
+                        col = GREEN
+                    else:
+                        txt = f"-{_fmt(case_price - val)} pts"
+                        col = RED
+                    vw = draw.textlength(txt, font=font_val)
+                    draw.text(((W - vw) / 2, y0 + CASE_SLOT + 6), txt, font=font_val, fill=col)
+                    usd = _pts_to_usd(abs(net if net >= 0 else case_price - val))
+                    uline = f"${usd:,.2f}"
+                    uw = draw.textlength(uline, font=font_lbl)
+                    draw.text(((W - uw) / 2, y0 + CASE_SLOT + 22), uline, font=font_lbl, fill=MUTED)
+                elif count > 1:
+                    lbl = f"#{row_i + 1}"
+                    draw.text((12, y0 + CASE_SLOT // 2 - 6), lbl, font=font_lbl, fill=MUTED)
+
+            return img
+
+        for i in range(CASE_SPIN_FRAMES):
+            t = (i + 1) / CASE_SPIN_FRAMES
+            frames.append(_draw_frame(t, final=False))
+            durations.append(CASE_FRAME_MS)
+
+        for _ in range(3):
+            frames.append(_draw_frame(1.0, final=True))
+            durations.append(CASE_HOLD_MS // 3)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True, append_images=frames[1:],
+        duration=durations, loop=0, optimize=False, disposal=2,
     )
     buf.seek(0)
     return buf
