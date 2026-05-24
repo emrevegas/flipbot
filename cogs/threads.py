@@ -52,28 +52,9 @@ async def _get_user_thread(guild: discord.Guild, user_id: int) -> discord.Thread
     return None
 
 
-async def _archive_user_thread(thread: discord.Thread, user_id: int) -> None:
-    """Archive and rename so _get_user_thread no longer finds it."""
-    tag = _thread_tag(user_id)
-    name = thread.name or ""
-    if tag in name:
-        new_name = name.replace(tag, f"closed-{tag}", 1)[:100]
-    else:
-        new_name = f"{name[:88]} [closed]"[:100]
-
-    try:
-        await thread.edit(name=new_name, locked=True)
-    except discord.HTTPException:
-        pass
-
-    if not getattr(thread, "archived", False):
-        try:
-            await thread.archive()
-        except discord.HTTPException:
-            try:
-                await thread.edit(archived=True, locked=True)
-            except discord.HTTPException:
-                pass
+async def _delete_user_thread(thread: discord.Thread) -> None:
+    """Permanently delete the private thread."""
+    await thread.delete()
 
 
 class Threads(commands.Cog):
@@ -93,7 +74,7 @@ class Threads(commands.Cog):
                     "`.thread create [name]` — create your thread\n"
                     "`.thread add @user` — invite someone\n"
                     "`.thread remove @user` — remove someone\n"
-                    "`.thread close` — archive your thread\n"
+                    "`.thread close` — delete your thread\n"
                     "`.thread info` — show thread details"
                 ),
                 color=0x5865F2,
@@ -117,7 +98,7 @@ class Threads(commands.Cog):
         if existing:
             return await ctx.send(embed=utils.error_embed(
                 f"You already have a thread: {existing.mention}\n"
-                "Use `.thread close` to archive it first."
+                "Use `.thread close` to delete it first."
             ))
 
         tag = _thread_tag(ctx.author.id)
@@ -145,7 +126,7 @@ class Threads(commands.Cog):
                 f"Your private thread: {thread.mention}\n\n"
                 "• `.thread add @user` — invite someone\n"
                 "• `.thread remove @user` — remove someone\n"
-                "• `.thread close` — archive when done"
+                "• `.thread close` — delete when done"
             ),
             color=0x2ECC71,
         )
@@ -198,7 +179,7 @@ class Threads(commands.Cog):
         if not ctx.guild:
             return await ctx.send(embed=utils.error_embed("Server only."))
         if member.id == ctx.author.id:
-            return await ctx.send(embed=utils.error_embed("Use `.thread close` to archive your own thread."))
+            return await ctx.send(embed=utils.error_embed("Use `.thread close` to delete your own thread."))
 
         thread = await _get_user_thread(ctx.guild, ctx.author.id)
         if not thread:
@@ -216,9 +197,9 @@ class Threads(commands.Cog):
 
     # ── close ──────────────────────────────────────────────────────────────────
 
-    @thread_group.command(name="close", aliases=["archive"])
+    @thread_group.command(name="close", aliases=["archive", "delete"])
     async def thread_close(self, ctx: commands.Context):
-        """Archive your private thread. .thread close"""
+        """Delete your private thread. .thread close"""
         if not ctx.guild:
             return await ctx.send(embed=utils.error_embed("Server only."))
 
@@ -228,19 +209,19 @@ class Threads(commands.Cog):
 
         try:
             await thread.send(embed=discord.Embed(
-                description="🔒 Thread closed and archived.",
+                description="🔒 Thread is being deleted…",
                 color=0xE74C3C,
             ))
         except discord.HTTPException:
             pass
 
         try:
-            await _archive_user_thread(thread, ctx.author.id)
+            await _delete_user_thread(thread)
         except discord.HTTPException as e:
-            return await ctx.send(embed=utils.error_embed(f"Failed to archive: {e}"))
+            return await ctx.send(embed=utils.error_embed(f"Failed to delete thread: {e}"))
 
         await ctx.send(embed=utils.success_embed(
-            "Your thread has been archived. You can create a new one with `.thread create`."
+            "Your thread has been deleted. You can create a new one with `.thread create`."
         ))
 
     # ── info ───────────────────────────────────────────────────────────────────
@@ -281,11 +262,11 @@ class Threads(commands.Cog):
             return await ctx.send(embed=utils.error_embed(f"{member.display_name} has no active thread."))
 
         try:
-            await _archive_user_thread(thread, member.id)
+            await _delete_user_thread(thread)
         except discord.HTTPException as e:
-            return await ctx.send(embed=utils.error_embed(f"Failed to archive: {e}"))
+            return await ctx.send(embed=utils.error_embed(f"Failed to delete thread: {e}"))
 
-        await ctx.send(embed=utils.success_embed(f"Archived {member.mention}'s thread."))
+        await ctx.send(embed=utils.success_embed(f"Deleted {member.mention}'s thread."))
 
 
 async def setup(bot: commands.Bot):
