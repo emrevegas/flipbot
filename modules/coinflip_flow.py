@@ -245,6 +245,7 @@ class CoinflipChallengeLayout(ui.LayoutView):
             result=result,
             hot_emoji=hot_e,
             cold_emoji=cold_e,
+            bet=self.bet,
             left_payout=lp,
             left_lost=ll,
             right_payout=rp,
@@ -293,6 +294,7 @@ async def start_cf_bot_game(ctx: commands.Context, bet: float, choice: str | Non
         result=result,
         hot_emoji=hot_e,
         cold_emoji=cold_e,
+        bet=bet,
         left_payout=lp,
         left_lost=ll,
     )
