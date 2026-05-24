@@ -561,13 +561,7 @@ async def render_game_result_card(
 
 # ── Limbo GIF ─────────────────────────────────────────────────────────────────
 
-def _limbo_anim_duration_sec(crash: float) -> float:
-    """Higher crash = faster count-up; low multipliers use up to 2.5s."""
-    max_d = 2.5
-    min_d = 0.45
-    c = max(1.01, float(crash))
-    t = min(1.0, max(0.0, (math.log(c) - math.log(1.01)) / (math.log(100.0) - math.log(1.01))))
-    return max_d - (max_d - min_d) * t
+LIMBO_COUNTUP_MS = 800
 
 
 def _limbo_ease_out(t: float) -> float:
@@ -697,10 +691,8 @@ async def render_limbo_gif(
 
         return img
 
-    duration_sec = _limbo_anim_duration_sec(crash)
-    fps = 20
-    n_anim = max(10, int(duration_sec * fps))
-    frame_ms = max(20, int(duration_sec * 1000 / n_anim))
+    n_anim = 16
+    frame_ms = LIMBO_COUNTUP_MS // n_anim
 
     frames: list[Image.Image] = []
     durations: list[int] = []
