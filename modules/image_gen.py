@@ -624,7 +624,8 @@ async def render_limbo_gif(
     def _y_for_mult(m: float) -> int:
         m = max(1.0, min(m, scale_max))
         ratio = (m - 1.0) / max(scale_max - 1.0, 0.01)
-        return int(bar_y2 - ratio * bar_h)
+        y = int(bar_y1 + (1.0 - ratio) * (bar_h - 8))
+        return max(bar_y1 + 4, min(y, bar_y2 - 4))
 
     def make_frame(display_mult: float, *, result_text: str = "", net_chg: float = 0.0) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
@@ -641,10 +642,12 @@ async def render_limbo_gif(
             [bar_x1, bar_y1, bar_x2, bar_y2], radius=14,
             fill=(12, 18, 34), outline=(42, 52, 88), width=2,
         )
-        # Fill to current multiplier
+        # Fill from rocket height down to bottom of track (y0 must be <= y1)
         cur_y = _y_for_mult(display_mult)
-        if cur_y < bar_y2:
-            draw.rectangle([bar_x1 + 4, cur_y, bar_x2 - 4, bar_y2 - 4], fill=(28, 38, 72))
+        fill_top = max(bar_y1 + 4, min(cur_y, bar_y2 - 5))
+        fill_bot = bar_y2 - 4
+        if fill_top < fill_bot:
+            draw.rectangle([bar_x1 + 4, fill_top, bar_x2 - 4, fill_bot], fill=(28, 38, 72))
 
         # Target line
         ty = _y_for_mult(target)
