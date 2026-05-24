@@ -19,6 +19,7 @@ import config
 from database import db
 from modules import image_gen, flip_utils as utils, flip_balance_cap as bc
 from modules.database import get_data
+from modules.pvp_challenge import PVP_CHALLENGE_TIMEOUT, PvpChallengeView
 
 GAME_TIMEOUT = 120  # seconds for interactive games
 
@@ -330,7 +331,7 @@ def _htw_spin_pair(
 
 
 async def _htw_run_animation(
-    channel: discord.abc.Messageable,
+    target,
     *,
     left_name: str,
     right_name: str,
@@ -342,7 +343,10 @@ async def _htw_run_animation(
     right_payout: float,
     right_lost: float,
     is_push: bool = False,
-) -> discord.Message:
+    message: discord.Message | None = None,
+) -> discord.Message | None:
+    from modules.game_media_v2 import gif_media_layout
+
     gif = await image_gen.render_htw_gif(
         left_name, right_name, left_num, right_num, bet,
         left_payout=left_payout,
@@ -351,7 +355,15 @@ async def _htw_run_animation(
         right_lost=right_lost,
         is_push=is_push,
     )
-    return await channel.send(file=discord.File(gif, "htw.gif"))
+    layout = gif_media_layout("htw.gif")
+    file = discord.File(gif, "htw.gif")
+    if message is not None:
+        await message.edit(content=None, embed=None, attachments=[file], view=layout)
+        return message
+    if isinstance(target, discord.Message):
+        await target.edit(content=None, embed=None, attachments=[file], view=layout)
+        return target
+    return await target.send(file=file, view=layout)
 
 
 async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
@@ -454,23 +466,12 @@ async def _htw_settle_pvp(
     return winner_id, outcome, winner_payout
 
 
-class HTWChallengeView(discord.ui.View):
+class HTWChallengeView(PvpChallengeView):
     def __init__(self, challenger_id: int, opponent_id: int, bet: float):
-        super().__init__(timeout=120)
-        self.challenger_id = challenger_id
-        self.opponent_id = opponent_id
+        super().__init__(challenger_id, opponent_id, game_name="HTW")
         self.bet = bet
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id not in (self.challenger_id, self.opponent_id):
-            await interaction.response.send_message(
-                "This challenge is not for you.", ephemeral=True,
-            )
-            return False
-        return True
-
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅")
-    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def handle_accept(self, interaction: discord.Interaction):
         if interaction.user.id != self.opponent_id:
             return await interaction.response.send_message(
                 "Only the challenged player can accept.", ephemeral=True,
@@ -492,6 +493,7 @@ class HTWChallengeView(discord.ui.View):
                     ephemeral=True,
                 )
 
+        self._mark_done()
         await interaction.response.defer()
 
         await db.add_balance(self.challenger_id, -self.bet, note="htw pvp bet")
@@ -507,7 +509,6 @@ class HTWChallengeView(discord.ui.View):
         left_name = challenger.display_name if challenger else str(self.challenger_id)
         right_name = opponent.display_name if opponent else str(self.opponent_id)
 
-        self.stop()
         try:
             await interaction.message.edit(view=None)
         except Exception:
@@ -532,24 +533,8 @@ class HTWChallengeView(discord.ui.View):
             right_payout=rp,
             right_lost=rl,
             is_push=push,
+            message=interaction.message,
         )
-
-    @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger, emoji="❌")
-    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.opponent_id:
-            return await interaction.response.send_message(
-                "Only the challenged player can decline.", ephemeral=True,
-            )
-        self.stop()
-        await interaction.response.edit_message(
-            content=f"❌ {interaction.user.display_name} declined the HTW challenge.",
-            embed=None,
-            view=None,
-        )
-
-    async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1150,38 +1135,42 @@ class Games(commands.Cog):
     # ── Coin Flip ─────────────────────────────────────────────────────────────
 
     @commands.command(name="coinflip", aliases=["cf", "flip"])
-    async def coinflip(self, ctx: commands.Context, amount: float, choice: str = ""):
-        """Flip a coin. .coinflip 100 [hot/cold]"""
+    async def coinflip(self, ctx: commands.Context, *args):
+        """`.cf <bet> [hot/cold]` vs bot  •  `.cf @user <bet> hot|cold` PvP"""
+        from modules.coinflip_flow import (
+            parse_cf_args,
+            parse_side,
+            start_cf_bot_game,
+            start_cf_pvp,
+        )
+
+        opponent, bet, choice = parse_cf_args(ctx)
+        if bet is None or bet <= 0:
+            return await ctx.send(embed=_err(
+                "Usage: `.cf <bet> [hot/cold]`  •  `.cf @user <bet> hot|cold`"
+            ))
+
         await db.ensure_user(ctx.author.id, ctx.author.name)
-        if not await _check_game(ctx, "coinflip", amount):
+        if not await _check_game(ctx, "coinflip", bet):
             return
 
-        sides = ["HOT", "COLD"]
-        if choice.upper() in sides:
-            player_side = choice.upper()
-        else:
-            player_side = random.choice(sides)
+        if opponent is None:
+            return await start_cf_bot_game(ctx, bet, choice)
 
-        rigged = await bc.should_rig_outcome(ctx.author.id, "coinflip", amount)
-        if rigged:
-            result = "COLD" if player_side == "HOT" else "HOT"
-        else:
-            result = random.choice(sides)
+        if opponent.bot:
+            return await ctx.send(embed=_err("You can't challenge a bot. Use `.cf <bet> [hot/cold]`."))
+        if opponent.id == ctx.author.id:
+            return await ctx.send(embed=_err("You can't challenge yourself."))
+        if not choice:
+            return await ctx.send(embed=_err("Pick **hot** or **cold** for PvP: `.cf @user <bet> hot`"))
 
-        won = result == player_side
-        gross = amount * 2 if won else 0
-        net = await _payout(ctx.author.id, "coinflip", amount, gross)
-        await _record(ctx.author.id, won, amount, net)
-
-        outcome = "WIN" if won else "LOSS"
-        img_buf = await image_gen.render_game_result_card(
-            "Coin Flip", outcome, amount, net,
-            details={"Your pick": player_side, "Result": result},
-        )
-        await ctx.send(
-            content=f"{'🏆' if won else '💔'} **{outcome}!** {ctx.author.mention}",
-            file=discord.File(img_buf, "coinflip.png"),
-        )
+        await db.ensure_user(opponent.id, opponent.name)
+        opp_row = await db.get_user(opponent.id)
+        if not opp_row or float(opp_row["balance"]) < bet:
+            return await ctx.send(embed=_err(
+                f"{opponent.mention} doesn't have enough balance for this bet."
+            ))
+        await start_cf_pvp(ctx, opponent, bet, choice)
 
     # ── Dice ──────────────────────────────────────────────────────────────────
 
@@ -1254,11 +1243,14 @@ class Games(commands.Cog):
                 f"{ctx.author.mention} challenges {opponent.mention} to **Head-to-Head Wheel**!\n\n"
                 f"**Bet:** {utils.fmt_pts(bet)} pts\n"
                 f"Higher spin wins • tie = push\n\n"
-                f"{opponent.mention} — press **Accept** to play."
+                f"{opponent.mention} — press **Accept** within **{PVP_CHALLENGE_TIMEOUT} seconds**.\n"
+                f"Either player can press **Decline & Cancel** to withdraw."
             ),
             color=0xF1C40F,
         )
-        await ctx.send(embed=embed, view=HTWChallengeView(ctx.author.id, opponent.id, bet))
+        view = HTWChallengeView(ctx.author.id, opponent.id, bet)
+        msg = await ctx.send(embed=embed, view=view)
+        view.attach_message(msg)
 
     # ── Limbo ─────────────────────────────────────────────────────────────────
 

@@ -319,6 +319,8 @@ def _ensure_coinflip_game_entry(games_data: dict) -> dict:
     coinflip.setdefault("max_bet", 10000)
     coinflip.setdefault("house_edge", 1.0)
     coinflip.setdefault("rigged_chance", 0.0)
+    coinflip.setdefault("hot_emoji", "🔥")
+    coinflip.setdefault("cold_emoji", "❄️")
     coinflip.setdefault("category", "table_games")
     coinflip.setdefault("created_at", int(time.time()))
     coinflip.setdefault("last_modified", int(time.time()))
@@ -4331,6 +4333,53 @@ class DiceRiggedModal(discord.ui.Modal):
 
 # ── Coinflip rigged ───────────────────────────────────────────────────────────
 
+class _CoinflipHotColdSetupButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🔥 Hot/Cold Setup", style=discord.ButtonStyle.primary, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        games_data = _ensure_coinflip_game_entry(get_data("server/games") or {})
+        set_data("server/games", games_data)
+        cf = games_data.get("coinflip", {})
+        await interaction.response.send_modal(CoinflipHotColdModal(cf))
+
+
+class CoinflipHotColdModal(discord.ui.Modal, title="Coin Flip — Hot & Cold Emojis"):
+    def __init__(self, current_info: dict):
+        super().__init__(timeout=300)
+        if not isinstance(current_info, dict):
+            current_info = {}
+        self.hot_in = discord.ui.TextInput(
+            label="Hot emoji",
+            placeholder="🔥 or <:custom_hot:id>",
+            default=str(current_info.get("hot_emoji", "🔥")),
+            max_length=80,
+        )
+        self.cold_in = discord.ui.TextInput(
+            label="Cold emoji",
+            placeholder="❄️ or <:custom_cold:id>",
+            default=str(current_info.get("cold_emoji", "❄️")),
+            max_length=80,
+        )
+        self.add_item(self.hot_in)
+        self.add_item(self.cold_in)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from modules.coinflip_flow import save_coinflip_emojis
+
+        hot = self.hot_in.value.strip() or "🔥"
+        cold = self.cold_in.value.strip() or "❄️"
+        save_coinflip_emojis(hot, cold)
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Hot/Cold emojis updated",
+                description=f"**Hot:** {hot}\n**Cold:** {cold}",
+                color=discord.Color.green(),
+            ),
+            ephemeral=True,
+        )
+
+
 class _CoinflipRiggedButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="🎲 Coinflip Rigged %", style=discord.ButtonStyle.danger, row=1)
@@ -4517,6 +4566,7 @@ class GameDetailView(discord.ui.View):
         elif game_id == "dice":
             self.add_item(_DiceRiggedButton())
         elif game_id == "coinflip":
+            self.add_item(_CoinflipHotColdSetupButton())
             self.add_item(_CoinflipRiggedButton())
         elif game_id == "case_battle":
             self.add_item(_CaseBattleLogChannelButton())

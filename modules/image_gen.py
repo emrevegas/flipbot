@@ -2548,6 +2548,192 @@ async def render_chicken_road_gif(
     return buf
 
 
+# ── Coin Flip (Hot / Cold) GIF ───────────────────────────────────────────────
+
+COINFLIP_SPIN_FRAMES = 20
+COINFLIP_FRAME_MS = 55
+COINFLIP_HOLD_MS = 4_500
+
+
+def _paste_emoji_card(
+    base: Image.Image,
+    cx: int,
+    cy: int,
+    emoji_img: Image.Image,
+    *,
+    card_w: int = 168,
+    card_h: int = 148,
+    border: tuple = (58, 66, 88),
+    dim: float = 1.0,
+) -> Image.Image:
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    x1, y1 = cx - card_w // 2, cy - card_h // 2
+    x2, y2 = x1 + card_w, y1 + card_h
+    draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill=(18, 24, 42), outline=border, width=3)
+    ex = cx - emoji_img.width // 2
+    ey = cy - emoji_img.height // 2
+    layer.paste(emoji_img, (ex, ey), emoji_img)
+    if dim < 1.0:
+        r, g, b, a = layer.split()
+        a = a.point(lambda p: int(p * dim) if p else 0)
+        layer = Image.merge("RGBA", (r, g, b, a))
+    out = base.convert("RGBA")
+    out = Image.alpha_composite(out, layer)
+    return out.convert("RGB")
+
+
+async def render_coinflip_gif(
+    *,
+    mode: str,
+    left_name: str,
+    right_name: str,
+    left_side: str,
+    right_side: str,
+    result: str,
+    hot_emoji: str,
+    cold_emoji: str,
+    left_payout: float = 0.0,
+    left_lost: float = 0.0,
+    right_payout: float = 0.0,
+    right_lost: float = 0.0,
+) -> io.BytesIO:
+    """Animated Hot/Cold coin flip. mode: 'bot' (2 columns) or 'pvp' (3 columns)."""
+    import random as _rnd
+
+    W, H = 620, 340
+    BG = (10, 14, 28)
+    PANEL = (16, 22, 40)
+    WHITE = (245, 247, 255)
+    MUTED = (110, 120, 145)
+    GREEN = (46, 213, 96)
+    RED = (231, 76, 60)
+    GOLD = (255, 196, 0)
+    CYAN = (56, 189, 248)
+    loser_dim = 0.42
+
+    font_hdr = _font(14, bold=True)
+    font_name = _font(13, bold=True)
+    font_lbl = _font(22, bold=True)
+    font_amt = _font(19, bold=True)
+    font_usd = _font(13)
+
+    async with aiohttp.ClientSession() as session:
+        hot_img = await _load_emoji_rgba(hot_emoji, 72, session)
+        cold_img = await _load_emoji_rgba(cold_emoji, 72, session)
+
+    left_pick = hot_img if left_side == "HOT" else cold_img
+    right_pick = hot_img if right_side == "HOT" else cold_img
+    result_img = hot_img if result == "HOT" else cold_img
+
+    if mode == "pvp":
+        left_cx, spin_cx, right_cx = W // 5, W // 2, 4 * W // 5
+    else:
+        left_cx, spin_cx, right_cx = W // 3, 2 * W // 3, 2 * W // 3
+
+    card_y = 118
+    left_won = left_payout > 0 and left_lost <= 0
+    right_won = right_payout > 0 and right_lost <= 0
+
+    def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 8
+
+    def _short(name: str, mx: int = 14) -> str:
+        name = (name or "Player").strip()
+        return (name[: mx - 1] + "…") if len(name) > mx else name
+
+    def _draw_outcome_labels(draw: ImageDraw.ImageDraw, final: bool) -> None:
+        if not final:
+            return
+        if mode == "bot":
+            lbl = "WIN" if left_won else "LOSE"
+            col = GREEN if left_won else RED
+            line1 = f"+{_fmt(left_payout)} pts" if left_won else f"-{_fmt(left_lost)} pts"
+            lw = _tw(draw, lbl, font_lbl)
+            draw.text((left_cx - lw / 2, card_y - 36), lbl, font=font_lbl, fill=col)
+            aw = _tw(draw, line1, font_amt)
+            draw.text((left_cx - aw / 2, card_y + 82), line1, font=font_amt, fill=col)
+        else:
+            for cx, won, payout, lost in (
+                (left_cx, left_won, left_payout, left_lost),
+                (right_cx, right_won, right_payout, right_lost),
+            ):
+                lbl = "WIN" if won else "LOSE"
+                col = GREEN if won else RED
+                lw = _tw(draw, lbl, font_lbl)
+                draw.text((cx - lw / 2, card_y - 36), lbl, font=font_lbl, fill=col)
+                if won and payout > 0:
+                    line1 = f"+{_fmt(payout)} pts"
+                elif lost > 0:
+                    line1 = f"-{_fmt(lost)} pts"
+                else:
+                    line1 = ""
+                if line1:
+                    aw = _tw(draw, line1, font_amt)
+                    draw.text((cx - aw / 2, card_y + 82), line1, font=font_amt, fill=col)
+
+    def make_frame(*, spin_hot: bool, final: bool) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([0, 0, W, 44], fill=PANEL)
+        title = "HOT & COLD  •  COIN FLIP"
+        tw = _tw(draw, title, font_hdr)
+        draw.text(((W - tw) / 2, 12), title, font=font_hdr, fill=CYAN)
+
+        ln, rn = _short(left_name), _short(right_name)
+        lw, rw = _tw(draw, ln, font_name), _tw(draw, rn, font_name)
+        dim_name = (100, 110, 128)
+        if final and mode == "pvp":
+            draw.text((left_cx - lw // 2, 58), ln, font=font_name,
+                      fill=WHITE if left_won else dim_name)
+            draw.text((right_cx - rw // 2, 58), rn, font=font_name,
+                      fill=WHITE if right_won else dim_name)
+        else:
+            draw.text((left_cx - lw // 2, 58), ln, font=font_name, fill=WHITE)
+            if mode == "pvp":
+                draw.text((right_cx - rw // 2, 58), rn, font=font_name, fill=WHITE)
+
+        spin_img = hot_img if spin_hot else cold_img
+        if final:
+            spin_img = result_img
+
+        left_border = GREEN if final and left_won else (RED if final and not left_won and mode == "bot" else (58, 66, 88))
+        right_border = GREEN if final and right_won else (RED if final and not right_won and mode == "pvp" else (58, 66, 88))
+
+        left_dim = loser_dim if final and mode == "pvp" and not left_won else 1.0
+        right_dim = loser_dim if final and mode == "pvp" and not right_won else 1.0
+
+        img = _paste_emoji_card(img, left_cx, card_y + 20, left_pick, border=left_border, dim=left_dim)
+        if mode == "pvp":
+            img = _paste_emoji_card(img, right_cx, card_y + 20, right_pick, border=right_border, dim=right_dim)
+        spin_border = GOLD if final else (58, 66, 88)
+        img = _paste_emoji_card(img, spin_cx, card_y + 20, spin_img, border=spin_border)
+
+        draw = ImageDraw.Draw(img)
+        _draw_outcome_labels(draw, final)
+        return img
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+    for i in range(COINFLIP_SPIN_FRAMES):
+        frames.append(make_frame(spin_hot=(i % 2 == 0), final=False))
+        durations.append(COINFLIP_FRAME_MS)
+    for _ in range(3):
+        frames.append(make_frame(spin_hot=(result == "HOT"), final=True))
+        durations.append(COINFLIP_HOLD_MS // 3)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True, append_images=frames[1:],
+        duration=durations, loop=0, disposal=2,
+    )
+    buf.seek(0)
+    return buf
+
+
 # ── Case opening reel GIF ─────────────────────────────────────────────────────
 
 CASE_SLOT = 72
