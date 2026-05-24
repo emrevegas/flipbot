@@ -213,7 +213,7 @@ class CaseEmojiManageView(View):
         if not emoji_strs:
             return await interaction.response.send_message("Selected items have no emoji.", ephemeral=True)
 
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         try:
             await delete_case_app_emoji(interaction.client, case)
             new_emoji = await upload_case_app_emoji(
@@ -236,7 +236,7 @@ class CaseEmojiManageView(View):
 
         embed = _case_detail_embed(db, self.case_id, self.is_community, lang=self.lang)
         view = OfficialCaseDetailView(self.admin_id, self.case_id, lang=self.lang)
-        await interaction.message.edit(embed=embed, view=view)
+        await interaction.edit_original_response(embed=embed, view=view)
 
     async def _on_back(self, interaction: discord.Interaction):
         from cogs.cases import OfficialCaseDetailView, _case_detail_embed
