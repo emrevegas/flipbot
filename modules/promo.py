@@ -16,6 +16,9 @@ import time
 import discord
 from modules.database import get_data, set_data, replace_data, get_user_data, set_user_data, _get_conn
 
+# Forfeit active promo when this fraction of the promo value is lost from peak balance.
+PROMO_LOSS_FORFEIT_RATIO = 0.90
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +40,103 @@ def get_promo_code(code: str) -> dict | None:
 def get_promo_template(code: str) -> dict | None:
     """Alias for get_promo_code (used by room panels and admin UI)."""
     return get_promo_code(code)
+
+
+def _fmt_pts_plain(n: int | float) -> str:
+    return f"{int(n):,}"
+
+
+def build_promo_redeem_summary(code: str, template: dict) -> dict:
+    """Plain-text promo redeem summary for image cards and UI."""
+    code = code.upper().strip()
+    ptype = template.get("type", "balance")
+    wager_m = float(template.get("wager_multiplier", 1.0))
+    terms: list[str] = []
+    reward_sub = ""
+
+    if ptype == "freegame":
+        game = str(template.get("game", "?")).replace("_", " ").title()
+        rounds = int(template.get("rounds", 0))
+        bet = int(template.get("bet_amount", 0))
+        title = "Free Bet Activated"
+        reward_label = "FREE ROUNDS"
+        reward_value = f"{rounds}× {game}"
+        reward_sub = f"{_fmt_pts_plain(bet)} pts per round"
+        if wager_m > 0:
+            terms.append(f"After all rounds: wager winnings × {wager_m:g}")
+        else:
+            terms.append("Winnings credited after all free rounds")
+    else:
+        reward = int(template.get("reward_amount", 0))
+        wager_req = int(reward * wager_m) if wager_m > 0 else 0
+        title = "Promo Code Redeemed"
+        reward_label = "REWARD"
+        reward_value = f"+{_fmt_pts_plain(reward)} pts"
+        if wager_req > 0:
+            terms.append(f"Wager {_fmt_pts_plain(wager_req)} pts before withdrawal")
+        elif wager_m > 0:
+            terms.append(f"Wager requirement: {wager_m:g}× bonus amount")
+
+    min_forfeit = int(template.get("min_balance_forfeit", 0) or 0)
+    if min_forfeit > 0:
+        terms.append(f"Forfeits if balance drops below {_fmt_pts_plain(min_forfeit)} pts")
+    else:
+        terms.append(
+            f"Forfeits if you lose {int(PROMO_LOSS_FORFEIT_RATIO * 100)}% of the promo value "
+            f"or balance reaches 0"
+        )
+
+    promo_min_wd = int(template.get("promo_min_withdrawal", 0) or 0)
+    promo_max_wd = int(template.get("promo_max_withdrawal", 0) or 0)
+    if promo_min_wd > 0 or promo_max_wd > 0:
+        wd_parts: list[str] = []
+        if promo_min_wd > 0:
+            wd_parts.append(f"min {_fmt_pts_plain(promo_min_wd)} pts")
+        if promo_max_wd > 0:
+            wd_parts.append(f"max {_fmt_pts_plain(promo_max_wd)} pts")
+        terms.append("Withdrawal limits after wager: " + " · ".join(wd_parts))
+
+    desc = (template.get("description") or "").strip()
+    if desc:
+        terms.append(desc if len(desc) <= 100 else desc[:97] + "...")
+
+    return {
+        "title": title,
+        "code": code,
+        "reward_label": reward_label,
+        "reward_value": reward_value,
+        "reward_sub": reward_sub,
+        "terms": terms,
+    }
+
+
+async def send_promo_redeemed_image(
+    target,
+    *,
+    user: discord.User | discord.Member,
+    code: str,
+    template: dict,
+    new_balance: float | None = None,
+    ephemeral: bool = False,
+) -> None:
+    """Render and send promo redeem card (ctx, Interaction, or followup)."""
+    from modules import image_gen
+
+    summary = build_promo_redeem_summary(code, template)
+    buf = await image_gen.render_promo_redeemed_card(
+        user.display_name,
+        avatar_url=str(user.display_avatar.url),
+        new_balance=new_balance,
+        **summary,
+    )
+    file = discord.File(buf, "promo.png")
+
+    if hasattr(target, "send"):
+        await target.send(file=file)
+    elif hasattr(target, "response") and not target.response.is_done():
+        await target.response.send_message(file=file, ephemeral=ephemeral)
+    else:
+        await target.followup.send(file=file, ephemeral=ephemeral)
 
 
 def get_active_promo(user_id) -> dict:
@@ -121,6 +221,90 @@ def user_has_deposit_within_days(user_id, within_days: int) -> bool:
         if amt > 0:
             return True
     return False
+
+
+def _promo_value_for_forfeit(data: dict, template: dict | None = None) -> int:
+    """Coin value used for promo-loss forfeit (balance reward or free-game exposure/winnings)."""
+    template = template or _promo_template_for(data)
+    try:
+        explicit = int(data.get("promo_value", 0) or 0)
+    except (TypeError, ValueError):
+        explicit = 0
+    if explicit > 0:
+        return explicit
+
+    ptype = (data.get("type") or template.get("type") or "balance").lower()
+    if ptype == "balance":
+        return int(data.get("reward_amount") or template.get("reward_amount") or 0)
+
+    total_won = int(data.get("total_winnings", 0) or 0)
+    if data.get("status") == "wagering" and total_won > 0:
+        return total_won
+    bet = int(data.get("bet_amount") or template.get("bet_amount") or 0)
+    rounds = int(data.get("rounds_total") or template.get("rounds") or 0)
+    return bet * rounds
+
+
+def sync_promo_forfeit_tracking(user_id, current_balance: int) -> bool:
+    """
+    Ensure promo_value / balance_at_activation / peak_balance exist on active promos.
+    Legacy records with wager progress get a best-effort activation baseline.
+    Returns True if fields were saved.
+    """
+    data = get_stored_promo(user_id)
+    if data.get("status") not in ("active", "wagering"):
+        return False
+
+    template = _promo_template_for(data)
+    changed = False
+    promo_val = _promo_value_for_forfeit(data, template)
+    if promo_val > 0 and int(data.get("promo_value", 0) or 0) != promo_val:
+        data["promo_value"] = promo_val
+        changed = True
+
+    bal = int(current_balance)
+    if not data.get("balance_at_activation"):
+        wagered = int(data.get("wagered_so_far", 0) or 0)
+        if wagered > 0 and promo_val > 0:
+            data["balance_at_activation"] = bal + promo_val
+        else:
+            data["balance_at_activation"] = bal
+        changed = True
+
+    peak = int(data.get("peak_balance", 0) or 0)
+    activation = int(data.get("balance_at_activation", 0) or 0)
+    new_peak = max(peak, bal, activation)
+    if new_peak != peak:
+        data["peak_balance"] = new_peak
+        changed = True
+
+    if changed:
+        save_active_promo(user_id, data)
+    return changed
+
+
+def _set_wagering_forfeit_baseline(user_id, *, promo_value: int | None = None) -> None:
+    """After free-game winnings are credited, reset loss baseline for wagering phase."""
+    from modules.player import Player
+
+    data = get_stored_promo(user_id)
+    if data.get("status") != "wagering":
+        return
+    bal = int(Player(int(user_id)).get_balance("real"))
+    data["balance_at_activation"] = bal
+    data["peak_balance"] = bal
+    if promo_value is not None and int(promo_value) > 0:
+        data["promo_value"] = int(promo_value)
+    elif not int(data.get("promo_value", 0) or 0):
+        data["promo_value"] = _promo_value_for_forfeit(data)
+    save_active_promo(user_id, data)
+
+
+def _forfeit_promo_state(data: dict, user_id) -> bool:
+    data["status"] = "forfeited"
+    data["forfeited_at"] = int(time.time())
+    save_active_promo(user_id, data)
+    return True
 
 
 def get_stored_promo(user_id) -> dict:
@@ -627,6 +811,8 @@ def redeem_promo_code(user_id, code: str, *, member=None) -> tuple[bool, str, di
 
     balance = Player(int(user_id)).get_balance("real")
     clear_unwithdrawable_completed_promo(user_id, balance)
+    sync_promo_forfeit_tracking(user_id, balance)
+    check_forfeit_promo(user_id, balance)
 
     if has_active_promo(user_id):
         return False, "You already have an active promo. Complete it before redeeming another.", {}
@@ -656,6 +842,9 @@ def redeem_promo_code(user_id, code: str, *, member=None) -> tuple[bool, str, di
             "code": code,
             "type": "balance",
             "reward_amount": reward,
+            "promo_value": reward,
+            "balance_at_activation": int(balance) + reward,
+            "peak_balance": int(balance) + reward,
             "wager_multiplier": wager_mult,
             "wager_requirement": int(reward * wager_mult) if wager_mult > 0 else 0,
             "wagered_so_far": 0,
@@ -666,14 +855,19 @@ def redeem_promo_code(user_id, code: str, *, member=None) -> tuple[bool, str, di
             "activated_at": now,
         }
     else:  # freegame
+        bet_amt = int(template.get("bet_amount", 0))
+        rounds_total = int(template.get("rounds", 0))
         active_state = {
             "code": code,
             "type": "freegame",
             "game": template.get("game", ""),
-            "bet_amount": int(template.get("bet_amount", 0)),
-            "rounds_total": int(template.get("rounds", 0)),
+            "bet_amount": bet_amt,
+            "rounds_total": rounds_total,
             "rounds_played": 0,
             "total_winnings": 0,
+            "promo_value": bet_amt * rounds_total,
+            "balance_at_activation": int(balance),
+            "peak_balance": int(balance),
             "wager_requirement": 0,   # set after all rounds
             "wagered_so_far": 0,
             "wager_multiplier": wager_mult,
@@ -749,6 +943,8 @@ def complete_freegame_promo(user_id) -> int:
     if total_won > 0:
         player = Player(user_id)
         player.add_balance("real", total_won)
+    promo_val = total_won if total_won > 0 else _promo_value_for_forfeit(data)
+    _set_wagering_forfeit_baseline(user_id, promo_value=promo_val)
     return total_won
 
 
@@ -784,10 +980,12 @@ def on_real_bet_wagered(user_id, bet_amount: int) -> bool:
 
 def check_forfeit_promo(user_id, current_balance: int) -> bool:
     """
-    Check if balance dropped to/below the forfeit threshold.
-    If min_balance_forfeit == 0, forfeits when balance reaches 0.
-    If min_balance_forfeit > 0, forfeits when balance <= threshold.
-    Also clears completed promos when balance is gone (no withdrawal possible).
+    Check if the active promo should be forfeited.
+
+    - min_balance_forfeit > 0: balance at or below that threshold
+    - min_balance_forfeit == 0: balance at 0, OR promo value × 90% lost from peak balance
+    - Also clears completed promos when balance is gone (no withdrawal possible).
+
     Returns True if promo state was cleared or forfeited.
     """
     data = get_stored_promo(user_id)
@@ -797,20 +995,35 @@ def check_forfeit_promo(user_id, current_balance: int) -> bool:
     if data.get("status") == "completed":
         return clear_unwithdrawable_completed_promo(user_id, current_balance)
 
-    if data.get("status") != "wagering":
+    if data.get("status") not in ("active", "wagering"):
         return False
 
+    sync_promo_forfeit_tracking(user_id, current_balance)
+    data = get_stored_promo(user_id)
+
+    bal = int(current_balance)
     threshold = int(data.get("min_balance_forfeit", 0))
+    should_forfeit = False
+
     if threshold > 0:
-        should_forfeit = current_balance <= threshold
+        should_forfeit = bal <= threshold
+    elif bal <= 0:
+        should_forfeit = True
     else:
-        should_forfeit = current_balance <= 0
+        promo_val = _promo_value_for_forfeit(data)
+        if promo_val > 0:
+            peak = int(data.get("peak_balance", 0) or data.get("balance_at_activation", 0) or 0)
+            if peak < bal:
+                data["peak_balance"] = bal
+                save_active_promo(user_id, data)
+                peak = bal
+            loss = peak - bal
+            forfeit_at = int(promo_val * PROMO_LOSS_FORFEIT_RATIO)
+            if forfeit_at > 0 and loss >= forfeit_at:
+                should_forfeit = True
 
     if should_forfeit:
-        data["status"] = "forfeited"
-        data["forfeited_at"] = int(time.time())
-        save_active_promo(user_id, data)
-        return True
+        return _forfeit_promo_state(data, user_id)
     return False
 
 
