@@ -1,6 +1,6 @@
 """All casino games as prefix commands.
 
-Games: coinflip, dice, roulette, htw, mines, hilo, blackjack, limbo, slots, chickenroad
+Games: coinflip, dice, roulette, mines, hilo, blackjack, limbo, slots, chickenroad
 """
 from __future__ import annotations
 
@@ -337,11 +337,20 @@ async def _htw_run_animation(
     left_num: int,
     right_num: int,
     bet: float,
-    outcome: str,
+    left_payout: float,
+    left_lost: float,
+    right_payout: float,
+    right_lost: float,
+    is_push: bool = False,
     content: str = "",
 ) -> discord.Message:
     gif = await image_gen.render_htw_gif(
-        left_name, right_name, left_num, right_num, bet, outcome,
+        left_name, right_name, left_num, right_num, bet,
+        left_payout=left_payout,
+        left_lost=left_lost,
+        right_payout=right_payout,
+        right_lost=right_lost,
+        is_push=is_push,
     )
     return await channel.send(
         content=content or None,
@@ -367,10 +376,17 @@ async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
         gross = 0
         won = False
 
-    net = await _payout(ctx.author.id, "htw", bet, gross)
-    await _record(ctx.author.id, won, bet, net)
+    payout_credited = await _payout(ctx.author.id, "htw", bet, gross)
+    await _record(ctx.author.id, won, bet, payout_credited)
 
     house_name = getattr(config, "BOT_DISPLAY_NAME", "VegasBet")
+    if outcome == "WIN":
+        lp, ll, rp, rl, push = payout_credited, 0.0, 0.0, bet, False
+    elif outcome == "PUSH":
+        lp, ll, rp, rl, push = bet, 0.0, bet, 0.0, True
+    else:
+        lp, ll, rp, rl, push = 0.0, bet, bet, 0.0, False
+
     await _htw_run_animation(
         ctx.channel,
         left_name=ctx.author.display_name,
@@ -378,7 +394,11 @@ async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
         left_num=left_n,
         right_num=right_n,
         bet=bet,
-        outcome=outcome,
+        left_payout=lp,
+        left_lost=ll,
+        right_payout=rp,
+        right_lost=rl,
+        is_push=push,
         content=ctx.author.mention,
     )
 
@@ -389,10 +409,11 @@ async def _htw_settle_pvp(
     bet: float,
     left_n: int,
     right_n: int,
-) -> tuple[int | None, str]:
-    """Deduct bets already done. Pay winner. Returns (winner_id or None for tie, outcome for challenger)."""
+) -> tuple[int | None, str, float]:
+    """Deduct bets already done. Pay winner. Returns (winner_id, outcome, winner payout credited)."""
     game_cfg = await db.get_game_config("htw")
     he = float(game_cfg["house_edge"]) if game_cfg else 0.05
+    winner_payout = 0.0
 
     if left_n > right_n:
         outcome = "WIN"
@@ -407,14 +428,15 @@ async def _htw_settle_pvp(
     if winner_id is None:
         await db.add_balance(challenger_id, bet, note="htw pvp push refund")
         await db.add_balance(opponent_id, bet, note="htw pvp push refund")
+        winner_payout = bet
     else:
         pool = bet * 2
         payout = pool * (1 - he)
-        loser_id = opponent_id if winner_id == challenger_id else challenger_id
         wuser = await db.get_user(winner_id)
         cur = float((wuser or {}).get("balance", 0))
         capped = await bc.apply_balance_cap(winner_id, cur + payout)
         payout = max(0.0, capped - cur)
+        winner_payout = payout
         if payout > 0:
             await db.add_balance(winner_id, payout, note="htw pvp win")
 
@@ -434,7 +456,7 @@ async def _htw_settle_pvp(
         await _record(challenger_id, False, bet, bet)
         await _record(opponent_id, False, bet, bet)
 
-    return winner_id, outcome
+    return winner_id, outcome, winner_payout
 
 
 class HTWChallengeView(discord.ui.View):
@@ -481,7 +503,7 @@ class HTWChallengeView(discord.ui.View):
         await db.add_balance(self.opponent_id, -self.bet, note="htw pvp bet")
 
         left_n, right_n, outcome = _htw_spin_pair(self.challenger_id, self.bet)
-        winner_id, _ = await _htw_settle_pvp(
+        winner_id, outcome, win_pay = await _htw_settle_pvp(
             self.challenger_id, self.opponent_id, self.bet, left_n, right_n,
         )
 
@@ -503,6 +525,13 @@ class HTWChallengeView(discord.ui.View):
         except Exception:
             pass
 
+        if winner_id is None:
+            lp, ll, rp, rl, push = self.bet, 0.0, self.bet, 0.0, True
+        elif winner_id == self.challenger_id:
+            lp, ll, rp, rl, push = win_pay, 0.0, 0.0, self.bet, False
+        else:
+            lp, ll, rp, rl, push = 0.0, self.bet, win_pay, 0.0, False
+
         await _htw_run_animation(
             interaction.channel,
             left_name=left_name,
@@ -510,7 +539,11 @@ class HTWChallengeView(discord.ui.View):
             left_num=left_n,
             right_num=right_n,
             bet=self.bet,
-            outcome=outcome,
+            left_payout=lp,
+            left_lost=ll,
+            right_payout=rp,
+            right_lost=rl,
+            is_push=push,
             content=f"{result_txt}\n{challenger.mention if challenger else ''} {opponent.mention if opponent else ''}",
         )
 

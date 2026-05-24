@@ -848,11 +848,15 @@ async def render_htw_gif(
     left_num: int,
     right_num: int,
     bet: float,
-    outcome: str,
+    *,
+    left_payout: float,
+    left_lost: float,
+    right_payout: float,
+    right_lost: float,
+    is_push: bool = False,
 ) -> io.BytesIO:
-    """Two roulette wheels side-by-side with spin animation + WIN/LOSE/PUSH."""
-    W, H = 660, 390
-    WHEEL = 216
+    """HTW — spinning numbers, green winner / red loser, payout & loss below."""
+    W, H = 620, 340
     BG = (10, 14, 28)
     PANEL = (16, 22, 40)
     WHITE = (245, 247, 255)
@@ -861,17 +865,22 @@ async def render_htw_gif(
     RED = (231, 76, 60)
     GOLD = (255, 196, 0)
     CYAN = (56, 189, 248)
+    NEUTRAL = (180, 190, 210)
 
     left_cx, right_cx = W // 4, 3 * W // 4
-    wheel_cy = 218
-    spin_frames = 24
+    card_y = 118
+    card_w, card_h = 200, 130
+    spin_frames = 22
     frame_ms = max(45, HTW_SPIN_MS // spin_frames)
 
     font_hdr = _font(14, bold=True)
     font_name = _font(13, bold=True)
-    font_num = _font(26, bold=True)
-    font_res = _font(44, bold=True)
-    font_sub = _font(16, bold=True)
+    font_spin = _font(72, bold=True)
+    font_amt = _font(20, bold=True)
+    font_push = _font(36, bold=True)
+
+    left_won = left_payout > 0 and left_lost <= 0 and not is_push
+    right_won = right_payout > 0 and right_lost <= 0 and not is_push
 
     def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
         try:
@@ -883,73 +892,103 @@ async def render_htw_gif(
         name = (name or "Player").strip()
         return (name[: mx - 1] + "…") if len(name) > mx else name
 
-    left_target = _htw_angle_for_number(left_num) + 360.0 * 4
-    right_target = _htw_angle_for_number(right_num) + 360.0 * 4
-    left_start = random.uniform(0, 360)
-    right_start = random.uniform(0, 360)
+    def _draw_player_card(
+        draw: ImageDraw.ImageDraw,
+        cx: int,
+        num: int,
+        *,
+        spinning: bool,
+        show_amounts: bool,
+        side: str,
+    ) -> None:
+        x1 = cx - card_w // 2
+        y1 = card_y
+        x2 = x1 + card_w
+        y2 = y1 + card_h
 
-    def _paste_wheel(base: Image.Image, cx: int, cy: int, angle: float) -> None:
-        wheel = _htw_wheel_rotated(WHEEL, angle)
-        x = cx - WHEEL // 2
-        y = cy - WHEEL // 2
-        base.paste(wheel, (x, y), wheel)
-        # Pointer
-        draw = ImageDraw.Draw(base)
-        px = [cx - 10, cy - WHEEL // 2 - 6, cx + 10, cy - WHEEL // 2 - 6, cx, cy - WHEEL // 2 + 8]
-        draw.polygon(px, fill=GOLD)
-        draw.rectangle([cx - 2, cy - WHEEL // 2 - 10, cx + 2, cy - WHEEL // 2 - 4], fill=GOLD)
+        if show_amounts:
+            if is_push:
+                border, num_col = GOLD, GOLD
+            elif side == "left":
+                border = GREEN if left_won else RED
+                num_col = GREEN if left_won else RED
+            else:
+                border = GREEN if right_won else RED
+                num_col = GREEN if right_won else RED
+        elif spinning:
+            border, num_col = (58, 66, 88), WHITE
+        else:
+            border, num_col = (58, 66, 88), WHITE
+
+        draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill=(18, 24, 42), outline=border, width=3)
+
+        ns = str(num)
+        nw = _tw(draw, ns, font_spin)
+        draw.text((cx - nw / 2, y1 + 22), ns, font=font_spin, fill=num_col)
+
+        if show_amounts:
+            if side == "left":
+                payout, lost = left_payout, left_lost
+            else:
+                payout, lost = right_payout, right_lost
+            if payout > 0:
+                amt = f"+{_fmt(payout)}"
+                col = GREEN
+            elif lost > 0:
+                amt = f"-{_fmt(lost)}"
+                col = RED
+            else:
+                amt = ""
+                col = MUTED
+            if amt:
+                aw = _tw(draw, amt, font_amt)
+                draw.text((cx - aw / 2, y2 - 38), amt, font=font_amt, fill=col)
 
     def make_frame(
-        left_angle: float,
-        right_angle: float,
+        l_display: int,
+        r_display: int,
         *,
-        show_result: bool = False,
+        spinning: bool = False,
+        final: bool = False,
     ) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
         draw = ImageDraw.Draw(img)
 
         draw.rectangle([0, 0, W, 44], fill=PANEL)
-        title = "HTW  •  HEAD TO HEAD WHEEL"
+        title = "HTW  •  HEAD TO HEAD"
         tw = _tw(draw, title, font_hdr)
         draw.text(((W - tw) // 2, 12), title, font=font_hdr, fill=CYAN)
 
         ln, rn = _short(left_name), _short(right_name)
         lw, rw = _tw(draw, ln, font_name), _tw(draw, rn, font_name)
-        draw.text((left_cx - lw // 2, 52), ln, font=font_name, fill=WHITE)
-        draw.text((right_cx - rw // 2, 52), rn, font=font_name, fill=WHITE)
+        draw.text((left_cx - lw // 2, 58), ln, font=font_name, fill=WHITE)
+        draw.text((right_cx - rw // 2, 58), rn, font=font_name, fill=WHITE)
 
-        _paste_wheel(img, left_cx, wheel_cy, left_angle)
-        _paste_wheel(img, right_cx, wheel_cy, right_angle)
+        _draw_player_card(
+            draw, left_cx, l_display,
+            spinning=spinning and not final,
+            show_amounts=final,
+            side="left",
+        )
+        _draw_player_card(
+            draw, right_cx, r_display,
+            spinning=spinning and not final,
+            show_amounts=final,
+            side="right",
+        )
 
-        # VS badge
-        draw.rounded_rectangle([W // 2 - 28, wheel_cy - 18, W // 2 + 28, wheel_cy + 18], radius=12, fill=(28, 36, 58))
-        draw.text((W // 2 - 10, wheel_cy - 10), "VS", font=font_name, fill=GOLD)
+        vs_y = card_y + card_h // 2 - 12
+        draw.rounded_rectangle([W // 2 - 30, vs_y, W // 2 + 30, vs_y + 36], radius=12, fill=(28, 36, 58))
+        draw.text((W // 2 - 12, vs_y + 8), "VS", font=font_name, fill=GOLD)
 
-        # Result numbers (large badges — wheel has no cramped labels)
-        for cx, num in ((left_cx, left_num), (right_cx, right_num)):
-            ns = str(num)
-            ncol = _htw_num_color(num)
-            nw = _tw(draw, ns, font_num) + 28
-            bx1, by1 = cx - nw // 2, wheel_cy + WHEEL // 2 + 12
-            draw.rounded_rectangle([bx1, by1, bx1 + nw, by1 + 40], radius=10, fill=ncol)
-            draw.text((bx1 + 14, by1 + 5), ns, font=font_num, fill=WHITE)
+        if final and is_push:
+            pt = "PUSH"
+            pw = _tw(draw, pt, font_push)
+            draw.text(((W - pw) // 2, card_y + card_h + 14), pt, font=font_push, fill=GOLD)
 
         bet_s = f"Bet {_fmt(bet)} pts"
         bw = _tw(draw, bet_s, font_name)
         draw.text((W - 14 - bw, H - 28), bet_s, font=font_name, fill=MUTED)
-
-        if show_result:
-            ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            od = ImageDraw.Draw(ov)
-            od.rectangle([20, 88, W - 20, H - 50], fill=(0, 0, 0, 170))
-            img = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
-            draw = ImageDraw.Draw(img)
-            oc = GREEN if outcome == "WIN" else (GOLD if outcome == "PUSH" else RED)
-            rw = _tw(draw, outcome, font_res)
-            draw.text(((W - rw) // 2, 130), outcome, font=font_res, fill=oc)
-            sub = f"{left_num}  vs  {right_num}"
-            sw = _tw(draw, sub, font_sub)
-            draw.text(((W - sw) // 2, 188), sub, font=font_sub, fill=WHITE)
 
         return img
 
@@ -957,16 +996,20 @@ async def render_htw_gif(
     durations: list[int] = []
 
     for i in range(spin_frames):
-        t = _htw_ease_out((i + 1) / spin_frames)
-        la = left_start + (left_target - left_start) * t
-        ra = right_start + (right_target - right_start) * t
-        frames.append(make_frame(la, ra))
+        frames.append(make_frame(
+            random.randint(0, 36),
+            random.randint(0, 36),
+            spinning=True,
+        ))
         durations.append(frame_ms)
 
-    final_frame = make_frame(left_target, right_target, show_result=True)
+    for _ in range(3):
+        frames.append(make_frame(left_num, right_num, final=True))
+        durations.append(120)
+
+    final_frame = make_frame(left_num, right_num, final=True)
     frames.append(final_frame)
     durations.append(HTW_RESULT_HOLD_MS)
-    # Extra still frames so clients hold the result (Towers-style) before any loop
     for _ in range(2):
         frames.append(final_frame.copy())
         durations.append(HTW_RESULT_HOLD_MS // 2)
