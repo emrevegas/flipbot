@@ -5,6 +5,7 @@ load_dotenv()
 
 TOKEN        = os.getenv("TOKEN", "")
 PREFIX       = os.getenv("PREFIX", ".")
+BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "VegasBet")
 OWNER_IDS    = [int(x) for x in os.getenv("OWNER_ID", "0").split(",") if x.strip()]
 SUPER_ADMIN_ID = os.getenv("SUPER_ADMIN_ID", str(OWNER_IDS[0]) if OWNER_IDS else "0")
 

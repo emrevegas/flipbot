@@ -1,4 +1,4 @@
-"""FlipBot — prefix + slash command Discord bot."""
+"""VegasBet — prefix + slash command Discord bot."""
 from __future__ import annotations
 
 import asyncio
@@ -85,7 +85,7 @@ class FlipBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name=f"{config.PREFIX}help | flipbot",
+                name=f"{config.PREFIX}help | {config.BOT_DISPLAY_NAME}",
             )
         )
 

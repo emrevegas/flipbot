@@ -6,6 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import config
 from modules.database import check_permission
 from modules.maintenance import (
     can_bypass_maintenance,
@@ -130,8 +131,11 @@ async def _update_presence(bot: commands.Bot):
             )
             await bot.change_presence(status=discord.Status.dnd, activity=activity)
         else:
-            if hasattr(bot, "update_presence"):
-                bot.update_presence.restart()
+            activity = discord.Activity(
+                type=discord.ActivityType.watching,
+                name=f"{config.PREFIX}help | {config.BOT_DISPLAY_NAME}",
+            )
+            await bot.change_presence(status=discord.Status.online, activity=activity)
     except Exception:
         pass
 
