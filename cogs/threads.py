@@ -22,9 +22,13 @@ async def _get_user_thread(guild: discord.Guild, user_id: int) -> discord.Thread
     for thread in guild.threads:
         if _thread_matches(thread, user_id):
             return thread
-    async for thread in guild.active_threads():
-        if _thread_matches(thread, user_id):
-            return thread
+    try:
+        active = await guild.active_threads()
+        for thread in active.threads:
+            if _thread_matches(thread, user_id):
+                return thread
+    except Exception:
+        pass
     return None
 
 
