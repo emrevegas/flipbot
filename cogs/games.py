@@ -1668,7 +1668,7 @@ async def _crystals_play(
         await db.add_balance(user_id, net, note="crystals payout")
 
     await db.add_wager(user_id, bet)
-    await _earn_rakeback(user_id, bet, interaction.user if isinstance(interaction.user, discord.Member) else None)
+    await _earn_rakeback(user_id, bet, member)
     await _record(user_id, won, bet, net if won else 0.0)
 
     net_change = (net - bet) if won else -bet
