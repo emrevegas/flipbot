@@ -11,7 +11,7 @@ from discord import ui
 from database import db
 from modules import image_gen
 from modules.database import get_data, set_data
-from modules.game_media_v2 import challenge_text_layout, gif_media_layout
+from modules.game_media_v2 import challenge_text_layout, gif_media_layout, gif_result_layout
 from modules.pvp_challenge import PVP_CHALLENGE_TIMEOUT
 from modules import flip_utils as utils
 from modules import flip_balance_cap as bc
@@ -154,7 +154,7 @@ class CoinflipChallengeLayout(ui.LayoutView):
             f"{opponent.mention} — **Accept** within **{PVP_CHALLENGE_TIMEOUT}s**.\n"
             f"Either player: **Decline & Cancel**."
         )
-        container = ui.Container(accent_colour=discord.Colour.gold())
+        container = ui.Container()
         container.add_item(ui.TextDisplay(body))
         container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
         row = ui.ActionRow()
@@ -270,10 +270,14 @@ class CoinflipChallengeLayout(ui.LayoutView):
             pass
 
 
-async def start_cf_bot_game(ctx: commands.Context, bet: float, choice: str | None) -> None:
-    player_side = choice or random.choice(SIDES)
+async def _run_cf_bot_round(
+    user_id: int,
+    display_name: str,
+    bet: float,
+    choice: str | None,
+):
     hot_e, cold_e = get_coinflip_emojis()
-    rigged = await bc.should_rig_outcome(ctx.author.id, "coinflip", bet)
+    rigged = await bc.should_rig_outcome(user_id, "coinflip", bet)
     if rigged:
         result = "COLD" if player_side == "HOT" else "HOT"
     else:
@@ -281,13 +285,13 @@ async def start_cf_bot_game(ctx: commands.Context, bet: float, choice: str | Non
 
     won = result == player_side
     gross = bet * 2 if won else 0
-    net = await _payout(ctx.author.id, "coinflip", bet, gross)
-    await _record(ctx.author.id, won, bet, net)
+    net = await _payout(user_id, "coinflip", bet, gross)
+    await _record(user_id, won, bet, net)
     lp, ll = (net, 0.0) if won else (0.0, bet)
 
     gif = await image_gen.render_coinflip_gif(
         mode="bot",
-        left_name=ctx.author.display_name,
+        left_name=display_name,
         right_name="Flip",
         left_side=player_side,
         right_side=result,
@@ -298,9 +302,50 @@ async def start_cf_bot_game(ctx: commands.Context, bet: float, choice: str | Non
         left_payout=lp,
         left_lost=ll,
     )
+    return gif, player_side
+
+
+async def _cf_rebet_from_interaction(
+    interaction: discord.Interaction,
+    user_id: int,
+    bet: float,
+    choice: str | None,
+) -> None:
+    from cogs.games import _check_game_interaction
+
+    if not await _check_game_interaction(interaction, user_id, "coinflip", bet):
+        return
+    await db.ensure_user(user_id, interaction.user.name)
+    await interaction.response.defer()
+    gif, side = await _run_cf_bot_round(
+        user_id,
+        interaction.user.display_name,
+        bet,
+        choice,
+    )
+    await interaction.message.edit(
+        content=None,
+        embed=None,
+        attachments=[discord.File(gif, COINFLIP_GIF)],
+        view=gif_result_layout(
+            COINFLIP_GIF,
+            user_id=user_id,
+            bet=bet,
+            rebet_cb=lambda i, u, b: _cf_rebet_from_interaction(i, u, b, side),
+        ),
+    )
+
+
+async def start_cf_bot_game(ctx: commands.Context, bet: float, choice: str | None) -> None:
+    gif, side = await _run_cf_bot_round(ctx.author.id, ctx.author.display_name, bet, choice)
     await ctx.send(
         file=discord.File(gif, COINFLIP_GIF),
-        view=gif_media_layout(COINFLIP_GIF),
+        view=gif_result_layout(
+            COINFLIP_GIF,
+            user_id=ctx.author.id,
+            bet=bet,
+            rebet_cb=lambda i, u, b: _cf_rebet_from_interaction(i, u, b, side),
+        ),
     )
 
 

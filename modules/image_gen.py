@@ -870,15 +870,15 @@ async def render_htw_gif(
     left_cx, right_cx = W // 4, 3 * W // 4
     card_y = 118
     card_w, card_h = 200, 148
-    spin_frames = 22
-    frame_ms = max(45, HTW_SPIN_MS // spin_frames)
+    spin_frames = 26
     loser_dim = 0.42
 
     font_hdr = _font(14, bold=True)
-    font_name = _font(13, bold=True)
+    font_name = _font(16, bold=True)
     font_spin = _font(72, bold=True)
     font_amt = _font(19, bold=True)
     font_usd = _font(13)
+    font_foot = _font(15, bold=True)
     font_push = _font(36, bold=True)
 
     left_won = left_payout > 0 and left_lost <= 0 and not is_push
@@ -1020,9 +1020,14 @@ async def render_htw_gif(
             pw = _tw(draw, pt, font_push)
             draw.text(((W - pw) // 2, card_y + card_h + 14), pt, font=font_push, fill=GOLD)
 
+        uname = _short(left_name, 18)
+        draw.text((20, H - 34), uname, font=font_foot, fill=WHITE)
         bet_s = f"Bet {_fmt(bet)} pts"
-        bw = _tw(draw, bet_s, font_name)
-        draw.text((W - 14 - bw, H - 28), bet_s, font=font_name, fill=MUTED)
+        usd_s = f"${_pts_to_usd(bet):,.2f}"
+        bw = _tw(draw, bet_s, font_foot)
+        uw = _tw(draw, usd_s, font_usd)
+        draw.text((W - 20 - bw, H - 38), bet_s, font=font_foot, fill=MUTED)
+        draw.text((W - 20 - uw, H - 20), usd_s, font=font_usd, fill=MUTED)
 
         return img
 
@@ -1030,12 +1035,19 @@ async def render_htw_gif(
     durations: list[int] = []
 
     for i in range(spin_frames):
-        frames.append(make_frame(
-            random.randint(0, 36),
-            random.randint(0, 36),
-            spinning=True,
-        ))
-        durations.append(frame_ms)
+        t = i / max(1, spin_frames - 1)
+        eased = _htw_ease_out(t)
+        if i >= spin_frames - 2:
+            l_display, r_display = left_num, right_num
+        elif i >= spin_frames - 8:
+            l_display = left_num if random.random() < eased else random.randint(0, 36)
+            r_display = right_num if random.random() < eased else random.randint(0, 36)
+        else:
+            l_display = random.randint(0, 36)
+            r_display = random.randint(0, 36)
+        spinning = i < spin_frames - 2
+        frames.append(make_frame(l_display, r_display, spinning=spinning))
+        durations.append(int(55 + eased * 160))
 
     for _ in range(3):
         frames.append(make_frame(left_num, right_num, final=True))
@@ -2550,9 +2562,13 @@ async def render_chicken_road_gif(
 
 # ── Coin Flip (Hot / Cold) GIF ───────────────────────────────────────────────
 
-COINFLIP_SPIN_FRAMES = 18
-COINFLIP_FRAME_MS = 100
+COINFLIP_SPIN_FRAMES = 24
 COINFLIP_HOLD_MS = 5_000
+
+
+def _coinflip_ease_out(t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return 1.0 - (1.0 - t) ** 2.5
 
 
 def _coinflip_paste_card(
@@ -2614,11 +2630,11 @@ async def render_coinflip_gif(
 
     font_hdr = _font(14, bold=True)
     font_cap = _font(11, bold=True)
-    font_name = _font(13, bold=True)
-    font_lbl = _font(28, bold=True)
-    font_amt = _font(17, bold=True)
-    font_foot = _font(12, bold=True)
-    font_usd = _font(11)
+    font_name = _font(16, bold=True)
+    font_lbl = _font(26, bold=True)
+    font_amt = _font(18, bold=True)
+    font_foot = _font(15, bold=True)
+    font_usd = _font(13)
 
     async with aiohttp.ClientSession() as session:
         hot_img = await _load_emoji_rgba(hot_emoji, 68, session)
@@ -2687,8 +2703,6 @@ async def render_coinflip_gif(
             wl = "WIN" if left_won else "LOSE"
             wcol = GREEN if left_won else RED
             wl_w = _tw(draw, wl, font_lbl)
-            draw.text((center_cx - wl_w / 2, card_cy - 16), wl, font=font_lbl, fill=wcol)
-
             if left_won:
                 pline = f"+{_fmt(left_payout)} pts"
                 pcol = GREEN
@@ -2696,10 +2710,11 @@ async def render_coinflip_gif(
                 pline = f"-{_fmt(left_lost)} pts"
                 pcol = RED
             pl_w = _tw(draw, pline, font_amt)
-            draw.text((left_cx - pl_w / 2, left_box[1] - 24), pline, font=font_amt, fill=pcol)
+            draw.text((left_cx - wl_w / 2, left_box[1] - 58), wl, font=font_lbl, fill=wcol)
+            draw.text((left_cx - pl_w / 2, left_box[1] - 28), pline, font=font_amt, fill=pcol)
 
         uname = _short(left_name, 18)
-        draw.text((20, H - 32), uname, font=font_foot, fill=WHITE)
+        draw.text((20, H - 34), uname, font=font_foot, fill=WHITE)
         bet_line = f"Bet {_fmt(bet)} pts"
         usd_line = f"${_pts_to_usd(bet):,.2f}"
         bw = _tw(draw, bet_line, font_foot)
@@ -2767,9 +2782,19 @@ async def render_coinflip_gif(
 
     frames: list[Image.Image] = []
     durations: list[int] = []
+    import random as _rnd
+
     for i in range(COINFLIP_SPIN_FRAMES):
-        frames.append(make_frame(spin_hot=(i % 2 == 0), final=False))
-        durations.append(COINFLIP_FRAME_MS)
+        t = i / max(1, COINFLIP_SPIN_FRAMES - 1)
+        eased = _coinflip_ease_out(t)
+        if i >= COINFLIP_SPIN_FRAMES - 2:
+            spin_hot = result == "HOT"
+        elif i >= COINFLIP_SPIN_FRAMES - 7:
+            spin_hot = (result == "HOT") if _rnd.random() < eased else (i % 2 == 0)
+        else:
+            spin_hot = i % 2 == 0
+        frames.append(make_frame(spin_hot=spin_hot, final=False))
+        durations.append(int(75 + eased * 145))
     for _ in range(4):
         frames.append(make_frame(spin_hot=(result == "HOT"), final=True))
         durations.append(COINFLIP_HOLD_MS // 4)

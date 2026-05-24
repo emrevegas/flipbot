@@ -344,8 +344,9 @@ async def _htw_run_animation(
     right_lost: float,
     is_push: bool = False,
     message: discord.Message | None = None,
+    user_id: int | None = None,
 ) -> discord.Message | None:
-    from modules.game_media_v2 import gif_media_layout
+    from modules.game_media_v2 import gif_media_layout, gif_result_layout
 
     gif = await image_gen.render_htw_gif(
         left_name, right_name, left_num, right_num, bet,
@@ -355,7 +356,15 @@ async def _htw_run_animation(
         right_lost=right_lost,
         is_push=is_push,
     )
-    layout = gif_media_layout("htw.gif")
+    if user_id and bet > 0:
+        layout = gif_result_layout(
+            "htw.gif",
+            user_id=user_id,
+            bet=bet,
+            rebet_cb=_htw_rebet_from_interaction,
+        )
+    else:
+        layout = gif_media_layout("htw.gif")
     file = discord.File(gif, "htw.gif")
     if message is not None:
         await message.edit(content=None, embed=None, attachments=[file], view=layout)
@@ -363,7 +372,60 @@ async def _htw_run_animation(
     if isinstance(target, discord.Message):
         await target.edit(content=None, embed=None, attachments=[file], view=layout)
         return target
+    if isinstance(target, commands.Context):
+        return await target.send(file=file, view=layout)
     return await target.send(file=file, view=layout)
+
+
+async def _htw_rebet_from_interaction(
+    interaction: discord.Interaction,
+    user_id: int,
+    bet: float,
+) -> None:
+    if not await _check_game_interaction(interaction, user_id, "htw", bet):
+        return
+    await db.ensure_user(user_id, interaction.user.name)
+    await interaction.response.defer()
+
+    rigged = await bc.should_rig_outcome(user_id, "htw", bet)
+    left_n, right_n, outcome = _htw_spin_pair(user_id, bet, rig_vs_bot=rigged)
+
+    if outcome == "WIN":
+        gross = bet * 2
+        won = True
+    elif outcome == "PUSH":
+        gross = bet
+        won = False
+    else:
+        gross = 0
+        won = False
+
+    payout_credited = await _payout(user_id, "htw", bet, gross)
+    await _record(user_id, won, bet, payout_credited)
+
+    house_name = getattr(config, "BOT_DISPLAY_NAME", "VegasBet")
+    if outcome == "WIN":
+        lp, ll, rp, rl, push = payout_credited, 0.0, 0.0, bet, False
+    elif outcome == "PUSH":
+        lp, ll, rp, rl, push = bet, 0.0, bet, 0.0, True
+    else:
+        lp, ll, rp, rl, push = 0.0, bet, bet, 0.0, False
+
+    await _htw_run_animation(
+        interaction.message,
+        left_name=interaction.user.display_name,
+        right_name=house_name,
+        left_num=left_n,
+        right_num=right_n,
+        bet=bet,
+        left_payout=lp,
+        left_lost=ll,
+        right_payout=rp,
+        right_lost=rl,
+        is_push=push,
+        message=interaction.message,
+        user_id=user_id,
+    )
 
 
 async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
@@ -396,7 +458,7 @@ async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
         lp, ll, rp, rl, push = 0.0, bet, bet, 0.0, False
 
     await _htw_run_animation(
-        ctx.channel,
+        ctx,
         left_name=ctx.author.display_name,
         right_name=house_name,
         left_num=left_n,
@@ -407,6 +469,7 @@ async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
         right_payout=rp,
         right_lost=rl,
         is_push=push,
+        user_id=ctx.author.id,
     )
 
 
