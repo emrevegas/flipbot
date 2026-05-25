@@ -7,7 +7,7 @@ import re
 import shutil
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 CARDS_DIR = Path(__file__).parent.parent / "assets" / "cards"
 IMPORT_DIR = CARDS_DIR / "import"
@@ -79,6 +79,78 @@ def resize_card(img: Image.Image, width: int, height: int) -> Image.Image:
     if img.size == (width, height):
         return img
     return img.resize((width, height), Image.Resampling.LANCZOS)
+
+
+def key_to_import_stem(key: str) -> str:
+    """Asset key Ah / 10c / back → import filename stem (AH / 0C / CB)."""
+    if key == "back":
+        return "CB"
+    rank = key[:-1] if len(key) > 1 else key
+    suit = key[-1].upper()
+    if rank == "10":
+        rank = "0"
+    return f"{rank}{suit}"
+
+
+def resolve_card_path(key: str) -> Path | None:
+    """Prefer large PNGs in import/, then assets/cards/."""
+    found: list[Path] = []
+    if key == "back":
+        names = ("CB.png", "back.png", "BACK.png", "Card_Back.png")
+        for folder in (IMPORT_DIR, CARDS_DIR):
+            for name in names:
+                p = folder / name
+                if p.is_file():
+                    found.append(p)
+    else:
+        stem = key_to_import_stem(key)
+        if IMPORT_DIR.is_dir():
+            for src in IMPORT_DIR.glob("*.png"):
+                if src.name.startswith("_"):
+                    continue
+                norm = normalize_import_stem(src.stem)
+                if norm == key:
+                    found.append(src)
+        for folder in (IMPORT_DIR, CARDS_DIR):
+            for name in (
+                f"{stem}.png",
+                f"{key}.png",
+                f"{key[0].upper()}{key[1:]}.png" if len(key) > 1 else f"{key}.png",
+            ):
+                p = folder / name
+                if p.is_file():
+                    found.append(p)
+    if not found:
+        return None
+    return max(found, key=lambda p: p.stat().st_size)
+
+
+def round_card_corners(img: Image.Image, radius: int = 12) -> Image.Image:
+    """Soft rounded corners on RGBA card."""
+    img = img.convert("RGBA")
+    w, h = img.size
+    mask = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
+    img.putalpha(Image.composite(img.split()[3], Image.new("L", (w, h), 0), mask))
+    return img
+
+
+def load_card_image(
+    key: str,
+    width: int,
+    height: int,
+    *,
+    corner_radius: int = 12,
+) -> Image.Image | None:
+    path = resolve_card_path(key)
+    if not path:
+        return None
+    img = Image.open(path).convert("RGBA")
+    img = resize_card(img, width, height)
+    if corner_radius > 0:
+        img = round_card_corners(img, corner_radius)
+    return img
 
 
 def import_one(src: Path, *, width: int, height: int) -> str | None:

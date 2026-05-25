@@ -1299,12 +1299,14 @@ def render_race_card(rows: list[dict]) -> io.BytesIO:
 
 # ── Blackjack card assets ──────────────────────────────────────────────────────
 
+from modules import card_assets as _card_assets
+
 CARDS_DIR = Path(__file__).parent.parent / "assets" / "cards"
-_CARD_DISPLAY_W, _CARD_DISPLAY_H = 88, 122
+_CARD_CORNER_RADIUS = 12
 
 
 def _bj_card_size() -> tuple[int, int]:
-    return _CARD_DISPLAY_W, _CARD_DISPLAY_H
+    return _card_assets.get_display_size()
 
 
 def clear_bj_card_cache() -> None:
@@ -1358,7 +1360,9 @@ def _gen_back_image() -> Image.Image:
 
 
 def _ensure_card_assets():
-    """Generate card PNG cache on disk (procedural faces, A not 1)."""
+    """No-op when import/ or custom PNGs exist; else write procedural fallbacks."""
+    if _card_assets.resolve_card_path("Ah"):
+        return
     CARDS_DIR.mkdir(parents=True, exist_ok=True)
     _gen_back_image().save(CARDS_DIR / "back.png", "PNG")
     for rank in _RANKS:
@@ -1384,11 +1388,17 @@ _card_cache: dict[str, Image.Image] = {}
 
 
 def _load_card_img(key: str) -> Image.Image:
-    """Procedural card face (BJ / HiLo shared), cached in memory."""
+    """Load card from assets/cards/import (or cards/), rounded corners; procedural fallback."""
     cw, ch = _bj_card_size()
     cache_key = f"{key}:{cw}x{ch}"
     if cache_key in _card_cache:
         return _card_cache[cache_key]
+    loaded = _card_assets.load_card_image(
+        key, cw, ch, corner_radius=_CARD_CORNER_RADIUS,
+    )
+    if loaded is not None:
+        _card_cache[cache_key] = loaded
+        return loaded
     if key == "back":
         base = _gen_back_image()
     else:
@@ -1401,13 +1411,52 @@ def _load_card_img(key: str) -> Image.Image:
             if suit_letter in _SUIT_CHAR
             else _gen_back_image()
         )
-    img = base.resize((cw, ch), Image.Resampling.LANCZOS)
+    img = _card_assets.round_card_corners(
+        base.resize((cw, ch), Image.Resampling.LANCZOS),
+        _CARD_CORNER_RADIUS,
+    )
     _card_cache[cache_key] = img
     return img
 
 
-def _paste_card(canvas: Image.Image, card_str: str, x: int, y: int, face_down: bool = False):
+def _draw_card_frame(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    *,
+    pad: int = 6,
+) -> None:
+    """Subtle frame around a card slot."""
+    fx, fy = x - pad, y - pad
+    fw, fh = w + pad * 2, h + pad * 2
+    draw.rounded_rectangle(
+        [fx, fy, fx + fw - 1, fy + fh - 1],
+        radius=14,
+        outline=(55, 68, 98),
+        width=2,
+    )
+    draw.rounded_rectangle(
+        [fx + 2, fy + 2, fx + fw - 3, fy + fh - 3],
+        radius=12,
+        outline=(28, 36, 58),
+        width=1,
+    )
+
+
+def _paste_card(
+    canvas: Image.Image,
+    card_str: str,
+    x: int,
+    y: int,
+    face_down: bool = False,
+    *,
+    framed: bool = False,
+):
     """Paste a card image (or back) onto canvas at (x, y)."""
+    if framed:
+        _draw_card_frame(ImageDraw.Draw(canvas), x, y, *_bj_card_size())
     key = "back" if face_down else _card_key(card_str)
     card_img = _load_card_img(key).copy()
     canvas.paste(card_img, (x, y), card_img)
@@ -1429,7 +1478,8 @@ def hilo_card_display(card: str) -> str:
 
 # ── HiLo GIF ───────────────────────────────────────────────────────────────────
 
-HILO_REVEAL_FRAMES = 10
+HILO_REVEAL_FRAMES = 14
+_HILO_FRAME_PAD = 6
 
 
 async def render_hilo_gif(
@@ -1445,11 +1495,12 @@ async def render_hilo_gif(
     result: str = "",
     net_change: float = 0.0,
 ) -> io.BytesIO:
-    """HiLo board GIF — same card renderer as blackjack."""
+    """HiLo: deck (back) left, current card right; slide+flip from deck on reveal."""
     _ensure_card_assets()
     CW, CH = _bj_card_size()
-    GAP = 14
-    W, H = 500, 248
+    GAP = 28
+    SLOT_PAD = _HILO_FRAME_PAD
+    W, H = 580, 290
     BG = (13, 17, 30)
     PANEL = (18, 24, 42)
     WHITE = (255, 255, 255)
@@ -1457,19 +1508,29 @@ async def render_hilo_gif(
     GREEN = (46, 213, 96)
     RED = (231, 76, 60)
     GOLD = (255, 196, 0)
-    BLUE = (88, 101, 242)
 
     font_title = _font(14, bold=True)
     font_val = _font(18, bold=True)
     font_status = _font(28, bold=True)
     font_sub = _font(14, bold=True)
     font_info = _font(12)
+    font_label = _font(11)
 
     cur_disp = hilo_card_display(current_card)
-    left_disp = hilo_card_display(prev_card) if prev_card and prev_card != current_card else None
-    rev_disp = hilo_card_display(reveal_card) if reveal_card else None
+    rev_disp = hilo_card_display(reveal_card) if reveal_card else cur_disp
+    show_face = rev_disp if reveal_card else cur_disp
 
-    def _draw_board(*, show_reveal: bool, mix: float) -> Image.Image:
+    deck_x = (W - (CW * 2 + GAP + SLOT_PAD * 4)) // 2 + SLOT_PAD
+    play_x = deck_x + CW + GAP
+    cy = 56 + (H - 56 - CH) // 2
+
+    back_img = _load_card_img("back")
+    face_key = _card_key(show_face)
+
+    def _ease(t: float) -> float:
+        return t * t * (3 - 2 * t)
+
+    def _draw_board(*, slide: float = 1.0, flip: float = 1.0, moving: bool = False) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
         draw = ImageDraw.Draw(img)
         draw.rectangle([0, 0, W, 42], fill=PANEL)
@@ -1481,29 +1542,28 @@ async def render_hilo_gif(
             mw = len(mult_str) * 10
         draw.text((W - 16 - mw, 10), mult_str, font=font_val, fill=GOLD)
 
-        cy = 56 + (H - 56 - CH) // 2
-        positions: list[tuple[int, str | None, bool, float | None]] = []
-        if left_disp:
-            positions.append((0, left_disp, False, None))
-        if show_reveal and rev_disp and mix < 1.0:
-            positions.append((1, rev_disp, False, mix))
-        elif show_reveal and rev_disp:
-            positions.append((1, rev_disp, False, 1.0))
-        else:
-            positions.append((0 if not left_disp else 1, cur_disp, False, None))
+        _draw_card_frame(draw, deck_x, cy, CW, CH, pad=SLOT_PAD)
+        _draw_card_frame(draw, play_x, cy, CW, CH, pad=SLOT_PAD)
+        draw.text((deck_x, cy + CH + 8), "DECK", font=font_label, fill=MUTED, anchor="ma")
+        draw.text((play_x + CW // 2, cy + CH + 8), "CURRENT", font=font_label, fill=MUTED, anchor="ma")
 
-        n = len(positions)
-        total_w = n * CW + max(0, n - 1) * GAP
-        x0 = (W - total_w) // 2
-        for i, (_, card_s, face_down, blend) in enumerate(positions):
-            x = x0 + i * (CW + GAP)
-            if blend is not None and card_s:
-                back = _load_card_img("back").copy()
-                face = _load_card_img(_card_key(card_s)).copy()
-                blended = Image.blend(back, face, blend)
-                img.paste(blended, (x, cy), blended)
-            else:
-                _paste_card(img, card_s if not face_down else "?", x, cy, face_down=face_down)
+        # Static deck pile (always face-down)
+        img.paste(back_img, (deck_x, cy), back_img)
+        if slide < 0.02:
+            stack = back_img.copy()
+            img.paste(stack, (deck_x + 3, cy - 2), stack)
+
+        if moving and slide < 1.0:
+            mx = int(deck_x + (play_x - deck_x) * _ease(slide))
+            moving_card = Image.blend(
+                back_img,
+                _load_card_img(face_key),
+                max(0.0, min(1.0, flip)),
+            )
+            img.paste(moving_card, (mx, cy), moving_card)
+        else:
+            face = _load_card_img(face_key)
+            img.paste(face, (play_x, cy), face)
 
         if status:
             try:
@@ -1529,16 +1589,24 @@ async def render_hilo_gif(
     frames: list[Image.Image] = []
     durations: list[int] = []
 
-    do_anim = animate_reveal and reveal_card and hilo_card_display(reveal_card) != cur_disp
+    do_anim = (
+        animate_reveal
+        and reveal_card
+        and hilo_card_display(reveal_card) != hilo_card_display(prev_card or "")
+    )
     if do_anim:
-        for i in range(HILO_REVEAL_FRAMES):
-            t = (i + 1) / HILO_REVEAL_FRAMES
-            frames.append(_draw_board(show_reveal=True, mix=t))
-            durations.append(90)
-        frames.append(_draw_board(show_reveal=True, mix=1.0))
+        n = HILO_REVEAL_FRAMES
+        for i in range(n):
+            t = (i + 1) / n
+            slide = min(1.0, t / 0.62)
+            flip = max(0.0, (t - 0.48) / 0.52)
+            moving = slide < 1.0 or flip < 1.0
+            frames.append(_draw_board(slide=slide, flip=flip, moving=moving))
+            durations.append(85)
+        frames.append(_draw_board(slide=1.0, flip=1.0, moving=False))
         durations.append(450 if not result else 18_000)
     else:
-        frames.append(_draw_board(show_reveal=bool(reveal_card), mix=1.0))
+        frames.append(_draw_board(slide=1.0, flip=1.0, moving=False))
         durations.append(18_000 if result else 5_000)
 
     buf = io.BytesIO()

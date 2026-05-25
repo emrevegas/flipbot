@@ -3310,36 +3310,6 @@ class _BotGuildSelect(discord.ui.Select):
             embed.set_footer(text="Vegas Casino | Slot Setup")
             await interaction.response.edit_message(embed=embed, view=SlotEmojiSetupView(guild_emojis))
 
-        elif self.game_type == "blackjack":
-            # Save the guild ID — bot fetches emojis dynamically at runtime by name
-            from Games.blackjack import RANKS as _BJ_RANKS, SUITS as _BJ_SUITS
-            all_keys  = [r + s for r in _BJ_RANKS for s in _BJ_SUITS] + ["CB"]
-            found     = [k for k in all_keys if any(e.name == k for e in guild_emojis)]
-            missing   = [k for k in all_keys if not any(e.name == k for e in guild_emojis)]
-
-            games_data = _ensure_blackjack_game_entry(get_data("server/games") or {})
-            games_data["blackjack"]["emoji_guild_id"] = guild.id
-            set_data("server/games", games_data)
-
-            lines = [f"✅ **{guild.name}** set as card emoji source!",
-                     f"📊 Found **{len(found)}/53** matching emojis in that server."]
-            if missing:
-                sample = ", ".join(f"`{m}`" for m in missing[:10])
-                if len(missing) > 10:
-                    sample += f" … +{len(missing) - 10} more"
-                lines.append(f"⚠️ Missing ({len(missing)}): {sample}")
-                lines.append("Name guild emojis exactly as `AC`, `8H`, `0D`, `CB`, etc.")
-            else:
-                lines.append("All 53 card emojis found — ready to use!")
-            embed = discord.Embed(
-                title="🃏 Blackjack Emoji Source Set",
-                description="\n".join(lines),
-                color=discord.Color.green() if not missing else discord.Color.orange(),
-            )
-            embed.set_footer(text="Vegas Casino | Blackjack Setup")
-            await interaction.response.edit_message(embed=embed, view=None)
-
-
 class _BotGuildPickView(discord.ui.View):
     """Ephemeral view shown before emoji setup wizards to pick source guild."""
 
@@ -4013,37 +3983,6 @@ class _SlotSetupButton(discord.ui.Button):
         )
 
 
-class _BlackjackSetupButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="🃏 Blackjack Setup", style=discord.ButtonStyle.primary, row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        guilds = list(interaction.client.guilds)
-        if not guilds:
-            return await interaction.response.send_message(
-                "❌ Bot has no guild with custom emojis to import from.", ephemeral=True
-            )
-        embed = discord.Embed(
-            title="🃏 Blackjack Card Emoji Setup — Pick Server",
-            description=(
-                "Select the server whose emojis contain the card images.\n\n"
-                "The bot will **look up emojis by name at runtime** — no import needed.\n\n"
-                "**Naming convention:** `{rank}{suit}`\n"
-                "Rank: `A 2 3 4 5 6 7 8 9 0 J Q K` (0 = Ten)\n"
-                "Suit: `C H D S` (Clubs/Hearts/Diamonds/Spades)\n"
-                "Examples: `AC` `8H` `0D` `JC` `QH` `KS`\n"
-                "Card back: `CB`"
-            ),
-            color=discord.Color.blurple(),
-        )
-        embed.set_footer(text="Vegas Casino | Blackjack Setup")
-        await interaction.response.send_message(
-            embed=embed,
-            view=_BotGuildPickView(guilds, "blackjack"),
-            ephemeral=True,
-        )
-
-
 class _LiveBlackjackSetupButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="🃏 Table Setup", style=discord.ButtonStyle.primary, row=1)
@@ -4556,7 +4495,6 @@ class GameDetailView(discord.ui.View):
         elif game_id == "limbo":
             self.add_item(_LimboRiggedButton())
         elif game_id == "blackjack":
-            self.add_item(_BlackjackSetupButton())
             self.add_item(_BlackjackRiggedButton())
         elif game_id == "live_blackjack":
             self.add_item(_LiveBlackjackSetupButton())
