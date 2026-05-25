@@ -1,9 +1,14 @@
 # Kart import
 
-PNG dosyalarını buraya koy, isimlendir, sonra:
+**VDS:** `assets/cards/*.png` repoda (git pull yeterli). `import/` klasörü git’e girmez.
+
+Yeni kart seti için PNG’leri buraya koy, isimlendir, sonra (geliştirme makinesinde):
 
 ```bash
 python scripts/import_cards.py
+git add assets/cards/*.png assets/cards/display.json
+git commit -m "Update card assets"
+git push
 ```
 
 ## İsimlendirme (emoji ile aynı)
@@ -23,7 +28,7 @@ Script dosyaları `../Ah.png`, `../10h.png`, `../back.png` olarak kaydeder ve Pi
 
 ## Boyut (GIF’te görünen)
 
-`assets/cards/display.json` — varsayılan **92×128**. Değiştirmek için:
+`assets/cards/display.json` — varsayılan **108×150**. Değiştirmek için:
 
 ```bash
 python scripts/import_cards.py --width 100 --height 140

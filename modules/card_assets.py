@@ -122,6 +122,10 @@ def resolve_card_path(key: str) -> Path | None:
                     found.append(p)
     if not found:
         return None
+    # Prefer committed resized PNGs in assets/cards/ (VDS has no import/*.png).
+    for p in found:
+        if p.parent == CARDS_DIR and is_custom_asset(p):
+            return p
     return max(found, key=lambda p: p.stat().st_size)
 
 
