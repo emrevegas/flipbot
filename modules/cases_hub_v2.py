@@ -129,14 +129,21 @@ class CasesOpenHubLayout(ui.LayoutView):
             files.append(discord.File(self._gif_buf, CASE_GIF_ATTACHMENT))
         return files
 
-    def _media_gallery(self) -> ui.MediaGallery | None:
+    def _add_media_sections(self, container: ui.Container) -> None:
+        """Loot PNG and open GIF in separate galleries (stacked), not side-by-side."""
         if not self.case_id or self._preview_buf is None:
-            return None
-        gallery = ui.MediaGallery()
-        gallery.add_item(media=f"attachment://{CASE_PREVIEW_ATTACHMENT}")
+            return
+
+        container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
+        preview_gallery = ui.MediaGallery()
+        preview_gallery.add_item(media=f"attachment://{CASE_PREVIEW_ATTACHMENT}")
+        container.add_item(preview_gallery)
+
         if self.show_gif and self._gif_buf is not None:
-            gallery.add_item(media=f"attachment://{CASE_GIF_ATTACHMENT}")
-        return gallery
+            container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
+            open_gallery = ui.MediaGallery()
+            open_gallery.add_item(media=f"attachment://{CASE_GIF_ATTACHMENT}")
+            container.add_item(open_gallery)
 
     async def _refresh_preview(self) -> None:
         if not self.case_id or not self._get_db or not self._selected_fn:
@@ -191,10 +198,7 @@ class CasesOpenHubLayout(ui.LayoutView):
             ),
         )
 
-        gallery = self._media_gallery()
-        if gallery is not None:
-            container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
-            container.add_item(gallery)
+        self._add_media_sections(container)
 
         controls: list[ui.Item] = []
         if cases:
