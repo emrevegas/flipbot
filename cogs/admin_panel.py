@@ -3054,12 +3054,12 @@ class AdminPanel(commands.Cog):
         elif user_id:
             desc = (
                 f"<@{user_id}> için **{count}** oturum kapatıldı."
-                + (f" İade: **{utils.fmt_pts(refunded)} pts**." if refunded > 0 else "")
+                + (f" İade: **{fmt_pts(refunded)} pts**." if refunded > 0 else "")
             )
         else:
             desc = (
                 f"**{count}** takılı oturum kapatıldı."
-                + (f" Toplam iade: **{utils.fmt_pts(refunded)} pts**." if refunded > 0 else "")
+                + (f" Toplam iade: **{fmt_pts(refunded)} pts**." if refunded > 0 else "")
             )
 
         await ctx.send(
@@ -3100,11 +3100,11 @@ class AdminPanel(commands.Cog):
             else:
                 desc = f"{user.mention} — **{count}** oturum kapatıldı."
                 if refunded > 0:
-                    desc += f" İade: **{utils.fmt_pts(refunded)} pts**."
+                    desc += f" İade: **{fmt_pts(refunded)} pts**."
         else:
             desc = f"**{count}** oturum kapatıldı."
             if refunded > 0:
-                desc += f" Toplam iade: **{utils.fmt_pts(refunded)} pts**."
+                desc += f" Toplam iade: **{fmt_pts(refunded)} pts**."
         await interaction.followup.send(
             embed=discord.Embed(
                 title="✅ Oyun oturumları sıfırlandı",
