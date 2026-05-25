@@ -22,6 +22,8 @@ Veri yapısı (server/cases.json):
 }
 """
 
+import io
+
 import discord
 import uuid
 import time
@@ -2595,9 +2597,16 @@ class CasesCog(commands.Cog):
                 )
             )
         from modules.cases_hub_v2 import make_cases_hub
+        from modules.ui_v2 import send_channel_v2
 
         layout = make_cases_hub(ctx.author.id)
-        await ctx.send(view=layout)
+        msg = await send_channel_v2(ctx.channel, layout)
+        if msg is None:
+            await ctx.send(
+                embed=create_error_embed(
+                    "Could not open case hub (check bot channel permissions)."
+                )
+            )
 
     @app_commands.command(name="setprices", description=t("cases.cmd_setprices_desc", lang="en"))
     async def setprices_admin(self, interaction: discord.Interaction):
