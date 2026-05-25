@@ -53,6 +53,8 @@ def _sp(key: str, lang: str, **kwargs) -> str:
             "fetch_failed": "Could not fetch application emojis.",
             "no_pending": "No application emojis left to price.",
             "saved_toast": "Added **{name}** — {value}",
+            "case_icon_badge": "📦 **Case icon** (bot-generated)",
+            "case_icon_item_name": "Case: **{name}**",
         }
         return defaults.get(key, key).format(**kwargs)
     return s
@@ -82,16 +84,55 @@ def library_emoji_ids(db: dict) -> set[int]:
     return ids
 
 
+def case_emoji_id_map(db: dict) -> dict[int, dict]:
+    """Application emoji IDs used as bot-generated case icons."""
+    out: dict[int, dict] = {}
+    for bucket in ("cases", "community_cases"):
+        for cid, case in (db.get(bucket) or {}).items():
+            eid = case.get("app_emoji_id")
+            if eid is None:
+                eid = emoji_id_from_item_str(str(case.get("emoji", "")))
+            if eid is not None:
+                out[int(eid)] = {
+                    "case_id": cid,
+                    "name": str(case.get("name") or cid),
+                    "bucket": bucket,
+                }
+    return out
+
+
+def is_bot_case_emoji(emoji: discord.Emoji, case_ids: set[int]) -> bool:
+    """True for emojis created via case icon upload (case_{id})."""
+    name = (getattr(emoji, "name", None) or "")
+    eid = getattr(emoji, "id", None)
+    if name.startswith("case_"):
+        return True
+    return eid is not None and int(eid) in case_ids
+
+
+def display_name_for_emoji(emoji: discord.Emoji, db: dict) -> str:
+    case_map = case_emoji_id_map(db)
+    eid = getattr(emoji, "id", None)
+    if eid is not None and int(eid) in case_map:
+        return case_map[int(eid)]["name"]
+    return format_emoji_item_name(emoji.name or "?")
+
+
 async def fetch_pending_app_emojis(client: discord.Client) -> tuple[list, str | None]:
     db = _get_db()
     in_library = library_emoji_ids(db)
+    case_ids = set(case_emoji_id_map(db).keys())
     try:
         app_emojis = await client.fetch_application_emojis()
     except Exception:
         return [], "fetch_failed"
 
-    pending = [e for e in app_emojis if getattr(e, "id", None) not in in_library]
-    pending.sort(key=lambda e: (e.name or "").lower())
+    pending = [
+        e for e in app_emojis
+        if (getattr(e, "id", None) not in in_library)
+        or is_bot_case_emoji(e, case_ids)
+    ]
+    pending.sort(key=lambda e: (0 if is_bot_case_emoji(e, case_ids) else 1, (e.name or "").lower()))
     return pending, None
 
 
@@ -114,6 +155,7 @@ def build_setprices_embed(
     added_session: int,
     done: bool = False,
     all_done: bool = False,
+    db: dict | None = None,
 ) -> discord.Embed:
     if all_done:
         return discord.Embed(
@@ -134,15 +176,24 @@ def build_setprices_embed(
             color=0x57F287,
         ).set_footer(text=FOOTER_TEXT)
 
-    display = format_emoji_item_name(emoji.name or "?")
+    db = db if db is not None else _get_db()
+    case_map = case_emoji_id_map(db)
+    eid = getattr(emoji, "id", None)
+    is_case_icon = eid is not None and int(eid) in case_map
+    display = display_name_for_emoji(emoji, db)
     embed = discord.Embed(
         title=f"💰 {_sp('title', lang)}",
         description=_sp("desc", lang),
         color=0x5865F2,
     )
     embed.add_field(name="", value=f"{emoji}  **{display}**", inline=False)
+    if is_case_icon:
+        embed.add_field(name="", value=_sp("case_icon_badge", lang), inline=False)
     embed.add_field(name="", value=_sp("emoji_raw", lang, name=emoji.name), inline=False)
-    embed.add_field(name="", value=_sp("item_name", lang, name=display), inline=False)
+    if is_case_icon:
+        embed.add_field(name="", value=_sp("case_icon_item_name", lang, name=display), inline=False)
+    else:
+        embed.add_field(name="", value=_sp("item_name", lang, name=display), inline=False)
     embed.add_field(
         name="",
         value=_sp("progress", lang, remaining=remaining, step=step, total=total),
@@ -217,11 +268,12 @@ class SetPricesView(View):
         return self.pending[self.index]
 
     def render(self) -> tuple[discord.Embed, View | None]:
+        db = _get_db()
         if self.current is None:
             if self.added_session == 0 and self.index == 0:
                 return build_setprices_embed(
                     emoji=None, lang=self.lang, step=0, total=0, remaining=0,
-                    added_session=0, all_done=True,
+                    added_session=0, all_done=True, db=db,
                 ), None
             return build_setprices_embed(
                 emoji=None,
@@ -231,6 +283,7 @@ class SetPricesView(View):
                 remaining=self.remaining,
                 added_session=self.added_session,
                 done=True,
+                db=db,
             ), None
         return build_setprices_embed(
             emoji=self.current,
@@ -239,6 +292,7 @@ class SetPricesView(View):
             total=len(self.pending),
             remaining=self.remaining,
             added_session=self.added_session,
+            db=db,
         ), self
 
     def _rebuild(self) -> None:
@@ -301,7 +355,7 @@ async def start_set_prices_flow(interaction: discord.Interaction) -> None:
         return await interaction.response.send_message(
             embed=build_setprices_embed(
                 emoji=None, lang=lang, step=0, total=0, remaining=0,
-                added_session=0, all_done=True,
+                added_session=0, all_done=True, db=_get_db(),
             ),
             ephemeral=True,
         )
