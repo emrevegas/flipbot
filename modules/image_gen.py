@@ -3074,8 +3074,27 @@ async def render_dice_gif(
         won: bool,
         payout: float,
         lost: float,
+        is_push: bool = False,
     ) -> None:
+        """WIN/LOSE + pts below the dice card frame (not on top of the die)."""
         _x1, _y1, x2, y2 = box
+        y_lbl = y2 + 10
+        y_pts = y2 + 40
+        y_usd = y2 + 62
+
+        if is_push:
+            if payout <= 0:
+                return
+            col = GOLD
+            pline = f"+{_fmt(payout)} pts"
+            aw = _tw(draw, pline, font_amt)
+            draw.text((cx - aw / 2, y_pts), pline, font=font_amt, fill=col)
+            usd = _pts_to_usd(payout)
+            line2 = f"${usd:,.2f}"
+            uw = _tw(draw, line2, font_usd)
+            draw.text((cx - uw / 2, y_usd), line2, font=font_usd, fill=(*col, 200))
+            return
+
         col = GREEN if won else RED
         lbl = "WIN" if won else "LOSE"
         if won and payout > 0:
@@ -3087,14 +3106,14 @@ async def render_dice_gif(
         else:
             pline, usd_val = "", 0.0
         lw = _tw(draw, lbl, font_lbl)
-        draw.text((cx - lw / 2, y2 - 72), lbl, font=font_lbl, fill=col)
+        draw.text((cx - lw / 2, y_lbl), lbl, font=font_lbl, fill=col)
         if pline:
             aw = _tw(draw, pline, font_amt)
-            draw.text((cx - aw / 2, y2 - 46), pline, font=font_amt, fill=col)
+            draw.text((cx - aw / 2, y_pts), pline, font=font_amt, fill=col)
             usd = _pts_to_usd(usd_val)
             line2 = f"${usd:,.2f}"
             uw = _tw(draw, line2, font_usd)
-            draw.text((cx - uw / 2, y2 - 24), line2, font=font_usd, fill=(*col, 200))
+            draw.text((cx - uw / 2, y_usd), line2, font=font_usd, fill=(*col, 200))
 
     if mode == "bot":
         left_cx = W // 5
@@ -3226,15 +3245,24 @@ async def render_dice_gif(
             if is_push:
                 pt = "PUSH"
                 pw = _tw(draw, pt, font_push)
-                draw.text((center_cx - pw / 2, card_cy + 52), pt, font=font_push, fill=GOLD)
-            _draw_side_result(
-                draw, left_cx, left_box,
-                won=left_won, payout=left_payout, lost=left_lost,
-            )
-            _draw_side_result(
-                draw, right_cx, right_box,
-                won=right_won, payout=right_payout, lost=right_lost,
-            )
+                draw.text((center_cx - pw / 2, card_cy + 8), pt, font=font_push, fill=GOLD)
+                _draw_side_result(
+                    draw, left_cx, left_box,
+                    won=False, payout=left_payout, lost=0, is_push=True,
+                )
+                _draw_side_result(
+                    draw, right_cx, right_box,
+                    won=False, payout=right_payout, lost=0, is_push=True,
+                )
+            else:
+                _draw_side_result(
+                    draw, left_cx, left_box,
+                    won=left_won, payout=left_payout, lost=left_lost,
+                )
+                _draw_side_result(
+                    draw, right_cx, right_box,
+                    won=right_won, payout=right_payout, lost=right_lost,
+                )
 
         bet_line = f"Bet {_fmt(bet)} pts"
         usd_line = f"${_pts_to_usd(bet):,.2f}"
