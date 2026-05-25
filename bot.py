@@ -125,6 +125,10 @@ class FlipBot(commands.Bot):
             pass
         else:
             log.error(f"Command error in {ctx.command}: {error}", exc_info=error)
+            try:
+                await ctx.send(embed=_err("Something went wrong running that command. Try again."))
+            except Exception:
+                pass
 
 
 def _err(msg: str) -> discord.Embed:

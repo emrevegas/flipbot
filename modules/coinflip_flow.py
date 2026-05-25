@@ -276,6 +276,9 @@ async def _run_cf_bot_round(
     bet: float,
     choice: str | None,
 ):
+    player_side = parse_side(choice) if choice else None
+    if not player_side:
+        player_side = random.choice(SIDES)
     hot_e, cold_e = get_coinflip_emojis()
     rigged = await bc.should_rig_outcome(user_id, "coinflip", bet)
     if rigged:
