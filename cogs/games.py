@@ -319,10 +319,11 @@ def _htw_spin_pair(
     rig_vs_bot: bool = False,
 ) -> tuple[int, int, str]:
     """Return (left_spin, right_spin, outcome for left: WIN|LOSE|PUSH)."""
+    if rig_vs_bot:
+        from modules.game_rig import htw_spin_rigged
+        return htw_spin_rigged()
     left_spin = random.randint(0, 36)
     right_spin = random.randint(0, 36)
-    if rig_vs_bot:
-        right_spin = random.randint(max(left_spin, 0), 36)
     if left_spin > right_spin:
         return left_spin, right_spin, "WIN"
     if left_spin < right_spin:
@@ -742,12 +743,11 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
     rigged = await bc.should_rig_outcome(user_id, "mines", float(sess["bet"]))
 
     hit_mine = idx in mine_set
+    if rigged and not hit_mine:
+        from modules.game_rig import rig_mines_safe_to_bomb
+        hit_mine = rig_mines_safe_to_bomb(state, idx)
+        mine_set = set(state["mines"])
     state["revealed"].append(idx)
-    if rigged and not hit_mine and len(state["revealed"]) >= 3:
-        if random.random() < 0.4:
-            hit_mine = True
-            mine_set.add(idx)
-            state["mines"] = list(mine_set)
 
     msg_id = str(interaction.message.id)
     bet = float(sess["bet"])
@@ -767,9 +767,10 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
         embed.add_field(name="Lost", value=f"`{utils.fmt_pts(bet)} pts`", inline=True)
         await interaction.response.edit_message(embed=embed, view=view)
     else:
-        safe_cells = 20 - state["mine_count"]
         picks = len(state["revealed"])
-        mult = round(1.0 + (picks / max(safe_cells, 1)) * (state["mine_count"] / 5), 2)
+        ms = _get_mines_settings()
+        from modules.game_rig import mines_multiplier
+        mult = mines_multiplier(state["mine_count"], picks, ms["house_edge_percent"])
         state["multiplier"] = mult
         await db.set_game_session(user_id, "mines", bet, json.dumps(state))
 
@@ -804,8 +805,8 @@ async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
             view=view,
         )
 
-    game_cfg = await db.get_game_config("mines")
-    he = float(game_cfg["house_edge"]) if game_cfg else 0.02
+    ms = _get_mines_settings()
+    he = ms["house_edge_decimal"]
     gross = bet * state["multiplier"]
     net = gross * (1 - he)
 
@@ -855,14 +856,19 @@ async def _bj_start_from_interaction(interaction: discord.Interaction, user_id: 
         return
 
     user = await db.get_user(user_id)
-    deck   = _make_bj_deck()
-    player = [deck.pop(), deck.pop()]
-    dealer = [deck.pop(), deck.pop()]
-    state  = {
-        "bet": bet, "player": player, "dealer": dealer,
-        "deck": deck, "doubled": False,
-        "username": interaction.user.display_name,
-    }
+    if await bc.should_rig_outcome(user_id, "blackjack", bet):
+        from modules.game_rig import build_rigged_blackjack_state
+        state = build_rigged_blackjack_state(bet, interaction.user.display_name)
+    else:
+        deck   = _make_bj_deck()
+        player = [deck.pop(), deck.pop()]
+        dealer = [deck.pop(), deck.pop()]
+        state  = {
+            "bet": bet, "player": player, "dealer": dealer,
+            "deck": deck, "doubled": False,
+            "username": interaction.user.display_name,
+        }
+    player = state["player"]
     await db.set_game_session(user_id, "blackjack", bet, json.dumps(state))
     await db.add_balance(user_id, -bet, note="blackjack re-bet")
 
@@ -1001,7 +1007,19 @@ async def _bj_do_hit(interaction: discord.Interaction):
 
     state = json.loads(sess["state"])
     prev_count = len(state["player"])           # cards BEFORE new card
-    state["player"].append(state["deck"].pop())
+    if state.get("rigged") and state.get("rig_hit_card"):
+        card = state["rig_hit_card"]
+        deck = state.get("deck") or []
+        if card in deck:
+            deck.remove(card)
+        elif deck:
+            card = deck.pop(0)
+        else:
+            card = state["rig_hit_card"]
+        state["deck"] = deck
+        state["player"].append(card)
+    else:
+        state["player"].append(state["deck"].pop())
     await db.set_game_session(user_id, "blackjack", sess["bet"], json.dumps(state))
 
     pv = Games._hand_value_static(state["player"])
@@ -1067,7 +1085,17 @@ async def _bj_do_double(interaction: discord.Interaction):
     await db.add_balance(user_id, -float(sess["bet"]), note="blackjack double")
     state = json.loads(sess["state"])
     state["doubled"] = True
-    state["player"].append(state["deck"].pop())
+    if state.get("rigged") and state.get("rig_hit_card"):
+        card = state["rig_hit_card"]
+        deck = state.get("deck") or []
+        if card in deck:
+            deck.remove(card)
+        elif deck:
+            card = deck.pop(0)
+        state["deck"] = deck
+        state["player"].append(card)
+    else:
+        state["player"].append(state["deck"].pop())
     await db.set_game_session(user_id, "blackjack", sess["bet"], json.dumps(state))
     await _bj_finish_from_interaction(interaction, user_id, state, "stand")
 
@@ -1418,16 +1446,20 @@ class Games(commands.Cog):
         if not await _check_game(ctx, "blackjack", amount):
             return
 
-        deck = self._new_deck()
-        random.shuffle(deck)
-        player = [deck.pop(), deck.pop()]
-        dealer = [deck.pop(), deck.pop()]
-
-        state = {
-            "bet": amount, "player": player, "dealer": dealer,
-            "deck": deck, "doubled": False,
-            "username": ctx.author.display_name,
-        }
+        if await bc.should_rig_outcome(ctx.author.id, "blackjack", amount):
+            from modules.game_rig import build_rigged_blackjack_state
+            state = build_rigged_blackjack_state(amount, ctx.author.display_name)
+        else:
+            deck = self._new_deck()
+            random.shuffle(deck)
+            player = [deck.pop(), deck.pop()]
+            dealer = [deck.pop(), deck.pop()]
+            state = {
+                "bet": amount, "player": player, "dealer": dealer,
+                "deck": deck, "doubled": False,
+                "username": ctx.author.display_name,
+            }
+        player = state["player"]
         await db.set_game_session(ctx.author.id, "blackjack", amount, json.dumps(state))
         await db.add_balance(ctx.author.id, -amount, note="blackjack bet")
 
@@ -2093,6 +2125,12 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
     bet       = float(sess["bet"])
     username  = state.get("username", str(interaction.user.display_name))
     cell_type = grid[floor][col]
+    rigged = await bc.should_rig_outcome(user_id, "towers", bet)
+    if rigged and cell_type == "gem":
+        from modules.game_rig import rig_towers_gem_to_bomb
+        rig_towers_gem_to_bomb(state, floor, col)
+        grid = state["grid"]
+        cell_type = grid[floor][col]
     picks[floor] = col
 
     if cell_type == "bomb":

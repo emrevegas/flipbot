@@ -2458,7 +2458,14 @@ async def _settle_case_opens(
 
     player.remove_balance("real", total_cost)
     chances = case.get("item_chances", {})
-    winners = [_open_case_item(items, chances) for _ in range(count)]
+    from modules import flip_balance_cap as bc
+    from modules.game_rig import rig_case_winners
+
+    rigged = await bc.should_rig_outcome(user.id, "case_opening", float(total_cost))
+    if rigged:
+        winners = rig_case_winners(items, count)
+    else:
+        winners = [_open_case_item(items, chances) for _ in range(count)]
 
     if is_community:
         owner_id = case.get("owner_id")

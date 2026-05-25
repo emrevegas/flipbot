@@ -403,6 +403,7 @@ def _ensure_case_opening_game_entry(games_data: dict) -> dict:
     case_opening.setdefault("min_bet", 10)
     case_opening.setdefault("max_bet", 10000)
     case_opening.setdefault("house_edge", 5.0)
+    case_opening.setdefault("rigged_chance", 0.0)
     case_opening.setdefault("category", "special_games")
     case_opening.setdefault("created_at", int(time.time()))
     case_opening.setdefault("last_modified", int(time.time()))
@@ -2914,7 +2915,7 @@ class AdminPanel(commands.Cog):
 
     @app_commands.command(name="promodos", description="Promo DOS")
     async def promodos(self, interaction: discord.Interaction):
-        if check_permission(interaction.user.id, "admin"):
+        if not check_permission(interaction.user.id, "admin"):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Permission Denied",
@@ -8759,14 +8760,10 @@ class _ConfirmResetUserView(discord.ui.View):
 
 PROMODOS_KEY = "server/promodos"
 
-RIGGED_GAME_KEYS = (
-    ("mines", "Mines", "💣"),
-    ("towers", "Towers", "🗼"),
-    ("blackjack", "Blackjack", "🃏"),
-    ("roulette", "Roulette", "🎰"),
-    ("dice", "Dice", "🎲"),
-    ("coinflip", "Coinflip", "🪙"),
-    ("limbo", "Limbo", "🚀"),
+from modules.game_rig import (  # noqa: E402
+    RIGGED_PROMO_GAMES as RIGGED_GAME_KEYS,
+    roll_promodos_percentages,
+    snapshot_rigged_percentages,
 )
 
 
@@ -8783,45 +8780,15 @@ def _save_promodos_state(active: bool, rolled: dict) -> None:
     })
 
 
-PROMODOS_ACTIVE_DEFAULT = (20.0, 25.0)
-PROMODOS_INACTIVE_DEFAULT = (5.0, 10.0)
-PROMODOS_ACTIVE_PER_GAME = {
-    "mines": (5.0, 9.0),
-    "towers": (8.0, 15.0),
-}
-
-
 def _roll_rigged_promodos(active: bool) -> dict:
     """Apply promo DOS rigged ranges; aktif modda mines/towers özel aralık."""
-    games_data = _ensure_all_game_entries(get_data("server/games") or {})
-    rolled: dict[str, float] = {}
-    now = int(time.time())
-    for key, _label, _emoji in RIGGED_GAME_KEYS:
-        entry = games_data.get(key)
-        if not isinstance(entry, dict):
-            continue
-        if active:
-            low, high = PROMODOS_ACTIVE_PER_GAME.get(key, PROMODOS_ACTIVE_DEFAULT)
-        else:
-            low, high = PROMODOS_INACTIVE_DEFAULT
-        pct = round(random.uniform(low, high), 2)
-        entry["rigged_chance"] = pct
-        entry["last_modified"] = now
-        rolled[key] = pct
-    set_data("server/games", games_data)
-    return rolled
+    _ensure_all_game_entries(get_data("server/games") or {})
+    return roll_promodos_percentages("active" if active else "inactive")
 
 
 def _rigged_snapshot_from_games() -> dict[str, float]:
-    games_data = _ensure_all_game_entries(get_data("server/games") or {})
-    out: dict[str, float] = {}
-    for key, _label, _emoji in RIGGED_GAME_KEYS:
-        entry = games_data.get(key) or {}
-        try:
-            out[key] = round(float(entry.get("rigged_chance", 0.0)), 2)
-        except (TypeError, ValueError):
-            out[key] = 0.0
-    return out
+    _ensure_all_game_entries(get_data("server/games") or {})
+    return snapshot_rigged_percentages()
 
 
 def _build_promodos_embed(active: bool) -> discord.Embed:
@@ -8838,6 +8805,7 @@ def _build_promodos_embed(active: bool) -> discord.Embed:
         value="\n".join(lines) if lines else "—",
         inline=False,
     )
+    embed.set_footer(text="Crystals rig yok · PvP rig yok · /promodos ile Aktif/Deaktif, Düşük/Yüksek rig")
     return embed
 
 
@@ -8864,12 +8832,36 @@ class PromoDosView(discord.ui.View):
         btn.callback = self._on_toggle
         self.add_item(btn)
 
-    async def _on_toggle(self, interaction: discord.Interaction):
-        if check_permission(interaction.user.id, "admin"):
-            return await interaction.response.send_message(
+        low_btn = discord.ui.Button(
+            label="Düşük rig",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+            custom_id="promodos:low",
+        )
+        low_btn.callback = self._on_low
+        self.add_item(low_btn)
+
+        high_btn = discord.ui.Button(
+            label="Yüksek rig",
+            style=discord.ButtonStyle.primary,
+            row=1,
+            custom_id="promodos:high",
+        )
+        high_btn.callback = self._on_high
+        self.add_item(high_btn)
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if not check_permission(interaction.user.id, "admin"):
+            await interaction.response.send_message(
                 t("errors.no_permission", user_id=str(interaction.user.id)),
                 ephemeral=True,
             )
+            return False
+        return True
+
+    async def _on_toggle(self, interaction: discord.Interaction):
+        if not await self._guard(interaction):
+            return
         if self.active:
             rolled = _roll_rigged_promodos(active=False)
             new_active = False
@@ -8879,6 +8871,26 @@ class PromoDosView(discord.ui.View):
         _save_promodos_state(new_active, rolled)
         embed = _build_promodos_embed(new_active)
         await interaction.response.edit_message(embed=embed, view=PromoDosView(new_active))
+
+    async def _on_low(self, interaction: discord.Interaction):
+        if not await self._guard(interaction):
+            return
+        rolled = roll_promodos_percentages("low")
+        _save_promodos_state(self.active, rolled)
+        await interaction.response.edit_message(
+            embed=_build_promodos_embed(self.active),
+            view=PromoDosView(self.active),
+        )
+
+    async def _on_high(self, interaction: discord.Interaction):
+        if not await self._guard(interaction):
+            return
+        rolled = roll_promodos_percentages("high")
+        _save_promodos_state(self.active, rolled)
+        await interaction.response.edit_message(
+            embed=_build_promodos_embed(self.active),
+            view=PromoDosView(self.active),
+        )
 
 
 async def setup(bot):

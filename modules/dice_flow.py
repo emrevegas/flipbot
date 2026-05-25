@@ -36,14 +36,11 @@ def parse_dice_args(ctx: commands.Context) -> tuple[discord.Member | None, float
 
 def dice_roll_pair(*, rig_vs_bot: bool = False) -> tuple[int, int, str]:
     """(left_roll, right_roll, left outcome: WIN|LOSE|PUSH)."""
+    if rig_vs_bot:
+        from modules.game_rig import dice_roll_rigged
+        return dice_roll_rigged()
     left = random.randint(1, 6)
     right = random.randint(1, 6)
-    if rig_vs_bot:
-        if left < 6:
-            right = random.randint(left + 1, 6)
-        else:
-            left = random.randint(1, 5)
-            right = 6
     if left > right:
         return left, right, "WIN"
     if left < right:
