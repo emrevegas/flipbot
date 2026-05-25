@@ -361,6 +361,22 @@ async def _settle_table_economy(
                 update_daily_game(uid, "live_blackjack", main_bet, result_label, net)
             except Exception:
                 pass
+            try:
+                from modules.game_log import post_solo_game_log
+
+                await post_solo_game_log(
+                    user_id=uid,
+                    game_id="live_blackjack",
+                    bet=float(main_bet),
+                    won=net > 0,
+                    payout=float(total_return) if net > 0 else 0.0,
+                    user=member,
+                    client=guild._state._parent,
+                    guild_id=guild.id,
+                    tie=(net == 0),
+                )
+            except Exception:
+                pass
 
 
 class LiveBlackjackCog(commands.Cog):

@@ -4,7 +4,17 @@ from discord.ext import commands
 from typing import Optional
 import time
 import random
-from modules.database import get_data, set_data, replace_data, check_permission, get_server_data, set_server_data, get_user_data, get_all_registered_user_ids
+from modules.database import (
+    get_data,
+    set_data,
+    replace_data,
+    check_permission,
+    is_super_admin,
+    get_server_data,
+    set_server_data,
+    get_user_data,
+    get_all_registered_user_ids,
+)
 from modules.translator import t
 from modules.utils import *
 import modules.bonus as bonus_engine
@@ -2910,6 +2920,71 @@ class AdminPanel(commands.Cog):
         await interaction.response.send_message(
             embed=embed,
             view=_ConfirmClearAllPromosView(),
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="reset_platform",
+        description="[Owner] Sıfırla: items/cases, oyun setup ve admin yetkileri hariç tüm veri",
+    )
+    async def reset_platform(self, interaction: discord.Interaction):
+        if not is_super_admin(interaction.user.id):
+            if check_permission(interaction.user.id, "admin"):
+                return await interaction.response.send_message(
+                    "❌ Sadece super admin veya bot sahibi kullanabilir.",
+                    ephemeral=True,
+                )
+        embed = discord.Embed(
+            title="⚠️ Platform Sıfırlama",
+            description=(
+                "**Korunacak:**\n"
+                "• `/items` ve `/cases` — item & kasa kataloğu\n"
+                "• `server/games` — oyun ayarları (min/max, rig %, house edge)\n"
+                "• `server/admins` — kullanıcı yetkileri\n\n"
+                "**Silinecek / sıfırlanacak:**\n"
+                "• Tüm bakiyeler, istatistikler, geçmişler\n"
+                "• Promo state, referral, ticket kayıtları, oyun oturumları\n"
+                "• Diğer tüm `server/*` runtime verisi\n\n"
+                "**Geri alınamaz!** Onay için **RESET** yazın."
+            ),
+            color=discord.Color.dark_red(),
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=_ConfirmPlatformResetView(),
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="ticket_panel",
+        description="[Admin] Kategorili destek ticket panelini bir kanala gönder",
+    )
+    @app_commands.describe(channel="Panelin gönderileceği metin kanalı")
+    async def ticket_panel(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+    ):
+        if check_permission(interaction.user.id, "admin"):
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="❌ Permission Denied",
+                    description=t("errors.no_permission", user_id=str(interaction.user.id)),
+                    color=discord.Color.red(),
+                ),
+                ephemeral=True,
+            )
+        from modules.ticket_system import TicketPanelView, build_ticket_panel_embed
+
+        embed = build_ticket_panel_embed()
+        await channel.send(embed=embed, view=TicketPanelView())
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Ticket Paneli Gönderildi",
+                description=f"Panel {channel.mention} kanalına yerleştirildi.\n\n"
+                "Ticket kategorisi: **Panel → Ticket System** ile ayarlayın.",
+                color=discord.Color.green(),
+            ),
             ephemeral=True,
         )
 
@@ -8893,7 +8968,51 @@ class PromoDosView(discord.ui.View):
         )
 
 
+class _ConfirmPlatformResetView(discord.ui.View):
+    """Type RESET to wipe platform data (preserves cases, games config, admins)."""
+
+    def __init__(self):
+        super().__init__(timeout=120)
+
+    @discord.ui.button(label="✅ RESET — Onayla", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not is_super_admin(interaction.user.id):
+            if check_permission(interaction.user.id, "admin"):
+                return await interaction.response.send_message(
+                    "❌ Sadece super admin.", ephemeral=True,
+                )
+        await interaction.response.defer(ephemeral=True)
+        from modules.platform_reset import run_platform_reset, run_flipbot_reset
+
+        summary = run_platform_reset()
+        flip = await run_flipbot_reset()
+        lines = [
+            f"• Server KV silindi: **{summary.get('server_kv_removed', 0)}**",
+            f"• User KV silindi: **{summary.get('user_kv_removed', 0)}**",
+            f"• Bakiye sıfırlanan kullanıcı: **{summary.get('users_zeroed', 0)}**",
+            f"• Flipbot tabloları: **{sum(flip.values())}** işlem",
+        ]
+        embed = discord.Embed(
+            title="✅ Platform Sıfırlandı",
+            description="\n".join(lines)
+            + "\n\n**Korundu:** items/cases, server/games, server/admins",
+            color=discord.Color.green(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="❌ İptal", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="❌ İptal", color=discord.Color.red()),
+            view=None,
+        )
+        self.stop()
+
+
 async def setup(bot):
     """Cog yükleme fonksiyonu"""
+    from modules.ticket_system import register_ticket_views
+    register_ticket_views(bot)
     await bot.add_cog(AdminPanel(bot))
 

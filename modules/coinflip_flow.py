@@ -86,9 +86,9 @@ async def _payout(user_id, game_id, bet, gross):
     return await gp(user_id, game_id, bet, gross)
 
 
-async def _record(user_id, won, bet, net):
+async def _record(user_id, won, bet, net, **kwargs):
     from cogs.games import _record as gr
-    await gr(user_id, won, bet, net)
+    await gr(user_id, won, bet, net, **kwargs)
 
 
 async def settle_coinflip_pvp(
@@ -97,6 +97,9 @@ async def settle_coinflip_pvp(
     bet: float,
     left_side: str,
     result: str,
+    *,
+    guild: discord.Guild | None = None,
+    client: discord.Client | None = None,
 ) -> tuple[int, float, float]:
     game_cfg = await db.get_game_config("coinflip")
     he = float(game_cfg["house_edge"]) if game_cfg else 0.02
@@ -117,11 +120,29 @@ async def settle_coinflip_pvp(
     await _earn_rakeback(challenger_id, bet)
     await _earn_rakeback(opponent_id, bet)
     if left_wins:
-        await _record(challenger_id, True, bet, payout)
-        await _record(opponent_id, False, bet, 0)
+        await _record(challenger_id, True, bet, payout, game_id="coinflip", skip_log=True)
+        await _record(opponent_id, False, bet, 0, game_id="coinflip", skip_log=True)
     else:
-        await _record(challenger_id, False, bet, 0)
-        await _record(opponent_id, True, bet, payout)
+        await _record(challenger_id, False, bet, 0, game_id="coinflip", skip_log=True)
+        await _record(opponent_id, True, bet, payout, game_id="coinflip", skip_log=True)
+
+    if guild and client:
+        from modules.game_log import post_pvp_game_log
+
+        pa = guild.get_member(challenger_id)
+        pb = guild.get_member(opponent_id)
+        if pa and pb:
+            winner_member = guild.get_member(winner_id)
+            await post_pvp_game_log(
+                player_a=pa,
+                player_b=pb,
+                game_id="coinflip",
+                winner=winner_member,
+                payout=payout,
+                bet=bet,
+                client=client,
+                guild_id=guild.id,
+            )
     return winner_id, payout, bet
 
 
@@ -221,7 +242,13 @@ class CoinflipChallengeLayout(ui.LayoutView):
         hot_e, cold_e = get_coinflip_emojis()
         result = random.choice(SIDES)
         winner_id, win_pay, lost_bet = await settle_coinflip_pvp(
-            self.challenger_id, self.opponent_id, self.bet, self.challenger_side, result,
+            self.challenger_id,
+            self.opponent_id,
+            self.bet,
+            self.challenger_side,
+            result,
+            guild=interaction.guild,
+            client=interaction.client,
         )
 
         guild = interaction.guild
@@ -275,6 +302,10 @@ async def _run_cf_bot_round(
     display_name: str,
     bet: float,
     choice: str | None,
+    *,
+    user: discord.abc.User | None = None,
+    client: discord.Client | None = None,
+    guild_id: int | None = None,
 ):
     player_side = parse_side(choice) if choice else None
     if not player_side:
@@ -289,7 +320,13 @@ async def _run_cf_bot_round(
     won = result == player_side
     gross = bet * 2 if won else 0
     net = await _payout(user_id, "coinflip", bet, gross)
-    await _record(user_id, won, bet, net)
+    await _record(
+        user_id, won, bet, net,
+        game_id="coinflip",
+        user=user,
+        client=client,
+        guild_id=guild_id,
+    )
     lp, ll = (net, 0.0) if won else (0.0, bet)
 
     gif = await image_gen.render_coinflip_gif(
@@ -325,6 +362,9 @@ async def _cf_rebet_from_interaction(
         interaction.user.display_name,
         bet,
         choice,
+        user=interaction.user,
+        client=interaction.client,
+        guild_id=interaction.guild.id if interaction.guild else None,
     )
     await interaction.message.edit(
         content=None,
@@ -340,7 +380,15 @@ async def _cf_rebet_from_interaction(
 
 
 async def start_cf_bot_game(ctx: commands.Context, bet: float, choice: str | None) -> None:
-    gif, side = await _run_cf_bot_round(ctx.author.id, ctx.author.display_name, bet, choice)
+    gif, side = await _run_cf_bot_round(
+        ctx.author.id,
+        ctx.author.display_name,
+        bet,
+        choice,
+        user=ctx.author,
+        client=ctx.bot,
+        guild_id=ctx.guild.id if ctx.guild else None,
+    )
     await ctx.send(
         file=discord.File(gif, COINFLIP_GIF),
         view=gif_result_layout(

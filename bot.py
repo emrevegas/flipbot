@@ -101,6 +101,11 @@ class FlipBot(commands.Bot):
                 log.info(f"Registered {n} pending crypto withdrawal views")
         except Exception:
             log.error(f"Failed to register withdrawal views:\n{traceback.format_exc()}")
+        try:
+            from modules.ticket_system import register_ticket_views
+            register_ticket_views(self)
+        except Exception:
+            log.error(f"Failed to register ticket views:\n{traceback.format_exc()}")
         # Sync slash commands
         synced = await self.tree.sync()
         log.info(f"Synced {len(synced)} slash commands")

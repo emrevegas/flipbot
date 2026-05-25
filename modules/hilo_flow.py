@@ -329,7 +329,13 @@ async def _hilo_pick(interaction: discord.Interaction, choice: str) -> None:
         await db.clear_game_session(uid)
         await db.add_wager(uid, bet)
         await _earn_rakeback(uid, bet, interaction.user if isinstance(interaction.user, discord.Member) else None)
-        await _record(uid, False, bet, 0.0)
+        await _record(
+            uid, False, bet, 0.0,
+            game_id="hilo",
+            user=interaction.user,
+            client=interaction.client,
+            guild_id=interaction.guild.id if interaction.guild else None,
+        )
         _hilo_msg_to_user.pop(mid, None)
         hist = state.get("history") or []
         revealed = hist[-1]["next"] if hist else next_card or prev_card
@@ -436,7 +442,21 @@ async def hilo_cashout_user(
         await db.clear_game_session(uid)
         await db.add_wager(uid, bet)
         await _earn_rakeback(uid, bet)
-        await _record(uid, False, bet, 0.0)
+        member = None
+        if interaction and isinstance(interaction.user, discord.Member):
+            member = interaction.user
+        elif ctx and isinstance(ctx.author, discord.Member):
+            member = ctx.author
+        await _record(
+            uid, False, bet, 0.0,
+            game_id="hilo",
+            user=member,
+            client=(interaction.client if interaction else ctx.bot if ctx else None),
+            guild_id=(
+                interaction.guild.id if interaction and interaction.guild
+                else ctx.guild.id if ctx and ctx.guild else None
+            ),
+        )
         gif = await image_gen.render_hilo_gif(
             state["deck"][state["card_idx"]],
             multiplier=mult,
@@ -472,7 +492,16 @@ async def hilo_cashout_user(
     elif ctx:
         member = ctx.author if isinstance(ctx.author, discord.Member) else None
     await _earn_rakeback(uid, bet, member)
-    await _record(uid, True, bet, float(payout))
+    await _record(
+        uid, True, bet, float(payout),
+        game_id="hilo",
+        user=member,
+        client=(interaction.client if interaction else ctx.bot if ctx else None),
+        guild_id=(
+            interaction.guild.id if interaction and interaction.guild
+            else ctx.guild.id if ctx and ctx.guild else None
+        ),
+    )
     await db.clear_game_session(uid)
 
     net = float(payout) - bet

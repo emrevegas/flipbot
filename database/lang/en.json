@@ -220,7 +220,7 @@
       "game_log_desc": "Real-mode game results (short one-line format).",
       "channel": "Channel",
       "game_log_example": "Example",
-      "game_log_sample": "`@User **win** +$100 at **Roulette**`",
+      "game_log_sample": "`@User bet **100 pts** to **Roulette** and wins **200 pts**`",
       "live_stats_title": "📡 Live Stats",
       "live_stats_desc": "Embed auto-updated every **60 seconds**.",
       "message_id": "Message ID",

@@ -2022,6 +2022,8 @@ class ConfirmOpenCaseView(View):
             self.case_id,
             self.is_community,
             1,
+            client=interaction.client,
+            guild_id=interaction.guild.id if interaction.guild else None,
         )
         if err:
             return await interaction.followup.send(err, ephemeral=True)
@@ -2430,6 +2432,9 @@ async def _settle_case_opens(
     case_id: str,
     is_community: bool,
     count: int,
+    *,
+    client: discord.Client | None = None,
+    guild_id: int | None = None,
 ) -> tuple[str | None, object | None]:
     """Deduct, roll, credit, render GIF. Returns (error, gif_bytes_io)."""
     count = max(1, min(MAX_CASE_OPEN_COUNT, int(count)))
@@ -2484,6 +2489,23 @@ async def _settle_case_opens(
         float(unit),
         case_name=case.get("name", "Case"),
     )
+
+    won = total_won > total_cost
+    tie = total_won == total_cost and total_cost > 0
+    from cogs.games import _record
+
+    await _record(
+        user.id,
+        won,
+        float(total_cost),
+        float(total_won) if (won or tie) else 0.0,
+        game_id="case_opening",
+        user=user if isinstance(user, discord.Member) else None,
+        client=client,
+        guild_id=guild_id,
+        tie=tie,
+    )
+
     return None, gif
 
 

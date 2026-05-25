@@ -143,4 +143,5 @@ async def log_game_end(
         client=client,
         guild_id=guild_id,
         channel_id=channel_id,
+        bet=int(bet),
     )

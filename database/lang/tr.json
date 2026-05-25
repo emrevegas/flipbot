@@ -221,7 +221,7 @@
       "game_log_desc": "Sadece **real** mod — kısa sonuç satırı.",
       "channel": "Kanal",
       "game_log_example": "Örnek",
-      "game_log_sample": "`@User **win** +$100 at **Roulette**`",
+      "game_log_sample": "`@User **100 pts** ile **Rulet** oynar ve **200 pts** kazanır`",
       "live_stats_title": "📡 Canlı İstatistik",
       "live_stats_desc": "60 saniyede bir güncellenen embed.",
       "message_id": "Mesaj ID",

@@ -191,7 +191,14 @@ async def _bj_auto_stand(user_id: int, msg: discord.Message | None = None) -> No
 
     await db.add_wager(user_id, total_bet)
     await _earn_rakeback(user_id, total_bet)
-    await _record(user_id, won, total_bet, net)
+    await _record(
+        user_id, won, total_bet, net,
+        game_id="blackjack",
+        user=msg.guild.get_member(int(user_id)) if msg and msg.guild else None,
+        client=msg._state._parent if msg else None,
+        guild_id=msg.guild.id if msg and msg.guild else None,
+        tie=(outcome == "PUSH"),
+    )
     await db.clear_game_session(user_id)
     for mid, uid in list(_bj_msg_to_user.items()):
         if uid == user_id:
@@ -287,9 +294,35 @@ async def _payout(user_id: int | str, game_id: str, bet: float, gross_payout: fl
     return net
 
 
-async def _record(user_id: int | str, won: bool, bet: float, net: float):
+async def _record(
+    user_id: int | str,
+    won: bool,
+    bet: float,
+    net: float,
+    *,
+    game_id: str = "",
+    user: discord.abc.User | None = None,
+    client: discord.Client | None = None,
+    guild_id: int | None = None,
+    skip_log: bool = False,
+    tie: bool = False,
+):
     profit = net - bet if won else -bet
     await db.record_game_result(user_id, won, profit)
+    if game_id and not skip_log:
+        from modules.game_log import post_solo_game_log
+
+        await post_solo_game_log(
+            user_id=user_id,
+            game_id=game_id,
+            bet=bet,
+            won=won,
+            payout=net if won or tie else 0.0,
+            user=user,
+            client=client,
+            guild_id=guild_id,
+            tie=tie,
+        )
 
 
 # ── HTW (Head-to-Head Wheel) ───────────────────────────────────────────────────
@@ -402,7 +435,14 @@ async def _htw_rebet_from_interaction(
         won = False
 
     payout_credited = await _payout(user_id, "htw", bet, gross)
-    await _record(user_id, won, bet, payout_credited)
+    await _record(
+        user_id, won, bet, payout_credited,
+        game_id="htw",
+        user=interaction.user,
+        client=interaction.client,
+        guild_id=interaction.guild.id if interaction.guild else None,
+        tie=(outcome == "PUSH"),
+    )
 
     house_name = getattr(config, "BOT_DISPLAY_NAME", "VegasBet")
     if outcome == "WIN":
@@ -448,7 +488,14 @@ async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
         won = False
 
     payout_credited = await _payout(ctx.author.id, "htw", bet, gross)
-    await _record(ctx.author.id, won, bet, payout_credited)
+    await _record(
+        ctx.author.id, won, bet, payout_credited,
+        game_id="htw",
+        user=ctx.author,
+        client=ctx.bot,
+        guild_id=ctx.guild.id if ctx.guild else None,
+        tie=(outcome == "PUSH"),
+    )
 
     house_name = getattr(config, "BOT_DISPLAY_NAME", "VegasBet")
     if outcome == "WIN":
@@ -480,6 +527,9 @@ async def _htw_settle_pvp(
     bet: float,
     left_n: int,
     right_n: int,
+    *,
+    guild: discord.Guild | None = None,
+    client: discord.Client | None = None,
 ) -> tuple[int | None, str, float]:
     """Deduct bets already done. Pay winner. Returns (winner_id, outcome, winner payout credited)."""
     game_cfg = await db.get_game_config("htw")
@@ -518,14 +568,32 @@ async def _htw_settle_pvp(
 
     win_payout = bet * 2 * (1 - he)
     if winner_id == challenger_id:
-        await _record(challenger_id, True, bet, win_payout)
-        await _record(opponent_id, False, bet, 0)
+        await _record(challenger_id, True, bet, win_payout, game_id="htw", skip_log=True)
+        await _record(opponent_id, False, bet, 0, game_id="htw", skip_log=True)
     elif winner_id == opponent_id:
-        await _record(challenger_id, False, bet, 0)
-        await _record(opponent_id, True, bet, win_payout)
+        await _record(challenger_id, False, bet, 0, game_id="htw", skip_log=True)
+        await _record(opponent_id, True, bet, win_payout, game_id="htw", skip_log=True)
     else:
-        await _record(challenger_id, False, bet, bet)
-        await _record(opponent_id, False, bet, bet)
+        await _record(challenger_id, False, bet, bet, game_id="htw", skip_log=True)
+        await _record(opponent_id, False, bet, bet, game_id="htw", skip_log=True)
+
+    if guild and client:
+        from modules.game_log import post_pvp_game_log
+
+        pa = guild.get_member(challenger_id)
+        pb = guild.get_member(opponent_id)
+        if pa and pb:
+            winner_member = guild.get_member(winner_id) if winner_id else None
+            await post_pvp_game_log(
+                player_a=pa,
+                player_b=pb,
+                game_id="htw",
+                winner=winner_member,
+                payout=winner_payout if winner_id else 0.0,
+                bet=bet,
+                client=client,
+                guild_id=guild.id,
+            )
 
     return winner_id, outcome, winner_payout
 
@@ -566,6 +634,8 @@ class HTWChallengeView(PvpChallengeView):
         left_n, right_n, outcome = _htw_spin_pair(self.challenger_id, self.bet)
         winner_id, outcome, win_pay = await _htw_settle_pvp(
             self.challenger_id, self.opponent_id, self.bet, left_n, right_n,
+            guild=interaction.guild,
+            client=interaction.client,
         )
 
         challenger = interaction.guild.get_member(self.challenger_id) if interaction.guild else None
@@ -756,7 +826,13 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
         await db.clear_game_session(user_id)
         await db.add_wager(user_id, bet)
         await _earn_rakeback(user_id, bet)
-        await _record(user_id, False, bet, 0)
+        await _record(
+            user_id, False, bet, 0,
+            game_id="mines",
+            user=interaction.user,
+            client=interaction.client,
+            guild_id=interaction.guild.id if interaction.guild else None,
+        )
         _mines_msg_to_user.pop(msg_id, None)
 
         ms = _get_mines_settings()
@@ -818,7 +894,13 @@ async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
     await db.add_balance(user_id, net, note="mines cashout")
     await db.add_wager(user_id, bet)
     await _earn_rakeback(user_id, bet)
-    await _record(user_id, True, bet, net)
+    await _record(
+        user_id, True, bet, net,
+        game_id="mines",
+        user=interaction.user,
+        client=interaction.client,
+        guild_id=interaction.guild.id if interaction.guild else None,
+    )
     await db.clear_game_session(user_id)
     _mines_msg_to_user.pop(msg_id, None)
 
@@ -1142,7 +1224,14 @@ async def _bj_finish_from_interaction(
 
     await db.add_wager(user_id, total_bet)
     await _earn_rakeback(user_id, total_bet)
-    await _record(user_id, won, total_bet, net)
+    await _record(
+        user_id, won, total_bet, net,
+        game_id="blackjack",
+        user=interaction.user,
+        client=interaction.client,
+        guild_id=interaction.guild.id if interaction.guild else None,
+        tie=(outcome == "PUSH"),
+    )
     await db.clear_game_session(user_id)
     _bj_msg_to_user.pop(str(interaction.message.id), None)
     _bj_user_msg.pop(int(user_id), None)
@@ -1200,7 +1289,13 @@ async def _bj_finish_interaction_free(
 
     await db.add_wager(user_id, total_bet)
     await _earn_rakeback(user_id, total_bet)
-    await _record(user_id, won, total_bet, net)
+    await _record(
+        user_id, won, total_bet, net,
+        game_id="blackjack",
+        user=ctx.author if ctx else None,
+        client=ctx.bot if ctx else (msg._state._parent if msg else None),
+        guild_id=msg.guild.id if msg.guild else None,
+    )
     await db.clear_game_session(user_id)
     _bj_msg_to_user.pop(str(msg.id), None)
     _bj_user_msg.pop(int(user_id), None)
@@ -1366,7 +1461,13 @@ class Games(commands.Cog):
         gross = amount * target if won else 0
 
         net = await _payout(ctx.author.id, "limbo", amount, gross)
-        await _record(ctx.author.id, won, amount, net)
+        await _record(
+            ctx.author.id, won, amount, net,
+            game_id="limbo",
+            user=ctx.author,
+            client=ctx.bot,
+            guild_id=ctx.guild.id if ctx.guild else None,
+        )
 
         gif = await image_gen.render_limbo_gif(
             username=ctx.author.display_name,
@@ -1425,7 +1526,13 @@ class Games(commands.Cog):
 
         won = gross > 0
         net = await _payout(ctx.author.id, "slots", amount, gross)
-        await _record(ctx.author.id, won, amount, net)
+        await _record(
+            ctx.author.id, won, amount, net,
+            game_id="slot",
+            user=ctx.author,
+            client=ctx.bot,
+            guild_id=ctx.guild.id if ctx.guild else None,
+        )
 
         loop = asyncio.get_event_loop()
         img_buf = await loop.run_in_executor(
@@ -1564,7 +1671,14 @@ class Games(commands.Cog):
             await db.add_balance(ctx.author.id, net, note="blackjack payout")
         await db.add_wager(ctx.author.id, total_bet)
         await _earn_rakeback(ctx.author.id, total_bet, ctx.author)
-        await _record(ctx.author.id, won, total_bet, net)
+        await _record(
+            ctx.author.id, won, total_bet, net,
+            game_id="blackjack",
+            user=ctx.author,
+            client=ctx.bot,
+            guild_id=ctx.guild.id if ctx.guild else None,
+            tie=(outcome == "PUSH"),
+        )
         await db.clear_game_session(ctx.author.id)
         for mid, uid in list(_bj_msg_to_user.items()):
             if uid == ctx.author.id:
@@ -1706,8 +1820,12 @@ class Games(commands.Cog):
 
         await db.add_balance(ctx.author.id, -bet, note="crystals bet")
         gif, _ = await _crystals_play(
-            bet, ctx.author.display_name, ctx.author.id,
+            bet,
+            ctx.author.display_name,
+            ctx.author.id,
             ctx.author if isinstance(ctx.author, discord.Member) else None,
+            client=ctx.bot,
+            guild_id=ctx.guild.id if ctx.guild else None,
         )
         await ctx.send(
             file=discord.File(gif, "crystals.gif"),
@@ -1847,7 +1965,13 @@ class Games(commands.Cog):
             user_id, bet,
             ctx.author if isinstance(ctx.author, discord.Member) else None,
         )
-        await _record(user_id, True, bet, net)
+        await _record(
+            user_id, True, bet, net,
+            game_id="mines",
+            user=ctx.author,
+            client=ctx.bot,
+            guild_id=ctx.guild.id if ctx.guild else None,
+        )
         await db.clear_game_session(user_id)
         for mid, uid in list(_mines_msg_to_user.items()):
             if uid == user_id:
@@ -1874,6 +1998,9 @@ async def _crystals_play(
     username: str,
     user_id: int,
     member: discord.Member | None = None,
+    *,
+    client: discord.Client | None = None,
+    guild_id: int | None = None,
 ) -> tuple[io.BytesIO, float]:
     """Run crystals round: deduct bet, compute outcome, return reveal GIF + net_change."""
     crystals = random.choices(image_gen.CRYSTAL_TYPES, k=5)
@@ -1894,7 +2021,13 @@ async def _crystals_play(
 
     await db.add_wager(user_id, bet)
     await _earn_rakeback(user_id, bet, member)
-    await _record(user_id, won, bet, net if won else 0.0)
+    await _record(
+        user_id, won, bet, net if won else 0.0,
+        game_id="crystals",
+        user=member,
+        client=client,
+        guild_id=guild_id,
+    )
 
     net_change = (net - bet) if won else -bet
     gif = await image_gen.render_crystals_gif(
@@ -1915,6 +2048,8 @@ async def _crystals_start_from_interaction(
         interaction.user.display_name,
         user_id,
         interaction.user if isinstance(interaction.user, discord.Member) else None,
+        client=interaction.client,
+        guild_id=interaction.guild.id if interaction.guild else None,
     )
     await interaction.response.edit_message(
         attachments=[discord.File(gif, "crystals.gif")],
@@ -2139,7 +2274,13 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
 
         await db.add_wager(user_id, bet)
         await _earn_rakeback(user_id, bet)
-        await _record(user_id, False, bet, 0.0)
+        await _record(
+            user_id, False, bet, 0.0,
+            game_id="towers",
+            user=interaction.user,
+            client=interaction.client,
+            guild_id=interaction.guild.id if interaction.guild else None,
+        )
 
         gif = await image_gen.render_towers_gif(
             grid, picks, floor, mode, bet, username,
@@ -2173,7 +2314,13 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
             await db.add_balance(user_id, net, note="towers top-floor win")
             await db.add_wager(user_id, bet)
             await _earn_rakeback(user_id, bet, interaction.user if isinstance(interaction.user, discord.Member) else None)
-            await _record(user_id, True, bet, net)
+            await _record(
+                user_id, True, bet, net,
+                game_id="towers",
+                user=interaction.user,
+                client=interaction.client,
+                guild_id=interaction.guild.id if interaction.guild else None,
+            )
 
             gif = await image_gen.render_towers_gif(
                 grid, picks, 10, mode, bet, username,
@@ -2238,7 +2385,13 @@ async def _towers_do_cashout(interaction: discord.Interaction):
     await db.add_balance(user_id, net, note="towers cashout")
     await db.add_wager(user_id, bet)
     await _earn_rakeback(user_id, bet)
-    await _record(user_id, True, bet, net)
+    await _record(
+        user_id, True, bet, net,
+        game_id="towers",
+        user=interaction.user,
+        client=interaction.client,
+        guild_id=interaction.guild.id if interaction.guild else None,
+    )
     await db.clear_game_session(user_id)
     _tw_msg_to_user.pop(str(interaction.message.id), None)
 
@@ -2439,7 +2592,13 @@ async def _chicken_do_cross(interaction: discord.Interaction):
             user_id, bet,
             interaction.user if isinstance(interaction.user, discord.Member) else None,
         )
-        await _record(user_id, False, bet, 0.0)
+        await _record(
+            user_id, False, bet, 0.0,
+            game_id="chicken_road",
+            user=interaction.user,
+            client=interaction.client,
+            guild_id=interaction.guild.id if interaction.guild else None,
+        )
 
         gif = await image_gen.render_chicken_road_gif(
             step, mode, bet, username,
@@ -2473,7 +2632,13 @@ async def _chicken_do_cross(interaction: discord.Interaction):
             user_id, bet,
             interaction.user if isinstance(interaction.user, discord.Member) else None,
         )
-        await _record(user_id, True, bet, net)
+        await _record(
+            user_id, True, bet, net,
+            game_id="chicken_road",
+            user=interaction.user,
+            client=interaction.client,
+            guild_id=interaction.guild.id if interaction.guild else None,
+        )
 
         gif = await image_gen.render_chicken_road_gif(
             new_step, mode, bet, username,
@@ -2541,7 +2706,13 @@ async def _chicken_do_cashout(interaction: discord.Interaction):
         user_id, bet,
         interaction.user if isinstance(interaction.user, discord.Member) else None,
     )
-    await _record(user_id, True, bet, net)
+    await _record(
+        user_id, True, bet, net,
+        game_id="chicken_road",
+        user=interaction.user,
+        client=interaction.client,
+        guild_id=interaction.guild.id if interaction.guild else None,
+    )
     await db.clear_game_session(user_id)
     _cr_msg_to_user.pop(str(interaction.message.id), None)
 

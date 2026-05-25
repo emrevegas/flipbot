@@ -244,6 +244,8 @@ class CasesOpenHubLayout(ui.LayoutView):
             self.case_id,
             self.is_community,
             self.count,
+            client=interaction.client,
+            guild_id=interaction.guild.id if interaction.guild else None,
         )
         if err:
             return await interaction.followup.send(err, ephemeral=True)

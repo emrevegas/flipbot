@@ -53,9 +53,9 @@ async def _payout(user_id, game_id, bet, gross):
     return await gp(user_id, game_id, bet, gross)
 
 
-async def _record(user_id, won, bet, net):
+async def _record(user_id, won, bet, net, **kwargs):
     from cogs.games import _record as gr
-    await gr(user_id, won, bet, net)
+    await gr(user_id, won, bet, net, **kwargs)
 
 
 async def _run_dice_animation(
@@ -115,6 +115,9 @@ async def settle_dice_pvp(
     bet: float,
     left_roll: int,
     right_roll: int,
+    *,
+    guild: discord.Guild | None = None,
+    client: discord.Client | None = None,
 ) -> tuple[int | None, float]:
     """Returns (winner_id, winner payout credited)."""
     from cogs.games import _earn_rakeback
@@ -151,14 +154,32 @@ async def settle_dice_pvp(
 
     win_display = bet * 2 * (1 - he)
     if winner_id == challenger_id:
-        await _record(challenger_id, True, bet, win_display)
-        await _record(opponent_id, False, bet, 0)
+        await _record(challenger_id, True, bet, win_display, game_id="dice", skip_log=True)
+        await _record(opponent_id, False, bet, 0, game_id="dice", skip_log=True)
     elif winner_id == opponent_id:
-        await _record(challenger_id, False, bet, 0)
-        await _record(opponent_id, True, bet, win_display)
+        await _record(challenger_id, False, bet, 0, game_id="dice", skip_log=True)
+        await _record(opponent_id, True, bet, win_display, game_id="dice", skip_log=True)
     else:
-        await _record(challenger_id, False, bet, bet)
-        await _record(opponent_id, False, bet, bet)
+        await _record(challenger_id, False, bet, bet, game_id="dice", skip_log=True)
+        await _record(opponent_id, False, bet, bet, game_id="dice", skip_log=True)
+
+    if guild and client:
+        from modules.game_log import post_pvp_game_log
+
+        pa = guild.get_member(challenger_id)
+        pb = guild.get_member(opponent_id)
+        if pa and pb:
+            winner_member = guild.get_member(winner_id) if winner_id else None
+            await post_pvp_game_log(
+                player_a=pa,
+                player_b=pb,
+                game_id="dice",
+                winner=winner_member,
+                payout=winner_payout if winner_id else 0.0,
+                bet=bet,
+                client=client,
+                guild_id=guild.id,
+            )
 
     return winner_id, winner_payout
 
@@ -200,7 +221,13 @@ class DiceChallengeView(PvpChallengeView):
 
         left_roll, right_roll, _ = dice_roll_pair()
         winner_id, win_pay = await settle_dice_pvp(
-            self.challenger_id, self.opponent_id, self.bet, left_roll, right_roll,
+            self.challenger_id,
+            self.opponent_id,
+            self.bet,
+            left_roll,
+            right_roll,
+            guild=interaction.guild,
+            client=interaction.client,
         )
 
         challenger = interaction.guild.get_member(self.challenger_id) if interaction.guild else None
@@ -261,7 +288,14 @@ async def _dice_rebet_from_interaction(
         gross, won = 0, False
 
     payout_credited = await _payout(user_id, "dice", bet, gross)
-    await _record(user_id, won, bet, payout_credited)
+    await _record(
+        user_id, won, bet, payout_credited,
+        game_id="dice",
+        user=interaction.user,
+        client=interaction.client,
+        guild_id=interaction.guild.id if interaction.guild else None,
+        tie=(outcome == "PUSH"),
+    )
 
     house_name = getattr(config, "BOT_DISPLAY_NAME", "VegasBet")
     if outcome == "WIN":
@@ -301,7 +335,14 @@ async def start_dice_bot_game(ctx: commands.Context, bet: float) -> None:
         gross, won = 0, False
 
     payout_credited = await _payout(ctx.author.id, "dice", bet, gross)
-    await _record(ctx.author.id, won, bet, payout_credited)
+    await _record(
+        ctx.author.id, won, bet, payout_credited,
+        game_id="dice",
+        user=ctx.author,
+        client=ctx.bot,
+        guild_id=ctx.guild.id if ctx.guild else None,
+        tie=(outcome == "PUSH"),
+    )
 
     house_name = getattr(config, "BOT_DISPLAY_NAME", "VegasBet")
     if outcome == "WIN":

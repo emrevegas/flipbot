@@ -249,44 +249,46 @@ async def log_case_battle(
     game_uid: str,
     profit: int,
 ) -> None:
-    from modules.game_log import post_short_game_log
+    from modules.game_log import post_solo_game_log
 
-    if winner == "player":
-        result = "win"
-    elif winner == "tie":
-        result = "tie"
-    else:
-        result = "lose"
-
-    await post_short_game_log(
-        challenger,
-        "Case Battle",
-        result,
-        profit,
-        mode,
+    if (mode or "").lower() != "real":
+        return
+    won = winner == "player"
+    tie = winner == "tie"
+    await post_solo_game_log(
+        user_id=challenger.id,
+        game_id="case_battle",
+        bet=float(stake),
+        won=won,
+        payout=float(profit) if won and profit > 0 else 0.0,
+        user=challenger,
         client=interaction.client,
         guild_id=interaction.guild.id if interaction.guild else None,
-        skip=(mode or "").lower() != "real",
+        mode=mode,
+        tie=tie,
     )
 
 
 async def log_pvp_case_battle(
     client: discord.Client,
     guild_id: int,
-    winner: discord.abc.User,
+    player_a: discord.abc.User,
+    player_b: discord.abc.User,
+    winner: discord.abc.User | None,
     stake: int,
     mode: str,
-    profit: int,
+    payout: int,
 ) -> None:
-    from modules.game_log import post_short_game_log
+    from modules.game_log import post_pvp_game_log
 
-    await post_short_game_log(
-        winner,
-        "Case Battle",
-        "win",
-        profit,
-        mode,
+    await post_pvp_game_log(
+        player_a=player_a,
+        player_b=player_b,
+        game_id="case_battle",
+        winner=winner,
+        payout=float(payout),
+        bet=float(stake),
         client=client,
         guild_id=guild_id,
-        skip=False,
+        mode=mode,
     )

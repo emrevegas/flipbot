@@ -221,7 +221,7 @@
       "game_log_desc": "Hasil game mode real (satu baris singkat).",
       "channel": "Saluran",
       "game_log_example": "Contoh",
-      "game_log_sample": "`@User **win** +$100 at **Roulette**`",
+      "game_log_sample": "`@User bet **100 pts** to **Roulette** and wins **200 pts**`",
       "live_stats_title": "📡 Statistik Live",
       "live_stats_desc": "Embed diperbarui otomatis setiap **60 detik**.",
       "message_id": "ID Pesan",
