@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 CASE_PREVIEW_ATTACHMENT = "case_preview.png"
 CASE_GIF_ATTACHMENT = "cases.gif"
 MAX_OPEN = 4
+CASES_PER_SELECT = 25
+CASES_PER_PAGE = 75  # up to 3 selects × 25 per page
 
 
 def hub_panel_body(
@@ -37,12 +39,15 @@ def hub_panel_body(
     count: int,
     total_price: int | None,
     item_preview: str,
+    page_info: str = "",
 ) -> str:
     mode_lbl = "Official" if view_mode == "house" else "Community"
     lines = [
         f"**{mode_lbl}** · {case_count} cases",
         f"**Balance:** {format_balance(balance, 'real')}",
     ]
+    if page_info:
+        lines.append(page_info)
     if selected_case:
         lines.append(
             f"\n{selected_case.get('emoji', '📦')} **{selected_case.get('name', 'Case')}**"
@@ -64,20 +69,48 @@ def hub_panel_body(
     return "\n".join(lines)
 
 
+def _case_select_options(
+    cases: list[tuple],
+    chunk: list[tuple],
+    *,
+    selected_case_id: str | None,
+    selected_is_community: bool,
+) -> list[discord.SelectOption]:
+    opts: list[discord.SelectOption] = []
+    for cid, c, is_cc in chunk:
+        opts.append(
+            discord.SelectOption(
+                label=c.get("name", "?")[:25],
+                value=f"{'c' if is_cc else 'h'}:{cid}",
+                emoji=c.get("emoji", "📦"),
+                description=clip_select_description(
+                    format_balance(c.get("price", 0), "real")
+                ),
+                default=(
+                    cid == selected_case_id and is_cc == selected_is_community
+                ),
+            )
+        )
+    return opts or [
+        discord.SelectOption(label="No cases", value="_none", description="—"),
+    ]
+
+
 class _CasePickSelect(ui.Select):
     def __init__(
         self,
         hub: "CasesOpenHubLayout",
         options: list[discord.SelectOption],
+        *,
+        placeholder: str = "Select a case…",
+        custom_id: str = "cases_hub:pick:0:0",
     ):
         super().__init__(
-            placeholder="Select a case…",
-            options=options or [
-                discord.SelectOption(label="No cases", value="_none", description="—"),
-            ],
+            placeholder=placeholder[:100],
+            options=options,
             min_values=1,
             max_values=1,
-            custom_id="cases_hub:pick",
+            custom_id=custom_id,
         )
         self._hub = hub
 
@@ -117,6 +150,7 @@ class CasesOpenHubLayout(ui.LayoutView):
         self._open_fn = open_fn
         self._preview_buf: io.BytesIO | None = None
         self._gif_buf: io.BytesIO | None = None
+        self.case_page = 0
         self._rebuild()
 
     def _attachment_files(self) -> list[discord.File]:
@@ -177,6 +211,12 @@ class CasesOpenHubLayout(ui.LayoutView):
 
         bal = Player(self.user_id).get_balance("real")
         preview_flag = "__opened__" if self.show_gif else preview
+        page_info = ""
+        if len(cases) > CASES_PER_SELECT:
+            total_pages = max(1, (len(cases) - 1) // CASES_PER_PAGE + 1)
+            page = min(self.case_page, total_pages - 1)
+            self.case_page = page
+            page_info = f"**Cases page {page + 1} / {total_pages}** (25 per dropdown)"
         body = hub_panel_body(
             view_mode=self.view_mode,
             case_count=len(cases),
@@ -185,6 +225,7 @@ class CasesOpenHubLayout(ui.LayoutView):
             count=self.count,
             total_price=total_price,
             item_preview=preview_flag,
+            page_info=page_info,
         )
 
         container = new_container(accent=ACCENT_BRAND)
@@ -201,20 +242,7 @@ class CasesOpenHubLayout(ui.LayoutView):
         self._add_media_sections(container)
 
         controls: list[ui.Item] = []
-        if cases:
-            opts = [
-                discord.SelectOption(
-                    label=c.get("name", "?")[:25],
-                    value=f"{'c' if is_cc else 'h'}:{cid}",
-                    emoji=c.get("emoji", "📦"),
-                    description=clip_select_description(
-                        format_balance(c.get("price", 0), "real")
-                    ),
-                    default=(cid == self.case_id and is_cc == self.is_community),
-                )
-                for cid, c, is_cc in cases[:25]
-            ]
-            controls.append(_CasePickSelect(self, opts))
+        controls.extend(self._build_case_list_controls(cases))
 
         for n, em in [(1, "1️⃣"), (2, "2️⃣"), (3, "3️⃣"), (4, "4️⃣")]:
             btn = ui.Button(
@@ -245,6 +273,85 @@ class CasesOpenHubLayout(ui.LayoutView):
         container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
         add_controls_to_container(container, controls)
         self.add_item(container)
+
+    def _build_case_list_controls(self, cases: list) -> list[ui.Item]:
+        """Up to 3 selects (25 each) per page; next/back when more than 75 cases."""
+        out: list[ui.Item] = []
+        total = len(cases)
+        if total == 0:
+            return out
+
+        if total <= CASES_PER_SELECT:
+            opts = _case_select_options(
+                cases, cases,
+                selected_case_id=self.case_id,
+                selected_is_community=self.is_community,
+            )
+            out.append(_CasePickSelect(self, opts))
+            return out
+
+        total_pages = max(1, (total - 1) // CASES_PER_PAGE + 1)
+        page = min(self.case_page, total_pages - 1)
+        self.case_page = page
+        page_start = page * CASES_PER_PAGE
+
+        if page > 0:
+            back = ui.Button(
+                label="Back",
+                emoji="◀️",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"cases_hub:page:{page}:back",
+            )
+            back.callback = self._make_page_cb(-1)
+            out.append(back)
+
+        for slot, offset in enumerate((0, 25, 50)):
+            abs_start = page_start + offset
+            if abs_start >= total or offset >= CASES_PER_PAGE:
+                break
+            abs_end = min(abs_start + CASES_PER_SELECT, total, page_start + CASES_PER_PAGE)
+            chunk = cases[abs_start:abs_end]
+            if not chunk:
+                continue
+            placeholder = f"Cases {abs_start + 1}–{abs_end}"
+            opts = _case_select_options(
+                cases,
+                chunk,
+                selected_case_id=self.case_id,
+                selected_is_community=self.is_community,
+            )
+            out.append(
+                _CasePickSelect(
+                    self,
+                    opts,
+                    placeholder=placeholder,
+                    custom_id=f"cases_hub:pick:{page}:{slot}",
+                )
+            )
+
+        if page_start + CASES_PER_PAGE < total:
+            nxt = ui.Button(
+                label="Next page",
+                emoji="▶️",
+                style=discord.ButtonStyle.primary,
+                custom_id=f"cases_hub:page:{page}:next",
+            )
+            nxt.callback = self._make_page_cb(1)
+            out.append(nxt)
+
+        return out
+
+    def _make_page_cb(self, delta: int):
+        async def _cb(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                return await interaction.response.send_message("Not your panel.", ephemeral=True)
+            self.case_page = max(0, self.case_page + delta)
+            self._rebuild()
+            await interaction.response.edit_message(
+                attachments=self._attachment_files(),
+                view=self,
+            )
+        return _cb
 
     def _make_count_cb(self, n: int):
         async def _cb(interaction: discord.Interaction):
@@ -282,6 +389,7 @@ class CasesOpenHubLayout(ui.LayoutView):
         self.view_mode = "community" if self.view_mode == "house" else "house"
         self.case_id = None
         self.is_community = self.view_mode == "community"
+        self.case_page = 0
         self._preview_buf = None
         self._gif_buf = None
         self.show_gif = False
