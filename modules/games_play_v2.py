@@ -126,55 +126,8 @@ def towers_floor_items(
 
 
 def hilo_play_items(message_id: str, state: dict) -> list[ui.Item]:
-    from cogs.games import (
-        HILO_HOUSE_EDGE,
-        _HiLoCashOutBtn,
-        _HiLoHigherBtn,
-        _HiLoLowerBtn,
-        calc_hilo_odds,
-    )
-
-    if state.get("phase") != "playing":
-        return []
-
-    deck = state["deck"]
-    card_idx = state["card_idx"]
-    remaining = deck[card_idx + 1 :] if card_idx + 1 < len(deck) else []
-    odds = calc_hilo_odds(deck[card_idx], remaining)
-
-    _RV = {
-        "A": 14, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
-        "7": 7, "8": 8, "9": 9, "0": 10, "J": 11, "Q": 12, "K": 13,
-    }
-    cv = _RV.get(deck[card_idx][0], 0)
-    same_count = odds["same_count"]
-    total = odds["total"]
-    same_pct = same_count / total if total > 0 else 0
-    same_mult = round((1 - HILO_HOUSE_EDGE) / same_pct, 2) if same_pct > 0 else 0.0
-
-    if cv == 14:
-        h_label = f"≥ Same/Higher  {same_mult:.2f}x" if same_mult > 0 else "≥ Same or Higher"
-        l_label = f"Lower  {odds['lower_mult']:.2f}x" if odds["lower_mult"] > 0 else "Lower  —"
-        h_disabled = False
-        l_disabled = odds["lower_mult"] == 0
-    elif cv == 2:
-        h_label = f"Higher  {odds['higher_mult']:.2f}x" if odds["higher_mult"] > 0 else "Higher  —"
-        l_label = f"≤ Same/Lower  {same_mult:.2f}x" if same_mult > 0 else "≤ Same or Lower"
-        h_disabled = odds["higher_mult"] == 0
-        l_disabled = False
-    else:
-        h_label = f"Higher  {odds['higher_mult']:.2f}x" if odds["higher_mult"] > 0 else "Higher  —"
-        l_label = f"Lower   {odds['lower_mult']:.2f}x" if odds["lower_mult"] > 0 else "Lower   —"
-        h_disabled = odds["higher_mult"] == 0
-        l_disabled = odds["lower_mult"] == 0
-
-    items: list[ui.Item] = [
-        _HiLoHigherBtn(message_id, h_label, disabled=h_disabled),
-        _HiLoLowerBtn(message_id, l_label, disabled=l_disabled),
-    ]
-    if state["round"] > 0:
-        items.append(_HiLoCashOutBtn(message_id))
-    return items
+    from modules.hilo_flow import hilo_action_buttons
+    return hilo_action_buttons(message_id, state)
 
 
 def coinflip_result_items(msg_id: str, house_flip: str | None = None) -> list[ui.Item]:

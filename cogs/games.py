@@ -1580,92 +1580,19 @@ class Games(commands.Cog):
 
     @commands.command(name="hilo", aliases=["hl"])
     async def hilo(self, ctx: commands.Context, amount: float):
-        """Start a Hi-Lo card game. .hilo 100 — then .higher / .lower / .cashout"""
-        await db.ensure_user(ctx.author.id, ctx.author.name)
-        if not await _check_game(ctx, "hilo", amount):
-            return
-
-        deck = self._new_deck()
-        random.shuffle(deck)
-        current = deck.pop()
-        state = {
-            "bet": amount,
-            "current": current,
-            "deck": deck,
-            "multiplier": 1.0,
-            "streak": 0,
-        }
-        await db.set_game_session(ctx.author.id, "hilo", amount, json.dumps(state))
-        await db.add_balance(ctx.author.id, -amount, note="hilo bet")
-
-        embed = discord.Embed(title="🃏 Hi-Lo", color=0x5865F2)
-        embed.add_field(name="Current Card", value=f"`{current}`", inline=True)
-        embed.add_field(name="Multiplier", value="`1.00x`", inline=True)
-        embed.set_footer(text="Use .higher / .lower to predict, or .cashout to take winnings")
-        await ctx.send(embed=embed)
+        """Start Hi-Lo with animated cards and buttons. .hilo 100"""
+        from modules.hilo_flow import start_hilo_command
+        await start_hilo_command(ctx, amount)
 
     @commands.command(name="higher")
     async def hilo_higher(self, ctx: commands.Context):
-        """Predict higher in Hi-Lo."""
-        await self._hilo_guess(ctx, "higher")
+        """Use Higher on your active Hi-Lo message."""
+        await ctx.send(embed=_err("Use the **Higher** button on your Hi-Lo game message."))
 
     @commands.command(name="lower")
     async def hilo_lower(self, ctx: commands.Context):
-        """Predict lower in Hi-Lo."""
-        await self._hilo_guess(ctx, "lower")
-
-    async def _hilo_guess(self, ctx: commands.Context, guess: str):
-        sess = await _ensure_session_active(ctx.author.id, "hilo")
-        if not sess:
-            return await ctx.send(embed=_err("No active Hi-Lo game (may have timed out — bet refunded)."))
-        state = json.loads(sess["state"])
-
-        current_rank = self._card_rank(state["current"])
-        next_card = state["deck"].pop() if state["deck"] else self._new_deck()[random.randint(0, 51)]
-        next_rank = self._card_rank(next_card)
-
-        rigged = await bc.should_rig_outcome(ctx.author.id, "hilo", sess["bet"])
-
-        if rigged:
-            if guess == "higher":
-                next_rank = max(1, current_rank - 1)
-            else:
-                next_rank = min(13, current_rank + 1)
-            next_card = f"{['A','2','3','4','5','6','7','8','9','10','J','Q','K'][next_rank-1]}♠"
-
-        correct = (guess == "higher" and next_rank > current_rank) or \
-                  (guess == "lower" and next_rank < current_rank)
-        tie = next_rank == current_rank
-
-        if tie:
-            state["current"] = next_card
-            await db.set_game_session(ctx.author.id, "hilo", sess["bet"], json.dumps(state))
-            embed = discord.Embed(title="🃏 Hi-Lo — TIE", color=0xF1C40F)
-            embed.add_field(name="New Card", value=f"`{next_card}`", inline=True)
-            embed.add_field(name="Multiplier", value=f"`{state['multiplier']:.2f}x`", inline=True)
-            embed.set_footer(text="Tie — same card. Continue guessing!")
-            return await ctx.send(embed=embed)
-
-        if correct:
-            state["multiplier"] = round(state["multiplier"] * 1.5, 2)
-            state["streak"] = state.get("streak", 0) + 1
-            state["current"] = next_card
-            await db.set_game_session(ctx.author.id, "hilo", sess["bet"], json.dumps(state))
-            embed = discord.Embed(title="🃏 Hi-Lo — Correct!", color=0x2ECC71)
-            embed.add_field(name="New Card", value=f"`{next_card}`", inline=True)
-            embed.add_field(name="Multiplier", value=f"`{state['multiplier']:.2f}x`", inline=True)
-            embed.add_field(name="Potential Win", value=f"`{utils.fmt_pts(sess['bet'] * state['multiplier'])} pts`", inline=True)
-            embed.set_footer(text=".higher / .lower / .cashout")
-            await ctx.send(embed=embed)
-        else:
-            await db.clear_game_session(ctx.author.id)
-            await db.add_wager(ctx.author.id, sess["bet"])
-            await _earn_rakeback(ctx.author.id, sess["bet"], ctx.author)
-            await _record(ctx.author.id, False, sess["bet"], 0)
-            embed = discord.Embed(title="🃏 Hi-Lo — WRONG!", color=0xE74C3C)
-            embed.add_field(name="New Card", value=f"`{next_card}`", inline=True)
-            embed.add_field(name="Lost", value=f"`{utils.fmt_pts(sess['bet'])} pts`", inline=True)
-            await ctx.send(embed=embed)
+        """Use Lower on your active Hi-Lo message."""
+        await ctx.send(embed=_err("Use the **Lower** button on your Hi-Lo game message."))
 
     @commands.command(name="cashout")
     async def hilo_cashout(self, ctx: commands.Context):
@@ -1678,24 +1605,8 @@ class Games(commands.Cog):
             return await ctx.send(embed=_err(f"Game timed out — bet refunded."))
 
         if sess["game"] == "hilo":
-            state = json.loads(sess["state"])
-            gross = sess["bet"] * state["multiplier"]
-            game_cfg = await db.get_game_config("hilo")
-            he = float(game_cfg["house_edge"]) if game_cfg else 0.02
-            actual_net = gross * (1 - he)
-            user = await db.get_user(ctx.author.id)
-            current_bal = float((user or {}).get("balance", 0))
-            net_capped_bal = await bc.apply_balance_cap(ctx.author.id, current_bal + actual_net)
-            actual_net = max(0.0, net_capped_bal - current_bal)
-            await db.add_balance(ctx.author.id, actual_net, note="hilo cashout")
-            await db.add_wager(ctx.author.id, sess["bet"])
-            await _earn_rakeback(ctx.author.id, sess["bet"], ctx.author)
-            await _record(ctx.author.id, True, sess["bet"], actual_net)
-            await db.clear_game_session(ctx.author.id)
-            embed = discord.Embed(title="🃏 Hi-Lo — Cashed Out!", color=0x2ECC71)
-            embed.add_field(name="Multiplier", value=f"`{state['multiplier']:.2f}x`", inline=True)
-            embed.add_field(name="Payout", value=f"`{utils.fmt_pts(actual_net)} pts`", inline=True)
-            await ctx.send(embed=embed)
+            from modules.hilo_flow import hilo_cashout_user
+            await hilo_cashout_user(ctx.author.id, ctx=ctx)
 
         elif sess["game"] == "mines":
             await self._mines_cashout(ctx, sess)

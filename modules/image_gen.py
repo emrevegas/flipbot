@@ -1300,12 +1300,11 @@ def render_race_card(rows: list[dict]) -> io.BytesIO:
 # ── Blackjack card assets ──────────────────────────────────────────────────────
 
 CARDS_DIR = Path(__file__).parent.parent / "assets" / "cards"
-_CUSTOM_CARD_MIN = 8_000  # skip auto-gen when a real PNG is present
+_CARD_DISPLAY_W, _CARD_DISPLAY_H = 88, 122
 
 
 def _bj_card_size() -> tuple[int, int]:
-    from modules.card_assets import get_display_size
-    return get_display_size()
+    return _CARD_DISPLAY_W, _CARD_DISPLAY_H
 
 
 def clear_bj_card_cache() -> None:
@@ -1319,25 +1318,27 @@ _PLACEHOLDER_W, _PLACEHOLDER_H = 71, 100
 
 
 def _gen_card_image(rank: str, suit: str) -> Image.Image:
-    """Generate a single card image with PIL."""
+    """Generate a single card image with PIL (always A for ace, never 1)."""
+    if rank == "1":
+        rank = "A"
     img = Image.new("RGBA", (_PLACEHOLDER_W, _PLACEHOLDER_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     draw.rounded_rectangle([0, 0, _PLACEHOLDER_W - 1, _PLACEHOLDER_H - 1], radius=7,
                             fill=(245, 245, 245), outline=(180, 180, 180), width=1)
     suit_char = _SUIT_CHAR[suit]
     ink = _SUIT_COLOR[suit]
-    f_sm = _font(13)
-    f_lg = _font(26, bold=True)
-    draw.text((4, 4), rank, font=f_sm, fill=ink)
-    draw.text((4, 18), suit_char, font=f_sm, fill=ink)
+    f_sm = _font(17, bold=True)
+    f_lg = _font(32, bold=True)
+    draw.text((5, 5), rank, font=f_sm, fill=ink)
+    draw.text((5, 24), suit_char, font=f_sm, fill=ink)
     try:
         sw = draw.textlength(suit_char, font=f_lg)
         rw = draw.textlength(rank, font=f_lg)
     except Exception:
         sw = 18
         rw = 18
-    draw.text((_PLACEHOLDER_W // 2 - rw // 2, _PLACEHOLDER_H // 2 - 24), rank, font=f_lg, fill=ink)
-    draw.text((_PLACEHOLDER_W // 2 - sw // 2, _PLACEHOLDER_H // 2 + 4), suit_char, font=f_lg, fill=ink)
+    draw.text((_PLACEHOLDER_W // 2 - rw // 2, _PLACEHOLDER_H // 2 - 28), rank, font=f_lg, fill=ink)
+    draw.text((_PLACEHOLDER_W // 2 - sw // 2, _PLACEHOLDER_H // 2 + 6), suit_char, font=f_lg, fill=ink)
     return img
 
 
@@ -1357,16 +1358,12 @@ def _gen_back_image() -> Image.Image:
 
 
 def _ensure_card_assets():
-    """Generate missing card PNGs into assets/cards/ on first run."""
+    """Generate card PNG cache on disk (procedural faces, A not 1)."""
     CARDS_DIR.mkdir(parents=True, exist_ok=True)
-    back_path = CARDS_DIR / "back.png"
-    if not back_path.exists() or back_path.stat().st_size < _CUSTOM_CARD_MIN:
-        _gen_back_image().save(back_path, "PNG")
+    _gen_back_image().save(CARDS_DIR / "back.png", "PNG")
     for rank in _RANKS:
         for suit in _SUITS:
-            p = CARDS_DIR / f"{rank}{suit}.png"
-            if not p.exists() or p.stat().st_size < _CUSTOM_CARD_MIN:
-                _gen_card_image(rank, suit).save(p, "PNG")
+            _gen_card_image(rank, suit).save(CARDS_DIR / f"{rank}{suit}.png", "PNG")
 
 
 def _card_key(card_str: str) -> str:
@@ -1378,6 +1375,8 @@ def _card_key(card_str: str) -> str:
     rank = card_str[:-1] if len(card_str) > 1 else card_str
     if rank == "0":
         rank = "10"
+    if rank == "1":
+        rank = "A"
     return f"{rank}{suit_map.get(suit_char, 'h')}"
 
 
@@ -1385,30 +1384,24 @@ _card_cache: dict[str, Image.Image] = {}
 
 
 def _load_card_img(key: str) -> Image.Image:
-    """Load a card image (from assets or auto-generated), cached in memory."""
+    """Procedural card face (BJ / HiLo shared), cached in memory."""
     cw, ch = _bj_card_size()
     cache_key = f"{key}:{cw}x{ch}"
     if cache_key in _card_cache:
         return _card_cache[cache_key]
-    from modules.card_assets import resize_card
-
-    path = CARDS_DIR / f"{key}.png"
-    if path.exists() and path.stat().st_size >= _CUSTOM_CARD_MIN:
-        img = resize_card(Image.open(path).convert("RGBA"), cw, ch)
-    elif path.exists():
-        img = resize_card(Image.open(path).convert("RGBA"), cw, ch)
+    if key == "back":
+        base = _gen_back_image()
     else:
-        if key == "back":
-            img = resize_card(_gen_back_image(), cw, ch)
-        else:
-            suit_letter = key[-1] if key else "h"
-            rank = key[:-1] if len(key) > 1 else key
-            base = (
-                _gen_card_image(rank, suit_letter)
-                if suit_letter in _SUIT_CHAR
-                else _gen_back_image()
-            )
-            img = resize_card(base, cw, ch)
+        suit_letter = key[-1] if key else "h"
+        rank = key[:-1] if len(key) > 1 else key
+        if rank == "1":
+            rank = "A"
+        base = (
+            _gen_card_image(rank, suit_letter)
+            if suit_letter in _SUIT_CHAR
+            else _gen_back_image()
+        )
+    img = base.resize((cw, ch), Image.Resampling.LANCZOS)
     _card_cache[cache_key] = img
     return img
 
@@ -1418,6 +1411,143 @@ def _paste_card(canvas: Image.Image, card_str: str, x: int, y: int, face_down: b
     key = "back" if face_down else _card_key(card_str)
     card_img = _load_card_img(key).copy()
     canvas.paste(card_img, (x, y), card_img)
+
+
+def hilo_card_display(card: str) -> str:
+    """HiLo deck key (AH, 0C) → display string for _paste_card (A♥, 10♣)."""
+    if not card or len(card) < 2:
+        return card or "?"
+    suits = {"C": "♣", "H": "♥", "D": "♦", "S": "♠"}
+    suit_c = card[-1]
+    rank = card[0]
+    if rank == "0":
+        rank = "10"
+    if rank == "1":
+        rank = "A"
+    return f"{rank}{suits.get(suit_c, '♠')}"
+
+
+# ── HiLo GIF ───────────────────────────────────────────────────────────────────
+
+HILO_REVEAL_FRAMES = 10
+
+
+async def render_hilo_gif(
+    current_card: str,
+    *,
+    prev_card: str | None = None,
+    reveal_card: str | None = None,
+    animate_reveal: bool = False,
+    multiplier: float = 1.0,
+    bet: float = 0.0,
+    username: str = "",
+    status: str = "",
+    result: str = "",
+    net_change: float = 0.0,
+) -> io.BytesIO:
+    """HiLo board GIF — same card renderer as blackjack."""
+    _ensure_card_assets()
+    CW, CH = _bj_card_size()
+    GAP = 14
+    W, H = 500, 248
+    BG = (13, 17, 30)
+    PANEL = (18, 24, 42)
+    WHITE = (255, 255, 255)
+    MUTED = (120, 130, 150)
+    GREEN = (46, 213, 96)
+    RED = (231, 76, 60)
+    GOLD = (255, 196, 0)
+    BLUE = (88, 101, 242)
+
+    font_title = _font(14, bold=True)
+    font_val = _font(18, bold=True)
+    font_status = _font(28, bold=True)
+    font_sub = _font(14, bold=True)
+    font_info = _font(12)
+
+    cur_disp = hilo_card_display(current_card)
+    left_disp = hilo_card_display(prev_card) if prev_card and prev_card != current_card else None
+    rev_disp = hilo_card_display(reveal_card) if reveal_card else None
+
+    def _draw_board(*, show_reveal: bool, mix: float) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([0, 0, W, 42], fill=PANEL)
+        draw.text((16, 12), "HI-LO", font=font_title, fill=WHITE)
+        mult_str = f"{multiplier:.2f}x"
+        try:
+            mw = draw.textlength(mult_str, font=font_val)
+        except Exception:
+            mw = len(mult_str) * 10
+        draw.text((W - 16 - mw, 10), mult_str, font=font_val, fill=GOLD)
+
+        cy = 56 + (H - 56 - CH) // 2
+        positions: list[tuple[int, str | None, bool, float | None]] = []
+        if left_disp:
+            positions.append((0, left_disp, False, None))
+        if show_reveal and rev_disp and mix < 1.0:
+            positions.append((1, rev_disp, False, mix))
+        elif show_reveal and rev_disp:
+            positions.append((1, rev_disp, False, 1.0))
+        else:
+            positions.append((0 if not left_disp else 1, cur_disp, False, None))
+
+        n = len(positions)
+        total_w = n * CW + max(0, n - 1) * GAP
+        x0 = (W - total_w) // 2
+        for i, (_, card_s, face_down, blend) in enumerate(positions):
+            x = x0 + i * (CW + GAP)
+            if blend is not None and card_s:
+                back = _load_card_img("back").copy()
+                face = _load_card_img(_card_key(card_s)).copy()
+                blended = Image.blend(back, face, blend)
+                img.paste(blended, (x, cy), blended)
+            else:
+                _paste_card(img, card_s if not face_down else "?", x, cy, face_down=face_down)
+
+        if status:
+            try:
+                sw = draw.textlength(status, font=font_status)
+            except Exception:
+                sw = len(status) * 16
+            col = GREEN if result == "win" else RED if result == "lose" else GOLD if result == "push" else WHITE
+            draw.text(((W - sw) // 2, H - 52), status, font=font_status, fill=col)
+        if bet > 0:
+            info = f"{username[:18]}  •  Bet { _fmt(bet) } pts"
+            draw.text((16, H - 24), info, font=font_info, fill=MUTED)
+        if net_change != 0.0 and result in ("win", "lose", "cashout"):
+            prefix = "+" if net_change > 0 else ""
+            sub = f"{prefix}{_fmt(net_change)} pts"
+            try:
+                sw2 = draw.textlength(sub, font=font_sub)
+            except Exception:
+                sw2 = len(sub) * 8
+            sc = GREEN if net_change > 0 else RED
+            draw.text((W - 16 - sw2, H - 24), sub, font=font_sub, fill=sc)
+        return img
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+
+    do_anim = animate_reveal and reveal_card and hilo_card_display(reveal_card) != cur_disp
+    if do_anim:
+        for i in range(HILO_REVEAL_FRAMES):
+            t = (i + 1) / HILO_REVEAL_FRAMES
+            frames.append(_draw_board(show_reveal=True, mix=t))
+            durations.append(90)
+        frames.append(_draw_board(show_reveal=True, mix=1.0))
+        durations.append(450 if not result else 18_000)
+    else:
+        frames.append(_draw_board(show_reveal=bool(reveal_card), mix=1.0))
+        durations.append(18_000 if result else 5_000)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True, append_images=frames[1:],
+        duration=durations, loop=1, optimize=False, disposal=2,
+    )
+    buf.seek(0)
+    return buf
 
 
 # ── Blackjack GIF ──────────────────────────────────────────────────────────────

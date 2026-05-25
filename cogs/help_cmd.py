@@ -22,7 +22,7 @@ CATEGORIES = {
                      f"`{PREFIX}htw @user <bet>` — PvP challenge (30s to accept; Decline & Cancel)."),
             ("Blackjack", f"`{PREFIX}blackjack <amount>`  or  `{PREFIX}bj <amount>`\nPlay blackjack with interactive buttons (Hit / Stand / Double)."),
             ("Mines", f"`{PREFIX}mines <amount> [mine_count]`\nClick the grid to reveal gems. Cashout button in the grid."),
-            ("Hi-Lo", f"`{PREFIX}hilo <amount>`\nPredict higher or lower cards. Use `.higher` / `.lower` / `.cashout`."),
+            ("Hi-Lo", f"`{PREFIX}hilo <amount>`\nAnimated cards — **Higher** / **Lower** / **Cash Out** buttons on the game message."),
             ("Limbo", f"`{PREFIX}limbo <amount> <target_multiplier>`\nAnimated multiplier — land at or above your target to win."),
             ("Slots", f"`{PREFIX}slots <amount>`\nSpin the slot machine."),
             ("Crystals", f"`{PREFIX}crystals <bet>`\nReveal 5 crystals and match for prizes."),

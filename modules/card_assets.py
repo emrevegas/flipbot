@@ -16,7 +16,6 @@ DISPLAY_CFG = CARDS_DIR / "display.json"
 # Emoji-style names (AC, 0H, 1D, 10S, CB) → asset keys (Ac, 10h, back)
 _RANK_MAP = {
     "A": "A",
-    "1": "A",
     "2": "2",
     "3": "3",
     "4": "4",
