@@ -3069,13 +3069,6 @@ async def render_coinflip_gif(
 
         draw = ImageDraw.Draw(img)
 
-        vs_y = card_cy - 14
-        draw.rounded_rectangle(
-            [center_cx - 30, vs_y, center_cx + 30, vs_y + 36],
-            radius=12, fill=(28, 36, 58),
-        )
-        draw.text((center_cx - 12, vs_y + 8), "VS", font=font_name, fill=GOLD)
-
         if final:
             _draw_cf_side_result(
                 draw, left_cx, left_box,
