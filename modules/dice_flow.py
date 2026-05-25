@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import random
-from typing import TYPE_CHECKING
 
 import discord
+from discord.ext import commands
 
 import config
 from database import db
@@ -14,9 +14,6 @@ from modules.game_media_v2 import gif_media_layout, gif_result_layout
 from modules.pvp_challenge import PVP_CHALLENGE_TIMEOUT, PvpChallengeView
 from modules import flip_utils as utils
 from modules import flip_balance_cap as bc
-
-if TYPE_CHECKING:
-    from discord.ext import commands
 
 DICE_GIF = "dice.gif"
 
