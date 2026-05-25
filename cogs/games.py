@@ -671,6 +671,110 @@ class HTWChallengeView(PvpChallengeView):
         )
 
 
+def _purge_session_caches(user_id: int | None = None) -> None:
+    """Drop in-memory message→user maps (optional: one user only)."""
+    uid = int(user_id) if user_id is not None else None
+
+    def _scrub_msg_map(m: dict[str, int]) -> None:
+        if uid is None:
+            m.clear()
+        else:
+            for k, v in list(m.items()):
+                if v == uid:
+                    m.pop(k, None)
+
+    def _scrub_user_map(m: dict[int, discord.Message]) -> None:
+        if uid is None:
+            m.clear()
+        elif uid in m:
+            m.pop(uid, None)
+
+    _scrub_msg_map(_mines_msg_to_user)
+    _scrub_msg_map(_bj_msg_to_user)
+    _scrub_user_map(_bj_user_msg)
+    _scrub_msg_map(_tw_msg_to_user)
+    _scrub_user_map(_tw_user_msg)
+    _scrub_msg_map(_cr_msg_to_user)
+    _scrub_user_map(_cr_user_msg)
+
+    try:
+        from modules import hilo_flow as hf
+
+        if uid is None:
+            hf._hilo_msg_to_user.clear()
+        else:
+            for k, v in list(hf._hilo_msg_to_user.items()):
+                if v == uid:
+                    hf._hilo_msg_to_user.pop(k, None)
+    except Exception:
+        pass
+
+
+async def _refund_session_bet(user_id: int | str, sess: dict) -> float:
+    """Refund an active session bet (best-effort; includes BJ double)."""
+    bet = float(sess.get("bet") or 0)
+    if sess.get("game") == "blackjack":
+        try:
+            state = json.loads(sess.get("state") or "{}")
+            bet *= 2 if state.get("doubled") else 1
+        except Exception:
+            pass
+    if bet > 0:
+        await db.add_balance(user_id, bet, note="admin resetgames refund")
+    return bet
+
+
+async def clear_stuck_game_sessions(
+    user_id: int | str | None = None,
+    *,
+    refund: bool = True,
+) -> dict:
+    """
+    Clear game_sessions (+ in-memory maps). Used by admin `.resetgames`.
+    Returns {count, user_ids, refunded_total}.
+    """
+    refunded_total = 0.0
+    cleared_ids: list[str] = []
+
+    if user_id is not None:
+        uid = int(user_id)
+        sess = await db.get_game_session(uid)
+        if sess:
+            if refund:
+                refunded_total += await _refund_session_bet(uid, sess)
+            await db.clear_game_session(uid)
+            cleared_ids.append(str(uid))
+        _purge_session_caches(uid)
+        return {
+            "count": len(cleared_ids),
+            "user_ids": cleared_ids,
+            "refunded_total": refunded_total,
+        }
+
+    conn = await db.get_db()
+    rows = await (await conn.execute(
+        "SELECT user_id, game, bet, state FROM game_sessions"
+    )).fetchall()
+    for row in rows:
+        uid = row["user_id"]
+        sess = {
+            "game": row["game"],
+            "bet": row["bet"],
+            "state": row["state"],
+        }
+        if refund:
+            refunded_total += await _refund_session_bet(uid, sess)
+        cleared_ids.append(str(uid))
+    await conn.execute("DELETE FROM game_sessions")
+    await conn.commit()
+    _purge_session_caches(None)
+    return {
+        "count": len(cleared_ids),
+        "user_ids": cleared_ids,
+        "refunded_total": refunded_total,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MINES — button-based 4×5 grid
 # ─────────────────────────────────────────────────────────────────────────────

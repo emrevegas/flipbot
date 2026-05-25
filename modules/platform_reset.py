@@ -112,8 +112,12 @@ async def run_flipbot_reset() -> dict[str, int]:
         except Exception:
             counts[table] = 0
     try:
-        await db.execute("UPDATE users SET balance=0, total_wagered=0, total_deposited=0, total_withdrawn=0")
+        await db.execute(
+            """UPDATE users SET balance=0, total_wagered=0, total_deposited=0, total_withdrawn=0,
+               rakeback_accumulated=0, rakeback_total_claimed=0"""
+        )
         counts["users_balance"] = 1
+        counts["users_rakeback"] = 1
     except Exception:
         pass
     await db.commit()

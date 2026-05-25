@@ -2943,6 +2943,7 @@ class AdminPanel(commands.Cog):
                 "• `server/admins` — kullanıcı yetkileri\n\n"
                 "**Silinecek / sıfırlanacak:**\n"
                 "• Tüm bakiyeler, istatistikler, geçmişler\n"
+                "• Rakeback birikimi (accumulated) ve claim geçmişi\n"
                 "• Promo state, referral, ticket kayıtları, oyun oturumları\n"
                 "• Diğer tüm `server/*` runtime verisi\n\n"
                 "**Geri alınamaz!** Onay için **RESET** yazın."
@@ -3005,6 +3006,111 @@ class AdminPanel(commands.Cog):
         await interaction.response.send_message(
             embed=embed,
             view=PromoDosView(active),
+            ephemeral=True,
+        )
+
+    @commands.command(name="resetgames", aliases=["cleargames", "resetgame"])
+    async def resetgames(self, ctx: commands.Context, target: str = ""):
+        """
+        [Admin] Takılı oyun oturumlarını temizle.
+        `.resetgames` — herkes | `.resetgames @user` — tek kullanıcı | `.resetgames 123456789`
+        """
+        if check_permission(ctx.author.id, "admin"):
+            return await ctx.send(
+                embed=discord.Embed(
+                    description="❌ Admin yetkisi gerekli.",
+                    color=discord.Color.red(),
+                )
+            )
+
+        from cogs.games import clear_stuck_game_sessions
+
+        user_id: int | None = None
+        raw = (target or "").strip()
+        if raw:
+            if ctx.message.mentions:
+                user_id = ctx.message.mentions[0].id
+            else:
+                try:
+                    user_id = int(raw.lstrip("<@!>").rstrip(">"))
+                except ValueError:
+                    return await ctx.send(
+                        embed=discord.Embed(
+                            description="❌ Kullanım: `.resetgames` | `.resetgames @user` | `.resetgames <id>`",
+                            color=discord.Color.red(),
+                        )
+                    )
+
+        result = await clear_stuck_game_sessions(user_id, refund=True)
+        count = result["count"]
+        refunded = result["refunded_total"]
+
+        if count == 0:
+            desc = (
+                f"**{target or 'Tüm kullanıcılar'}** için aktif oyun oturumu yok."
+                if user_id
+                else "Aktif oyun oturumu yok (cache temizlendi)."
+            )
+        elif user_id:
+            desc = (
+                f"<@{user_id}> için **{count}** oturum kapatıldı."
+                + (f" İade: **{utils.fmt_pts(refunded)} pts**." if refunded > 0 else "")
+            )
+        else:
+            desc = (
+                f"**{count}** takılı oturum kapatıldı."
+                + (f" Toplam iade: **{utils.fmt_pts(refunded)} pts**." if refunded > 0 else "")
+            )
+
+        await ctx.send(
+            embed=discord.Embed(
+                title="✅ Oyun oturumları sıfırlandı",
+                description=desc,
+                color=discord.Color.green(),
+            )
+        )
+
+    @app_commands.command(
+        name="resetgames",
+        description="[Admin] Takılı oyun oturumlarını temizle (active game hatası)",
+    )
+    @app_commands.describe(user="Boş bırak = tüm kullanıcılar")
+    async def resetgames_slash(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member | None = None,
+    ):
+        if check_permission(interaction.user.id, "admin"):
+            return await interaction.response.send_message(
+                "❌ Admin yetkisi gerekli.", ephemeral=True,
+            )
+
+        from cogs.games import clear_stuck_game_sessions
+
+        await interaction.response.defer(ephemeral=True)
+        result = await clear_stuck_game_sessions(
+            user.id if user else None,
+            refund=True,
+        )
+        count = result["count"]
+        refunded = result["refunded_total"]
+        if user:
+            if count == 0:
+                desc = f"{user.mention} için aktif oturum yok (cache temizlendi)."
+            else:
+                desc = f"{user.mention} — **{count}** oturum kapatıldı."
+                if refunded > 0:
+                    desc += f" İade: **{utils.fmt_pts(refunded)} pts**."
+        else:
+            desc = f"**{count}** oturum kapatıldı."
+            if refunded > 0:
+                desc += f" Toplam iade: **{utils.fmt_pts(refunded)} pts**."
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="✅ Oyun oturumları sıfırlandı",
+                description=desc,
+                color=discord.Color.green(),
+            ),
             ephemeral=True,
         )
 
@@ -8991,6 +9097,7 @@ class _ConfirmPlatformResetView(discord.ui.View):
             f"• User KV silindi: **{summary.get('user_kv_removed', 0)}**",
             f"• Bakiye sıfırlanan kullanıcı: **{summary.get('users_zeroed', 0)}**",
             f"• Flipbot tabloları: **{sum(flip.values())}** işlem",
+            f"• Rakeback sıfırlandı: **{'evet' if flip.get('users_rakeback') else 'hayır'}**",
         ]
         embed = discord.Embed(
             title="✅ Platform Sıfırlandı",
