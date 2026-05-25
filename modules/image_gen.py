@@ -3518,6 +3518,124 @@ async def render_dice_gif(
     return buf
 
 
+# ── Case contents preview (PNG) ───────────────────────────────────────────────
+
+CASE_RARITY_RGB = {
+    "common": (155, 160, 175),
+    "uncommon": (72, 195, 110),
+    "rare": (231, 76, 60),
+    "epic": (156, 39, 176),
+    "legendary": (255, 196, 0),
+}
+
+CASE_RARITY_LABEL = {
+    "common": "COMMON",
+    "uncommon": "UNCOMMON",
+    "rare": "RARE",
+    "epic": "EPIC",
+    "legendary": "LEGENDARY",
+}
+
+
+async def render_case_contents_image(
+    *,
+    case_name: str,
+    case_price: float,
+    rows: list[dict],
+) -> io.BytesIO:
+    """
+    Case loot table: emoji, name, value, drop %, rarity colors (yellow/purple/red tier).
+    rows: {emoji, name, value, prob, rarity}
+    """
+    W = 560
+    max_rows = 14
+    shown = rows[:max_rows]
+    extra = max(0, len(rows) - max_rows)
+    row_h = 50
+    header_h = 72
+    footer_h = 28 if extra else 14
+    H = header_h + len(shown) * row_h + footer_h
+
+    BG = config.CARD_BG_COLOR
+    BORDER = config.CARD_BORDER
+    GOLD = config.CARD_GOLD
+    MUTED = config.CARD_TEXT_MUTED
+    WHITE = config.CARD_TEXT_PRIMARY
+
+    font_title = _font(16, bold=True)
+    font_sub = _font(11, bold=True)
+    font_name = _font(13, bold=True)
+    font_val = _font(12, bold=True)
+    font_pct = _font(11, bold=True)
+    font_rar = _font(9, bold=True)
+    font_foot = _font(10)
+
+    async with aiohttp.ClientSession() as session:
+        emoji_cache: dict[str, Image.Image] = {}
+        for row in shown:
+            em = str(row.get("emoji", "❓"))
+            if em not in emoji_cache:
+                emoji_cache[em] = await _load_emoji_rgba(em, 36, session)
+
+    img = Image.new("RGB", (W, H), BG)
+    draw = ImageDraw.Draw(img)
+    _rounded_rect(draw, (0, 0, W - 1, H - 1), 16, BG, GOLD, 2)
+    draw.rectangle([0, 12, 5, H - 12], fill=GOLD)
+
+    title = f"📦 {case_name.upper()[:28]}"
+    draw.text((18, 14), title, font=font_title, fill=WHITE)
+    price_line = f"Open: {_fmt(case_price)} pts  ·  ${_pts_to_usd(case_price):,.2f}"
+    draw.text((18, 38), price_line, font=font_sub, fill=MUTED)
+    draw.text((18, 54), "DROP RATE  ·  VALUE", font=font_rar, fill=GOLD)
+
+    y = header_h
+    for row in shown:
+        rarity = str(row.get("rarity", "common"))
+        rgb = CASE_RARITY_RGB.get(rarity, CASE_RARITY_RGB["common"])
+        rlabel = CASE_RARITY_LABEL.get(rarity, rarity.upper())
+
+        draw.rounded_rectangle([12, y + 6, 18, y + row_h - 8], radius=3, fill=rgb)
+        draw.rounded_rectangle(
+            [20, y + 4, W - 14, y + row_h - 6],
+            radius=10,
+            fill=(22, 28, 48),
+            outline=rgb,
+            width=2,
+        )
+
+        em_key = str(row.get("emoji", "❓"))
+        em_img = emoji_cache.get(em_key)
+        if em_img:
+            ex = 26 + (36 - em_img.width) // 2
+            ey = y + 8 + (36 - em_img.height) // 2
+            img.paste(em_img, (ex, ey), em_img)
+
+        name = str(row.get("name", "Item"))[:22]
+        draw.text((70, y + 10), name, font=font_name, fill=WHITE)
+        draw.text((70, y + 28), rlabel, font=font_rar, fill=rgb)
+
+        val = int(row.get("value", 0))
+        prob = float(row.get("prob", 0))
+        val_txt = f"{_fmt(val)} pts"
+        pct_txt = f"{prob:.2f}%"
+        vw = draw.textlength(val_txt, font=font_val)
+        pw = draw.textlength(pct_txt, font=font_pct)
+        draw.text((W - 22 - vw, y + 10), val_txt, font=font_val, fill=WHITE)
+        draw.text((W - 22 - pw, y + 28), pct_txt, font=font_pct, fill=rgb)
+
+        y += row_h
+
+    if extra:
+        foot = f"+ {extra} more items"
+        fw = draw.textlength(foot, font=font_foot)
+        draw.text(((W - fw) / 2, y + 6), foot, font=font_foot, fill=MUTED)
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    return buf
+
+
 # ── Case opening reel GIF ─────────────────────────────────────────────────────
 
 CASE_SLOT = 72

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Awaitable
+import io
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 import discord
 from discord import ui
@@ -22,6 +23,7 @@ from modules.utils import format_balance
 if TYPE_CHECKING:
     pass
 
+CASE_PREVIEW_ATTACHMENT = "case_preview.png"
 CASE_GIF_ATTACHMENT = "cases.gif"
 MAX_OPEN = 4
 
@@ -51,8 +53,12 @@ def hub_panel_body(
                 f"**Price:** {format_balance(unit, 'real')} × **{count}** = "
                 f"**{format_balance(total_price, 'real')}**"
             )
-        if item_preview:
-            lines.append(f"**Items:** {item_preview}")
+        lines.append(
+            "\n**Loot table** (rates & values) is shown above."
+            + (f"\n**Open animation** below after you spin." if item_preview == "__opened__" else "")
+        )
+        if item_preview and item_preview != "__opened__":
+            lines.append(f"**Top items:** {item_preview}")
     else:
         lines.append("\nSelect a case, pick quantity **×1–×4**, then **Open**.")
     return "\n".join(lines)
@@ -80,7 +86,7 @@ class _CasePickSelect(ui.Select):
 
 
 class CasesOpenHubLayout(ui.LayoutView):
-    """Single message: V2 panel + reel GIF (edited on each open)."""
+    """Single message: V2 panel + loot PNG when selected + reel GIF after open."""
 
     def __init__(
         self,
@@ -109,7 +115,41 @@ class CasesOpenHubLayout(ui.LayoutView):
         self._selected_fn = selected_fn
         self._preview_fn = preview_fn
         self._open_fn = open_fn
+        self._preview_buf: io.BytesIO | None = None
+        self._gif_buf: io.BytesIO | None = None
         self._rebuild()
+
+    def _attachment_files(self) -> list[discord.File]:
+        files: list[discord.File] = []
+        if self._preview_buf is not None:
+            self._preview_buf.seek(0)
+            files.append(discord.File(self._preview_buf, CASE_PREVIEW_ATTACHMENT))
+        if self.show_gif and self._gif_buf is not None:
+            self._gif_buf.seek(0)
+            files.append(discord.File(self._gif_buf, CASE_GIF_ATTACHMENT))
+        return files
+
+    def _media_gallery(self) -> ui.MediaGallery | None:
+        if not self.case_id or self._preview_buf is None:
+            return None
+        gallery = ui.MediaGallery()
+        gallery.add_item(media=f"attachment://{CASE_PREVIEW_ATTACHMENT}")
+        if self.show_gif and self._gif_buf is not None:
+            gallery.add_item(media=f"attachment://{CASE_GIF_ATTACHMENT}")
+        return gallery
+
+    async def _refresh_preview(self) -> None:
+        if not self.case_id or not self._get_db or not self._selected_fn:
+            self._preview_buf = None
+            return
+        selected = self._selected_fn(self._get_db(), self.case_id, self.is_community)
+        if not selected:
+            self._preview_buf = None
+            return
+        from cogs import cases as cases_mod
+
+        _, case_dict, _ = selected
+        self._preview_buf = await cases_mod.build_case_preview_buffer(self._get_db(), case_dict)
 
     def _rebuild(self) -> None:
         self.clear_items()
@@ -129,6 +169,7 @@ class CasesOpenHubLayout(ui.LayoutView):
             total_price = int(case_dict.get("price", 0)) * self.count
 
         bal = Player(self.user_id).get_balance("real")
+        preview_flag = "__opened__" if self.show_gif else preview
         body = hub_panel_body(
             view_mode=self.view_mode,
             case_count=len(cases),
@@ -136,7 +177,7 @@ class CasesOpenHubLayout(ui.LayoutView):
             selected_case=case_dict,
             count=self.count,
             total_price=total_price,
-            item_preview=preview,
+            item_preview=preview_flag,
         )
 
         container = new_container(accent=ACCENT_BRAND)
@@ -150,10 +191,9 @@ class CasesOpenHubLayout(ui.LayoutView):
             ),
         )
 
-        if self.show_gif:
+        gallery = self._media_gallery()
+        if gallery is not None:
             container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
-            gallery = ui.MediaGallery()
-            gallery.add_item(media=f"attachment://{CASE_GIF_ATTACHMENT}")
             container.add_item(gallery)
 
         controls: list[ui.Item] = []
@@ -208,7 +248,11 @@ class CasesOpenHubLayout(ui.LayoutView):
                 return await interaction.response.send_message("Not your panel.", ephemeral=True)
             self.count = n
             self._rebuild()
-            await interaction.response.edit_message(view=self)
+            files = self._attachment_files()
+            await interaction.response.edit_message(
+                attachments=files or [],
+                view=self,
+            )
         return _cb
 
     async def _handle_case_pick(self, interaction: discord.Interaction, raw: str):
@@ -216,10 +260,17 @@ class CasesOpenHubLayout(ui.LayoutView):
             return await interaction.response.send_message("Not your panel.", ephemeral=True)
         if raw == "_none":
             return await interaction.response.defer()
+        await interaction.response.defer()
         self.is_community = raw.startswith("c:")
         self.case_id = raw.split(":", 1)[1]
+        self.show_gif = False
+        self._gif_buf = None
+        await self._refresh_preview()
         self._rebuild()
-        await interaction.response.edit_message(view=self)
+        await interaction.message.edit(
+            attachments=self._attachment_files(),
+            view=self,
+        )
 
     async def _on_toggle(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
@@ -227,8 +278,11 @@ class CasesOpenHubLayout(ui.LayoutView):
         self.view_mode = "community" if self.view_mode == "house" else "house"
         self.case_id = None
         self.is_community = self.view_mode == "community"
+        self._preview_buf = None
+        self._gif_buf = None
+        self.show_gif = False
         self._rebuild()
-        await interaction.response.edit_message(view=self)
+        await interaction.response.edit_message(attachments=[], view=self)
 
     async def _on_open(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
@@ -250,13 +304,14 @@ class CasesOpenHubLayout(ui.LayoutView):
         if err:
             return await interaction.followup.send(err, ephemeral=True)
 
-        self.show_gif = True
+        if self._preview_buf is None:
+            await self._refresh_preview()
+
+        self._gif_buf = gif_buf if isinstance(gif_buf, io.BytesIO) else None
+        self.show_gif = self._gif_buf is not None
         self._rebuild()
-        files = [discord.File(gif_buf, CASE_GIF_ATTACHMENT)] if gif_buf else []
         await interaction.message.edit(
-            content=None,
-            embed=None,
-            attachments=files,
+            attachments=self._attachment_files(),
             view=self,
         )
 

@@ -2427,6 +2427,33 @@ def _hub_item_preview(db: dict, case: dict) -> str:
     )
 
 
+def _case_preview_rows(db: dict, case: dict) -> list[dict]:
+    """Rows for case contents PNG: emoji, name, value, prob %, rarity."""
+    items = _case_items_resolved(db, case.get("item_ids", []))
+    chances = case.get("item_chances", {}) or {}
+    rows = []
+    for it in sorted(items, key=lambda x: -int(x.get("value", 0))):
+        val = int(it.get("value", 0))
+        rows.append({
+            "emoji": str(it.get("emoji", "❓")),
+            "name": str(it.get("name", "Item")),
+            "value": val,
+            "prob": _item_probability(it, items, chances),
+            "rarity": _rarity_label(val, items),
+        })
+    return rows
+
+
+async def build_case_preview_buffer(db: dict, case: dict) -> io.BytesIO:
+    from modules import image_gen
+
+    return await image_gen.render_case_contents_image(
+        case_name=str(case.get("name", "Case")),
+        case_price=float(case.get("price", 0)),
+        rows=_case_preview_rows(db, case),
+    )
+
+
 async def _settle_case_opens(
     user: discord.User | discord.Member,
     case_id: str,
