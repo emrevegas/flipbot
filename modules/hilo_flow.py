@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
 import random
-from typing import Awaitable, Callable
 
 import discord
 from discord.ext import commands
@@ -16,7 +16,7 @@ from Games.hilo import (
     hilo_guess,
     new_hilo_state,
 )
-from modules import flip_balance_cap as bc
+from modules import balance_cap
 from modules import flip_utils as utils
 from modules import image_gen
 
@@ -24,6 +24,31 @@ HILO_GIF = "hilo.gif"
 GAME_TIMEOUT = 120
 
 _hilo_msg_to_user: dict[str, int] = {}
+
+
+def _gif_file(buf: io.BytesIO) -> discord.File:
+    """Fresh attachment each edit (BytesIO is consumed on send)."""
+    return discord.File(io.BytesIO(buf.getvalue()), filename=HILO_GIF)
+
+
+async def _edit_hilo_message(
+    target: discord.Message | discord.Interaction,
+    buf: io.BytesIO,
+    view: discord.ui.LayoutView | None,
+) -> None:
+    payload = dict(
+        content=None,
+        embed=None,
+        attachments=[_gif_file(buf)],
+        view=view,
+    )
+    if isinstance(target, discord.Interaction):
+        if target.response.is_done():
+            await target.edit_original_response(**payload)
+        else:
+            await target.response.edit_message(**payload)
+    else:
+        await target.edit(**payload)
 
 
 def hilo_card_display(card: str) -> str:
@@ -63,11 +88,12 @@ class _HiLoLowerBtn(discord.ui.Button):
 
 
 class _HiLoCashOutBtn(discord.ui.Button):
-    def __init__(self, message_id: str):
+    def __init__(self, message_id: str, *, disabled: bool = False):
         super().__init__(
             label="Cash Out",
             style=discord.ButtonStyle.secondary,
             emoji="💰",
+            disabled=disabled,
             custom_id=f"hilo_c_{message_id}",
         )
         self._message_id = message_id
@@ -112,12 +138,12 @@ def hilo_action_buttons(message_id: str, state: dict) -> list[discord.ui.Item]:
         h_disabled = odds["higher_mult"] == 0
         l_disabled = odds["lower_mult"] == 0
 
+    can_cashout = state.get("round", 0) > 0
     items: list[discord.ui.Item] = [
         _HiLoHigherBtn(message_id, h_label, disabled=h_disabled),
         _HiLoLowerBtn(message_id, l_label, disabled=l_disabled),
+        _HiLoCashOutBtn(message_id, disabled=not can_cashout),
     ]
-    if state.get("round", 0) > 0:
-        items.append(_HiLoCashOutBtn(message_id))
     return items
 
 
@@ -228,15 +254,16 @@ async def start_hilo_command(ctx: commands.Context, amount: float) -> None:
     await db.add_balance(ctx.author.id, -amount, note="hilo bet")
 
     gif = await _render_play(state, ctx.author.display_name, amount)
+    mid = "pending"
     msg = await ctx.send(
-        file=discord.File(gif, HILO_GIF),
-        view=_HiLoView(ctx.author.id, "pending", state),
+        file=_gif_file(gif),
+        view=_HiLoView(ctx.author.id, mid, state),
     )
     mid = str(msg.id)
     _hilo_msg_to_user[mid] = ctx.author.id
     state["message_id"] = mid
     await db.set_game_session(ctx.author.id, "hilo", amount, json.dumps(state))
-    await msg.edit(view=_HiLoView(ctx.author.id, mid, state))
+    await _edit_hilo_message(msg, gif, _HiLoView(ctx.author.id, mid, state))
 
 
 async def start_hilo_interaction(interaction: discord.Interaction, amount: float) -> None:
@@ -251,12 +278,14 @@ async def start_hilo_interaction(interaction: discord.Interaction, amount: float
     await db.add_balance(uid, -amount, note="hilo bet")
 
     gif = await _render_play(state, interaction.user.display_name, amount)
-    await interaction.response.edit_message(
-        attachments=[discord.File(gif, HILO_GIF)],
-        view=_HiLoView(uid, str(interaction.message.id), state),
-    )
     mid = str(interaction.message.id)
     _hilo_msg_to_user[mid] = uid
+    await interaction.response.edit_message(
+        content=None,
+        embed=None,
+        attachments=[_gif_file(gif)],
+        view=_HiLoView(uid, mid, state),
+    )
 
 
 async def _hilo_pick(interaction: discord.Interaction, choice: str) -> None:
@@ -284,29 +313,11 @@ async def _hilo_pick(interaction: discord.Interaction, choice: str) -> None:
 
     await interaction.response.defer()
 
-    if next_card:
-        anim = await image_gen.render_hilo_gif(
-            prev_card,
-            prev_card=prev_card,
-            reveal_card=next_card,
-            animate_reveal=True,
-            multiplier=float(state.get("multiplier", 1.0)),
-            bet=bet,
-            username=interaction.user.display_name,
-        )
-        try:
-            await interaction.message.edit(
-                attachments=[discord.File(anim, HILO_GIF)],
-                view=None,
-            )
-        except Exception:
-            pass
-
     hilo_guess(state, choice)
 
     user = await db.get_user(uid)
     bal = int(float((user or {}).get("balance", 0)))
-    bc.apply_hilo_step_bias(state, uid, "real", bal)
+    balance_cap.apply_hilo_step_bias(state, uid, "real", bal)
 
     result = state.get("last_result")
     mid = str(interaction.message.id)
@@ -323,6 +334,8 @@ async def _hilo_pick(interaction: discord.Interaction, choice: str) -> None:
         gif = await image_gen.render_hilo_gif(
             revealed,
             prev_card=prev_card,
+            reveal_card=revealed,
+            animate_reveal=bool(next_card),
             multiplier=float(state.get("multiplier", 1.0)),
             bet=bet,
             username=interaction.user.display_name,
@@ -330,39 +343,39 @@ async def _hilo_pick(interaction: discord.Interaction, choice: str) -> None:
             result="lose",
             net_change=-bet,
         )
-        await interaction.message.edit(
-            attachments=[discord.File(gif, HILO_GIF)],
-            view=_HiLoResultView(uid, bet),
-        )
+        await _edit_hilo_message(interaction, gif, _HiLoResultView(uid, bet))
         return
 
     if result in ("win", "push"):
         await db.set_game_session(uid, "hilo", bet, json.dumps(state))
-        hist = state.get("history") or []
         revealed = state["deck"][state["card_idx"]]
         status = "WIN" if result == "win" else "PUSH"
         gif = await image_gen.render_hilo_gif(
             revealed,
             prev_card=prev_card,
             reveal_card=revealed,
+            animate_reveal=bool(next_card),
             multiplier=float(state.get("multiplier", 1.0)),
             bet=bet,
             username=interaction.user.display_name,
             status=status,
             result=result,
         )
-        await interaction.message.edit(
-            attachments=[discord.File(gif, HILO_GIF)],
-            view=_HiLoView(uid, mid, state),
-        )
+        await _edit_hilo_message(interaction, gif, _HiLoView(uid, mid, state))
         return
 
     await db.set_game_session(uid, "hilo", bet, json.dumps(state))
-    gif = await _render_play(state, interaction.user.display_name, bet)
-    await interaction.message.edit(
-        attachments=[discord.File(gif, HILO_GIF)],
-        view=_HiLoView(uid, mid, state),
+    card = state["deck"][state["card_idx"]]
+    gif = await image_gen.render_hilo_gif(
+        card,
+        prev_card=prev_card,
+        reveal_card=next_card,
+        animate_reveal=bool(next_card),
+        multiplier=float(state.get("multiplier", 1.0)),
+        bet=bet,
+        username=interaction.user.display_name,
     )
+    await _edit_hilo_message(interaction, gif, _HiLoView(uid, mid, state))
 
 
 async def _hilo_cashout_interaction(interaction: discord.Interaction) -> None:
@@ -390,9 +403,21 @@ async def hilo_cashout_user(
         return
 
     state = json.loads(sess["state"])
+    if state.get("phase") != "playing":
+        err = utils.error_embed("Hi-Lo game already ended.")
+        if interaction:
+            if interaction.response.is_done():
+                return await interaction.followup.send(embed=err, ephemeral=True)
+            return await interaction.response.send_message(embed=err, ephemeral=True)
+        if ctx:
+            return await ctx.send(embed=err)
+        return
+
     if state.get("round", 0) < 1:
         err = utils.error_embed("Win at least one round before cashing out.")
         if interaction:
+            if interaction.response.is_done():
+                return await interaction.followup.send(embed=err, ephemeral=True)
             return await interaction.response.send_message(embed=err, ephemeral=True)
         if ctx:
             return await ctx.send(embed=err)
@@ -402,7 +427,7 @@ async def hilo_cashout_user(
     mult = float(state.get("multiplier", 1.0))
     user = await db.get_user(uid)
     bal = int(float((user or {}).get("balance", 0)))
-    payout = bc.cap_hilo_cashout_payout(uid, "real", bal, int(bet), mult)
+    payout = balance_cap.cap_hilo_cashout_payout(uid, "real", bal, int(bet), mult)
     if payout <= 0:
         state["phase"] = "done"
         state["last_result"] = "lose"
@@ -418,12 +443,23 @@ async def hilo_cashout_user(
             result="lose",
             net_change=-bet,
         )
-        file = discord.File(gif, HILO_GIF)
         view = _HiLoResultView(uid, bet)
         if interaction:
-            await interaction.response.edit_message(attachments=[file], view=view)
+            await _edit_hilo_message(interaction, gif, view)
         elif ctx:
-            await ctx.send(file=file, view=view)
+            msg_id = _hilo_message_for_user(uid)
+            if msg_id:
+                ch = ctx.channel
+                if ch:
+                    try:
+                        msg = await ch.fetch_message(int(msg_id))
+                        await _edit_hilo_message(msg, gif, view)
+                    except Exception:
+                        await ctx.send(file=_gif_file(gif), view=view)
+                else:
+                    await ctx.send(file=_gif_file(gif), view=view)
+            else:
+                await ctx.send(file=_gif_file(gif), view=view)
         return
 
     await db.add_balance(uid, payout, note="hilo cashout")
@@ -447,10 +483,25 @@ async def hilo_cashout_user(
         result="cashout",
         net_change=net,
     )
-    file = discord.File(gif, HILO_GIF)
     view = _HiLoResultView(uid, bet)
     if interaction:
-        await interaction.response.edit_message(attachments=[file], view=view)
+        await _edit_hilo_message(interaction, gif, view)
         _hilo_msg_to_user.pop(str(interaction.message.id), None)
     elif ctx:
-        await ctx.send(file=file, view=view)
+        msg_id = _hilo_message_for_user(uid)
+        if msg_id and ctx.channel:
+            try:
+                msg = await ctx.channel.fetch_message(int(msg_id))
+                await _edit_hilo_message(msg, gif, view)
+                _hilo_msg_to_user.pop(msg_id, None)
+            except Exception:
+                await ctx.send(file=_gif_file(gif), view=view)
+        else:
+            await ctx.send(file=_gif_file(gif), view=view)
+
+
+def _hilo_message_for_user(uid: int) -> str | None:
+    for mid, owner in _hilo_msg_to_user.items():
+        if owner == uid:
+            return mid
+    return None
