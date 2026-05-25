@@ -2660,17 +2660,39 @@ async def render_coinflip_gif(
     CARD_W, CARD_H = 152, 130
 
     if mode == "bot":
-        left_cx = 148
-        right_cx = W - 148
-        center_cx = W // 2
-        card_cy = 158
-        col_hdr_y = 72
-    else:
         left_cx = W // 5
         center_cx = W // 2
         right_cx = 4 * W // 5
         card_cy = 158
+        col_hdr_y = 72
+        center_card_w, center_card_h = 120, 110
+    else:
+        left_cx = W // 4
+        center_cx = W // 2
+        right_cx = 3 * W // 4
+        card_cy = 118 + CARD_H // 2
         col_hdr_y = 58
+
+    def _draw_cf_result_stack(
+        draw: ImageDraw.ImageDraw,
+        cx: int,
+        cy: int,
+        wl: str,
+        pline: str,
+        *,
+        wcol: tuple,
+        pcol: tuple,
+    ) -> None:
+        """WIN/LOSE + pts stacked and centered at (cx, cy) — between Choice and Outcome."""
+        gap = 8
+        b1 = draw.textbbox((0, 0), wl, font=font_lbl)
+        b2 = draw.textbbox((0, 0), pline, font=font_amt)
+        h1, w1 = b1[3] - b1[1], b1[2] - b1[0]
+        h2, w2 = b2[3] - b2[1], b2[2] - b2[0]
+        total_h = h1 + gap + h2
+        y = cy - total_h // 2
+        draw.text((cx - w1 / 2, y), wl, font=font_lbl, fill=wcol)
+        draw.text((cx - w2 / 2, y + h1 + gap), pline, font=font_amt, fill=pcol)
 
     def _make_bot_frame(*, spin_hot: bool, final: bool) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
@@ -2684,34 +2706,47 @@ async def render_coinflip_gif(
             lw = _tw(draw, label, font_cap)
             draw.text((cx - lw / 2, col_hdr_y), label, font=font_cap, fill=MUTED)
 
-        outcome_img = result_img if final else (hot_img if spin_hot else cold_img)
+        spin_img = hot_img if spin_hot else cold_img
         left_border = (GREEN if left_won else RED) if final else (58, 66, 88)
-        right_border = GOLD if final else (72, 80, 100)
+        right_border = GOLD if final else (58, 66, 88)
 
-        img, left_box = _coinflip_paste_card(
+        img, _ = _coinflip_paste_card(
             img, left_cx, card_cy, left_pick,
             card_w=CARD_W, card_h=CARD_H, border=left_border,
         )
-        img, _ = _coinflip_paste_card(
-            img, right_cx, card_cy, outcome_img,
-            card_w=CARD_W, card_h=CARD_H, border=right_border,
-        )
+
+        if final:
+            img, _ = _coinflip_paste_card(
+                img, right_cx, card_cy, result_img,
+                card_w=CARD_W, card_h=CARD_H, border=right_border,
+            )
+        else:
+            img, _ = _coinflip_paste_card(
+                img, center_cx, card_cy, spin_img,
+                card_w=center_card_w, card_h=center_card_h,
+                border=(72, 80, 100),
+            )
+            # Outcome slot (revealed on final frame)
+            img, _ = _coinflip_paste_card(
+                img, right_cx, card_cy, cold_img,
+                card_w=CARD_W, card_h=CARD_H, border=(42, 48, 64),
+                dim=0.2,
+            )
 
         draw = ImageDraw.Draw(img)
 
         if final:
             wl = "WIN" if left_won else "LOSE"
             wcol = GREEN if left_won else RED
-            wl_w = _tw(draw, wl, font_lbl)
             if left_won:
                 pline = f"+{_fmt(left_payout)} pts"
                 pcol = GREEN
             else:
                 pline = f"-{_fmt(left_lost)} pts"
                 pcol = RED
-            pl_w = _tw(draw, pline, font_amt)
-            draw.text((left_cx - wl_w / 2, left_box[1] - 58), wl, font=font_lbl, fill=wcol)
-            draw.text((left_cx - pl_w / 2, left_box[1] - 28), pline, font=font_amt, fill=pcol)
+            _draw_cf_result_stack(
+                draw, center_cx, card_cy, wl, pline, wcol=wcol, pcol=pcol,
+            )
 
         uname = _short(left_name, 18)
         draw.text((20, H - 34), uname, font=font_foot, fill=WHITE)
@@ -2724,6 +2759,38 @@ async def render_coinflip_gif(
 
         return img
 
+    def _draw_cf_side_result(
+        draw: ImageDraw.ImageDraw,
+        cx: int,
+        box: tuple[int, int, int, int],
+        *,
+        won: bool,
+        payout: float,
+        lost: float,
+    ) -> None:
+        """HTW-style result under each player card (not above)."""
+        _x1, _y1, x2, y2 = box
+        col = GREEN if won else RED
+        lbl = "WIN" if won else "LOSE"
+        if won and payout > 0:
+            pline = f"+{_fmt(payout)} pts"
+            usd_val = payout
+        elif lost > 0:
+            pline = f"-{_fmt(lost)} pts"
+            usd_val = lost
+        else:
+            pline, usd_val = "", 0.0
+
+        lw = _tw(draw, lbl, font_lbl)
+        draw.text((cx - lw / 2, y2 - 72), lbl, font=font_lbl, fill=col)
+        if pline:
+            aw = _tw(draw, pline, font_amt)
+            draw.text((cx - aw / 2, y2 - 46), pline, font=font_amt, fill=col)
+            usd = _pts_to_usd(usd_val)
+            line2 = f"${usd:,.2f}"
+            uw = _tw(draw, line2, font_usd)
+            draw.text((cx - uw / 2, y2 - 24), line2, font=font_usd, fill=(*col, 200))
+
     def _make_pvp_frame(*, spin_hot: bool, final: bool) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
         draw = ImageDraw.Draw(img)
@@ -2734,12 +2801,24 @@ async def render_coinflip_gif(
 
         ln, rn = _short(left_name), _short(right_name)
         dim_name = (100, 110, 128)
-        for name, cx, won in ((ln, left_cx, left_won), (rn, right_cx, right_won)):
-            nw = _tw(draw, name, font_name)
-            col = WHITE if (not final or won) else dim_name
-            draw.text((cx - nw / 2, 52), name, font=font_name, fill=col)
+        name_y = 58
+        if final:
+            lw_n = _tw(draw, ln, font_name)
+            rw_n = _tw(draw, rn, font_name)
+            draw.text(
+                (left_cx - lw_n / 2, name_y), ln, font=font_name,
+                fill=WHITE if left_won else dim_name,
+            )
+            draw.text(
+                (right_cx - rw_n / 2, name_y), rn, font=font_name,
+                fill=WHITE if right_won else dim_name,
+            )
+        else:
+            for name, cx in ((ln, left_cx), (rn, right_cx)):
+                nw = _tw(draw, name, font_name)
+                draw.text((cx - nw / 2, name_y), name, font=font_name, fill=WHITE)
 
-        spin_img = result_img if final else (hot_img if spin_hot else cold_img)
+        spin_img = hot_img if spin_hot else cold_img
         left_border = GREEN if final and left_won else (RED if final and not left_won else (58, 66, 88))
         right_border = GREEN if final and right_won else (RED if final and not right_won else (58, 66, 88))
 
@@ -2753,29 +2832,39 @@ async def render_coinflip_gif(
             card_w=CARD_W, card_h=CARD_H, border=right_border,
             dim=loser_dim if final and not right_won else 1.0,
         )
+
+        center_img = result_img if final else spin_img
+        center_border = GOLD if final else (58, 66, 88)
         img, _ = _coinflip_paste_card(
-            img, center_cx, card_cy, spin_img,
-            card_w=120, card_h=110, border=GOLD if final else (58, 66, 88),
+            img, center_cx, card_cy, center_img,
+            card_w=120, card_h=110, border=center_border,
         )
 
         draw = ImageDraw.Draw(img)
+
+        vs_y = card_cy - 14
+        draw.rounded_rectangle(
+            [center_cx - 30, vs_y, center_cx + 30, vs_y + 36],
+            radius=12, fill=(28, 36, 58),
+        )
+        draw.text((center_cx - 12, vs_y + 8), "VS", font=font_name, fill=GOLD)
+
         if final:
-            for cx, won, payout, lost, box in (
-                (left_cx, left_won, left_payout, left_lost, left_box),
-                (right_cx, right_won, right_payout, right_lost, right_box),
-            ):
-                lbl = "WIN" if won else "LOSE"
-                col = GREEN if won else RED
-                pline = f"+{_fmt(payout)} pts" if won and payout > 0 else (f"-{_fmt(lost)} pts" if lost > 0 else "")
-                lw = _tw(draw, lbl, font_lbl)
-                draw.text((cx - lw / 2, box[1] - 30), lbl, font=font_lbl, fill=col)
-                if pline:
-                    aw = _tw(draw, pline, font_amt)
-                    draw.text((cx - aw / 2, box[1] - 52), pline, font=font_amt, fill=col)
+            _draw_cf_side_result(
+                draw, left_cx, left_box,
+                won=left_won, payout=left_payout, lost=left_lost,
+            )
+            _draw_cf_side_result(
+                draw, right_cx, right_box,
+                won=right_won, payout=right_payout, lost=right_lost,
+            )
 
         bet_line = f"Bet {_fmt(bet)} pts"
+        usd_line = f"${_pts_to_usd(bet):,.2f}"
         bw = _tw(draw, bet_line, font_foot)
-        draw.text((W - 20 - bw, H - 28), bet_line, font=font_foot, fill=MUTED)
+        uw = _tw(draw, usd_line, font_usd)
+        draw.text((W - 20 - bw, H - 36), bet_line, font=font_foot, fill=MUTED)
+        draw.text((W - 20 - uw, H - 20), usd_line, font=font_usd, fill=MUTED)
         return img
 
     make_frame = _make_bot_frame if mode == "bot" else _make_pvp_frame
