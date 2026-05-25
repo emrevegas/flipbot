@@ -213,7 +213,12 @@ class CoinflipChallengeLayout(ui.LayoutView):
         else:
             return
         self._mark_done()
-        await interaction.response.edit_message(content=text, embed=None, view=None)
+        body = f"## 🪙 Coin Flip\n{text}"
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            view=challenge_text_layout(body, [], timeout=None),
+        )
 
     async def _on_accept(self, interaction: discord.Interaction):
         if interaction.user.id != self.opponent_id:
