@@ -2897,6 +2897,379 @@ async def render_coinflip_gif(
     return buf
 
 
+# ── Dice GIF (procedural faces, eased roll) ────────────────────────────────────
+
+DICE_SPIN_FRAMES = 28
+DICE_HOLD_MS = 5_000
+
+_DICE_PIP_LAYOUT: dict[int, list[tuple[float, float]]] = {
+    1: [(0.50, 0.50)],
+    2: [(0.30, 0.30), (0.70, 0.70)],
+    3: [(0.30, 0.30), (0.50, 0.50), (0.70, 0.70)],
+    4: [(0.30, 0.30), (0.70, 0.30), (0.30, 0.70), (0.70, 0.70)],
+    5: [(0.30, 0.30), (0.70, 0.30), (0.50, 0.50), (0.30, 0.70), (0.70, 0.70)],
+    6: [
+        (0.30, 0.24), (0.30, 0.50), (0.30, 0.76),
+        (0.70, 0.24), (0.70, 0.50), (0.70, 0.76),
+    ],
+}
+
+_dice_face_cache: dict[tuple[int, int], Image.Image] = {}
+
+
+def _dice_ease_out(t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return 1.0 - (1.0 - t) ** 3.2
+
+
+def _render_dice_face(value: int, size: int = 92) -> Image.Image:
+    value = max(1, min(6, int(value)))
+    key = (value, size)
+    cached = _dice_face_cache.get(key)
+    if cached is not None:
+        return cached.copy()
+
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    pad = 4
+    draw.rounded_rectangle(
+        [pad, pad, size - pad, size - pad],
+        radius=14,
+        fill=(248, 250, 255),
+        outline=(200, 210, 228),
+        width=2,
+    )
+    pip_r = max(5, size // 11)
+    pip_col = (28, 36, 52)
+    for px, py in _DICE_PIP_LAYOUT[value]:
+        cx = int(px * size)
+        cy = int(py * size)
+        draw.ellipse(
+            [cx - pip_r, cy - pip_r, cx + pip_r, cy + pip_r],
+            fill=pip_col,
+        )
+    _dice_face_cache[key] = img.copy()
+    return img
+
+
+def _dice_paste_card(
+    base: Image.Image,
+    cx: int,
+    cy: int,
+    face: Image.Image,
+    *,
+    card_w: int,
+    card_h: int,
+    border: tuple = (58, 66, 88),
+    dim: float = 1.0,
+) -> tuple[Image.Image, tuple[int, int, int, int]]:
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    x1, y1 = cx - card_w // 2, cy - card_h // 2
+    x2, y2 = x1 + card_w, y1 + card_h
+    draw.rounded_rectangle([x1, y1, x2, y2], radius=14, fill=(18, 24, 42), outline=border, width=3)
+    ex = cx - face.width // 2
+    ey = cy - face.height // 2
+    layer.paste(face, (ex, ey), face)
+    if dim < 1.0:
+        r, g, b, a = layer.split()
+        a = a.point(lambda p: int(p * dim) if p else 0)
+        layer = Image.merge("RGBA", (r, g, b, a))
+    out = base.convert("RGBA")
+    out = Image.alpha_composite(out, layer)
+    return out.convert("RGB"), (x1, y1, x2, y2)
+
+
+def _dice_spin_value(frame_i: int, n_frames: int, final: int, *, salt: int) -> int:
+    """Eased roll — fast flicker early, settles on final value."""
+    import random as _rnd
+
+    t = frame_i / max(1, n_frames - 1)
+    eased = _dice_ease_out(t)
+    if frame_i >= n_frames - 2:
+        return final
+    if frame_i >= n_frames - 6 and _rnd.Random(salt + frame_i).random() < eased:
+        return final
+    return _rnd.Random(salt + frame_i * 31).randint(1, 6)
+
+
+async def render_dice_gif(
+    *,
+    mode: str,
+    left_name: str,
+    right_name: str,
+    left_roll: int,
+    right_roll: int,
+    bet: float = 0.0,
+    left_payout: float = 0.0,
+    left_lost: float = 0.0,
+    right_payout: float = 0.0,
+    right_lost: float = 0.0,
+    is_push: bool = False,
+) -> io.BytesIO:
+    """Animated dice — bot: center WIN/LOSE; pvp: HTW-style side results."""
+    W, H = 660, 360
+    BG = (10, 14, 28)
+    PANEL = (16, 22, 40)
+    WHITE = (245, 247, 255)
+    MUTED = (110, 120, 145)
+    GREEN = (46, 213, 96)
+    RED = (231, 76, 60)
+    GOLD = (255, 196, 0)
+    CYAN = (56, 189, 248)
+    loser_dim = 0.42
+    CARD_W, CARD_H = 152, 130
+    DICE_SZ = 92
+
+    font_hdr = _font(14, bold=True)
+    font_cap = _font(11, bold=True)
+    font_name = _font(16, bold=True)
+    font_lbl = _font(26, bold=True)
+    font_amt = _font(18, bold=True)
+    font_foot = _font(15, bold=True)
+    font_usd = _font(13)
+    font_push = _font(28, bold=True)
+
+    left_won = left_payout > 0 and left_lost <= 0 and not is_push
+    right_won = right_payout > 0 and right_lost <= 0 and not is_push
+
+    faces = {v: _render_dice_face(v, DICE_SZ) for v in range(1, 7)}
+
+    def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 8
+
+    def _short(name: str, mx: int = 16) -> str:
+        name = (name or "Player").strip()
+        return (name[: mx - 1] + "…") if len(name) > mx else name
+
+    def _draw_center_result(
+        draw: ImageDraw.ImageDraw,
+        cx: int,
+        cy: int,
+        *,
+        label: str,
+        pline: str,
+        col: tuple,
+        pcol: tuple,
+    ) -> None:
+        gap = 8
+        b1 = draw.textbbox((0, 0), label, font=font_lbl)
+        b2 = draw.textbbox((0, 0), pline, font=font_amt) if pline else (0, 0, 0, 0)
+        h1, w1 = b1[3] - b1[1], b1[2] - b1[0]
+        h2, w2 = (b2[3] - b2[1], b2[2] - b2[0]) if pline else (0, 0)
+        total_h = h1 + (gap + h2 if pline else 0)
+        y = cy - total_h // 2
+        draw.text((cx - w1 / 2, y), label, font=font_lbl, fill=col)
+        if pline:
+            draw.text((cx - w2 / 2, y + h1 + gap), pline, font=font_amt, fill=pcol)
+
+    def _draw_side_result(
+        draw: ImageDraw.ImageDraw,
+        cx: int,
+        box: tuple[int, int, int, int],
+        *,
+        won: bool,
+        payout: float,
+        lost: float,
+    ) -> None:
+        _x1, _y1, x2, y2 = box
+        col = GREEN if won else RED
+        lbl = "WIN" if won else "LOSE"
+        if won and payout > 0:
+            pline = f"+{_fmt(payout)} pts"
+            usd_val = payout
+        elif lost > 0:
+            pline = f"-{_fmt(lost)} pts"
+            usd_val = lost
+        else:
+            pline, usd_val = "", 0.0
+        lw = _tw(draw, lbl, font_lbl)
+        draw.text((cx - lw / 2, y2 - 72), lbl, font=font_lbl, fill=col)
+        if pline:
+            aw = _tw(draw, pline, font_amt)
+            draw.text((cx - aw / 2, y2 - 46), pline, font=font_amt, fill=col)
+            usd = _pts_to_usd(usd_val)
+            line2 = f"${usd:,.2f}"
+            uw = _tw(draw, line2, font_usd)
+            draw.text((cx - uw / 2, y2 - 24), line2, font=font_usd, fill=(*col, 200))
+
+    if mode == "bot":
+        left_cx = W // 5
+        center_cx = W // 2
+        right_cx = 4 * W // 5
+        card_cy = 158
+        col_hdr_y = 72
+    else:
+        left_cx = W // 4
+        center_cx = W // 2
+        right_cx = 3 * W // 4
+        card_cy = 118 + CARD_H // 2
+        col_hdr_y = 58
+
+    def _make_bot_frame(left_v: int, right_v: int, *, final: bool) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([0, 0, W, 44], fill=PANEL)
+        title = "DICE  •  HIGH ROLL WINS"
+        tw = _tw(draw, title, font_hdr)
+        draw.text(((W - tw) / 2, 12), title, font=font_hdr, fill=CYAN)
+
+        for label, cx in ((_short(left_name, 12), left_cx), (_short(right_name, 12), right_cx)):
+            lw = _tw(draw, label, font_cap)
+            draw.text((cx - lw / 2, col_hdr_y), label, font=font_cap, fill=MUTED)
+
+        if final:
+            if is_push:
+                left_border = right_border = GOLD
+            elif left_won:
+                left_border, right_border = GREEN, RED
+            else:
+                left_border, right_border = RED, GREEN
+        else:
+            left_border = right_border = (58, 66, 88)
+
+        img, _ = _dice_paste_card(
+            img, left_cx, card_cy, faces[left_v],
+            card_w=CARD_W, card_h=CARD_H, border=left_border,
+        )
+        img, _ = _dice_paste_card(
+            img, right_cx, card_cy, faces[right_v],
+            card_w=CARD_W, card_h=CARD_H, border=right_border,
+        )
+
+        draw = ImageDraw.Draw(img)
+        if not final:
+            vs_y = card_cy - 14
+            draw.rounded_rectangle(
+                [center_cx - 30, vs_y, center_cx + 30, vs_y + 36],
+                radius=12, fill=(28, 36, 58),
+            )
+            draw.text((center_cx - 12, vs_y + 8), "VS", font=font_name, fill=GOLD)
+        elif is_push:
+            pt = "PUSH"
+            _draw_center_result(
+                draw, center_cx, card_cy, label=pt, pline=f"{_fmt(bet)} pts back",
+                col=GOLD, pcol=GOLD,
+            )
+        else:
+            if left_won:
+                lbl, pline, col, pcol = "WIN", f"+{_fmt(left_payout)} pts", GREEN, GREEN
+            else:
+                lbl, pline, col, pcol = "LOSE", f"-{_fmt(left_lost)} pts", RED, RED
+            _draw_center_result(draw, center_cx, card_cy, label=lbl, pline=pline, col=col, pcol=pcol)
+
+        uname = _short(left_name, 18)
+        draw.text((20, H - 34), uname, font=font_foot, fill=WHITE)
+        bet_line = f"Bet {_fmt(bet)} pts"
+        usd_line = f"${_pts_to_usd(bet):,.2f}"
+        bw = _tw(draw, bet_line, font_foot)
+        uw = _tw(draw, usd_line, font_usd)
+        draw.text((W - 20 - bw, H - 36), bet_line, font=font_foot, fill=MUTED)
+        draw.text((W - 20 - uw, H - 20), usd_line, font=font_usd, fill=MUTED)
+        return img
+
+    def _make_pvp_frame(left_v: int, right_v: int, *, final: bool) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([0, 0, W, 44], fill=PANEL)
+        title = "DICE  •  PVP  •  HIGH ROLL WINS"
+        tw = _tw(draw, title, font_hdr)
+        draw.text(((W - tw) / 2, 12), title, font=font_hdr, fill=CYAN)
+
+        ln, rn = _short(left_name), _short(right_name)
+        dim_name = (100, 110, 128)
+        name_y = 58
+        if final and not is_push:
+            lw_n = _tw(draw, ln, font_name)
+            rw_n = _tw(draw, rn, font_name)
+            draw.text(
+                (left_cx - lw_n / 2, name_y), ln, font=font_name,
+                fill=WHITE if left_won else dim_name,
+            )
+            draw.text(
+                (right_cx - rw_n / 2, name_y), rn, font=font_name,
+                fill=WHITE if right_won else dim_name,
+            )
+        else:
+            for name, cx in ((ln, left_cx), (rn, right_cx)):
+                nw = _tw(draw, name, font_name)
+                draw.text((cx - nw / 2, name_y), name, font=font_name, fill=WHITE)
+
+        left_border = GREEN if final and left_won else (RED if final and not left_won and not is_push else (58, 66, 88))
+        right_border = GREEN if final and right_won else (RED if final and not right_won and not is_push else (58, 66, 88))
+        if final and is_push:
+            left_border = right_border = GOLD
+
+        img, left_box = _dice_paste_card(
+            img, left_cx, card_cy, faces[left_v],
+            card_w=CARD_W, card_h=CARD_H, border=left_border,
+            dim=loser_dim if final and not left_won and not is_push else 1.0,
+        )
+        img, right_box = _dice_paste_card(
+            img, right_cx, card_cy, faces[right_v],
+            card_w=CARD_W, card_h=CARD_H, border=right_border,
+            dim=loser_dim if final and not right_won and not is_push else 1.0,
+        )
+
+        draw = ImageDraw.Draw(img)
+        vs_y = card_cy - 14
+        draw.rounded_rectangle(
+            [center_cx - 30, vs_y, center_cx + 30, vs_y + 36],
+            radius=12, fill=(28, 36, 58),
+        )
+        draw.text((center_cx - 12, vs_y + 8), "VS", font=font_name, fill=GOLD)
+
+        if final:
+            if is_push:
+                pt = "PUSH"
+                pw = _tw(draw, pt, font_push)
+                draw.text((center_cx - pw / 2, card_cy + 52), pt, font=font_push, fill=GOLD)
+            _draw_side_result(
+                draw, left_cx, left_box,
+                won=left_won, payout=left_payout, lost=left_lost,
+            )
+            _draw_side_result(
+                draw, right_cx, right_box,
+                won=right_won, payout=right_payout, lost=right_lost,
+            )
+
+        bet_line = f"Bet {_fmt(bet)} pts"
+        usd_line = f"${_pts_to_usd(bet):,.2f}"
+        bw = _tw(draw, bet_line, font_foot)
+        uw = _tw(draw, usd_line, font_usd)
+        draw.text((W - 20 - bw, H - 36), bet_line, font=font_foot, fill=MUTED)
+        draw.text((W - 20 - uw, H - 20), usd_line, font=font_usd, fill=MUTED)
+        return img
+
+    make_frame = _make_bot_frame if mode == "bot" else _make_pvp_frame
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+    import random as _rnd
+
+    for i in range(DICE_SPIN_FRAMES):
+        t = i / max(1, DICE_SPIN_FRAMES - 1)
+        eased = _dice_ease_out(t)
+        lv = _dice_spin_value(i, DICE_SPIN_FRAMES, left_roll, salt=left_roll * 17)
+        rv = _dice_spin_value(i, DICE_SPIN_FRAMES, right_roll, salt=right_roll * 23 + 7)
+        frames.append(make_frame(lv, rv, final=False))
+        durations.append(int(70 + eased * 130))
+
+    for _ in range(4):
+        frames.append(make_frame(left_roll, right_roll, final=True))
+        durations.append(DICE_HOLD_MS // 4)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True, append_images=frames[1:],
+        duration=durations, loop=0, disposal=2,
+    )
+    buf.seek(0)
+    return buf
+
+
 # ── Case opening reel GIF ─────────────────────────────────────────────────────
 
 CASE_SLOT = 72

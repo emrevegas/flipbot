@@ -16,7 +16,8 @@ CATEGORIES = {
         "fields": [
             ("Coin Flip", f"`{PREFIX}cf <amount> [hot/cold]` — vs bot (animated GIF in message)\n"
                            f"`{PREFIX}cf @user <amount> hot|cold` — PvP (30s accept)"),
-            ("Dice", f"`{PREFIX}dice <amount>`\nRoll a dice — highest roll wins."),
+            ("Dice", f"`{PREFIX}dice <bet>` — vs **{config.BOT_DISPLAY_NAME}** (animated dice GIF)\n"
+                           f"`{PREFIX}dice @user <bet>` — PvP challenge (30s accept)"),
             ("HTW", f"`{PREFIX}htw <bet>` — vs **{config.BOT_DISPLAY_NAME}**\n"
                      f"`{PREFIX}htw @user <bet>` — PvP challenge (30s to accept; Decline & Cancel)."),
             ("Blackjack", f"`{PREFIX}blackjack <amount>`  or  `{PREFIX}bj <amount>`\nPlay blackjack with interactive buttons (Hit / Stand / Double)."),

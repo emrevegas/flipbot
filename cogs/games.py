@@ -1238,37 +1238,37 @@ class Games(commands.Cog):
     # ── Dice ──────────────────────────────────────────────────────────────────
 
     @commands.command(name="dice", aliases=["roll"])
-    async def dice(self, ctx: commands.Context, amount: float):
-        """Roll dice vs house (highest wins). .dice 100"""
+    async def dice(self, ctx: commands.Context):
+        """`.dice <bet>` vs house  •  `.dice @user <bet>` PvP — highest roll wins."""
+        from modules.dice_flow import parse_dice_args, start_dice_bot_game, start_dice_pvp
+
+        opponent, bet = parse_dice_args(ctx)
+        if bet is None or bet <= 0:
+            return await ctx.send(embed=_err(
+                "Usage: `.dice <bet>` vs bot  •  `.dice @user <bet>` PvP"
+            ))
+
         await db.ensure_user(ctx.author.id, ctx.author.name)
-        if not await _check_game(ctx, "dice", amount):
+        if not await _check_game(ctx, "dice", bet):
             return
 
-        player_roll = random.randint(1, 6)
-        rigged = await bc.should_rig_outcome(ctx.author.id, "dice", amount)
-        if rigged:
-            house_roll = random.randint(max(player_roll, 1), 6)
-        else:
-            house_roll = random.randint(1, 6)
+        if opponent is None:
+            return await start_dice_bot_game(ctx, bet)
 
-        if player_roll > house_roll:
-            won, gross, outcome = True, amount * 2, "WIN"
-        elif player_roll == house_roll:
-            won, gross, outcome = False, amount, "TIE"
-        else:
-            won, gross, outcome = False, 0, "LOSS"
+        if opponent.bot:
+            return await ctx.send(embed=_err(
+                "You can't challenge a bot. Use `.dice <bet>` to play vs the house."
+            ))
+        if opponent.id == ctx.author.id:
+            return await ctx.send(embed=_err("You can't challenge yourself."))
 
-        net = await _payout(ctx.author.id, "dice", amount, gross)
-        await _record(ctx.author.id, won, amount, net)
-
-        img_buf = await image_gen.render_game_result_card(
-            "Dice", outcome, amount, net,
-            details={"Your roll": f"🎲 {player_roll}", "House roll": f"🎲 {house_roll}"},
-        )
-        await ctx.send(
-            content=f"{'🏆' if won else ('⚖️' if outcome == 'TIE' else '💔')} **{outcome}!** {ctx.author.mention}",
-            file=discord.File(img_buf, "dice.png"),
-        )
+        await db.ensure_user(opponent.id, opponent.name)
+        opp_row = await db.get_user(opponent.id)
+        if not opp_row or float(opp_row["balance"]) < bet:
+            return await ctx.send(embed=_err(
+                f"{opponent.mention} doesn't have enough balance for this bet."
+            ))
+        await start_dice_pvp(ctx, opponent, bet)
 
     # ── HTW (Head-to-Head Wheel) ──────────────────────────────────────────────
 
