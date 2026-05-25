@@ -1300,19 +1300,29 @@ def render_race_card(rows: list[dict]) -> io.BytesIO:
 # ── Blackjack card assets ──────────────────────────────────────────────────────
 
 CARDS_DIR = Path(__file__).parent.parent / "assets" / "cards"
-_CARD_W, _CARD_H = 71, 100  # target card size
+_CUSTOM_CARD_MIN = 8_000  # skip auto-gen when a real PNG is present
+
+
+def _bj_card_size() -> tuple[int, int]:
+    from modules.card_assets import get_display_size
+    return get_display_size()
+
+
+def clear_bj_card_cache() -> None:
+    _card_cache.clear()
 
 _SUIT_CHAR = {"h": "♥", "d": "♦", "c": "♣", "s": "♠"}
 _SUIT_COLOR = {"h": (195, 30, 30), "d": (195, 30, 30), "c": (15, 15, 15), "s": (15, 15, 15)}
 _RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 _SUITS = ["h", "d", "c", "s"]
+_PLACEHOLDER_W, _PLACEHOLDER_H = 71, 100
 
 
 def _gen_card_image(rank: str, suit: str) -> Image.Image:
     """Generate a single card image with PIL."""
-    img = Image.new("RGBA", (_CARD_W, _CARD_H), (0, 0, 0, 0))
+    img = Image.new("RGBA", (_PLACEHOLDER_W, _PLACEHOLDER_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle([0, 0, _CARD_W - 1, _CARD_H - 1], radius=7,
+    draw.rounded_rectangle([0, 0, _PLACEHOLDER_W - 1, _PLACEHOLDER_H - 1], radius=7,
                             fill=(245, 245, 245), outline=(180, 180, 180), width=1)
     suit_char = _SUIT_CHAR[suit]
     ink = _SUIT_COLOR[suit]
@@ -1326,23 +1336,23 @@ def _gen_card_image(rank: str, suit: str) -> Image.Image:
     except Exception:
         sw = 18
         rw = 18
-    draw.text((_CARD_W // 2 - rw // 2, _CARD_H // 2 - 24), rank, font=f_lg, fill=ink)
-    draw.text((_CARD_W // 2 - sw // 2, _CARD_H // 2 + 4), suit_char, font=f_lg, fill=ink)
+    draw.text((_PLACEHOLDER_W // 2 - rw // 2, _PLACEHOLDER_H // 2 - 24), rank, font=f_lg, fill=ink)
+    draw.text((_PLACEHOLDER_W // 2 - sw // 2, _PLACEHOLDER_H // 2 + 4), suit_char, font=f_lg, fill=ink)
     return img
 
 
 def _gen_back_image() -> Image.Image:
     """Generate a card-back image with PIL."""
-    img = Image.new("RGBA", (_CARD_W, _CARD_H), (0, 0, 0, 0))
+    img = Image.new("RGBA", (_PLACEHOLDER_W, _PLACEHOLDER_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle([0, 0, _CARD_W - 1, _CARD_H - 1], radius=7,
+    draw.rounded_rectangle([0, 0, _PLACEHOLDER_W - 1, _PLACEHOLDER_H - 1], radius=7,
                             fill=(22, 40, 80), outline=(60, 90, 150), width=2)
-    draw.rounded_rectangle([5, 5, _CARD_W - 6, _CARD_H - 6], radius=5,
+    draw.rounded_rectangle([5, 5, _PLACEHOLDER_W - 6, _PLACEHOLDER_H - 6], radius=5,
                             fill=(18, 32, 65))
     # crosshatch pattern
-    for i in range(0, _CARD_W, 6):
+    for i in range(0, _PLACEHOLDER_W, 6):
         draw.line([(5 + i, 5), (5, 5 + i)], fill=(30, 55, 110), width=1)
-        draw.line([(5 + i, _CARD_H - 6), (_CARD_W - 6, 5 + i)], fill=(30, 55, 110), width=1)
+        draw.line([(5 + i, _PLACEHOLDER_H - 6), (_PLACEHOLDER_W - 6, 5 + i)], fill=(30, 55, 110), width=1)
     return img
 
 
@@ -1350,22 +1360,24 @@ def _ensure_card_assets():
     """Generate missing card PNGs into assets/cards/ on first run."""
     CARDS_DIR.mkdir(parents=True, exist_ok=True)
     back_path = CARDS_DIR / "back.png"
-    if not back_path.exists():
+    if not back_path.exists() or back_path.stat().st_size < _CUSTOM_CARD_MIN:
         _gen_back_image().save(back_path, "PNG")
     for rank in _RANKS:
         for suit in _SUITS:
             p = CARDS_DIR / f"{rank}{suit}.png"
-            if not p.exists():
+            if not p.exists() or p.stat().st_size < _CUSTOM_CARD_MIN:
                 _gen_card_image(rank, suit).save(p, "PNG")
 
 
 def _card_key(card_str: str) -> str:
-    """Convert deck card string (e.g. 'A♥', '10♣') to filename key (e.g. 'Ah', '10c')."""
+    """Convert deck card string (e.g. 'A♥', '10♣', '0H') to filename key (e.g. 'Ah', '10c')."""
     if not card_str or card_str == "?":
         return "back"
-    suit_map = {"♥": "h", "♦": "d", "♣": "c", "♠": "s"}
+    suit_map = {"♥": "h", "♦": "d", "♣": "c", "♠": "s", "H": "h", "D": "d", "C": "c", "S": "s"}
     suit_char = card_str[-1]
     rank = card_str[:-1] if len(card_str) > 1 else card_str
+    if rank == "0":
+        rank = "10"
     return f"{rank}{suit_map.get(suit_char, 'h')}"
 
 
@@ -1374,20 +1386,30 @@ _card_cache: dict[str, Image.Image] = {}
 
 def _load_card_img(key: str) -> Image.Image:
     """Load a card image (from assets or auto-generated), cached in memory."""
-    if key in _card_cache:
-        return _card_cache[key]
+    cw, ch = _bj_card_size()
+    cache_key = f"{key}:{cw}x{ch}"
+    if cache_key in _card_cache:
+        return _card_cache[cache_key]
+    from modules.card_assets import resize_card
+
     path = CARDS_DIR / f"{key}.png"
-    if path.exists():
-        img = Image.open(path).convert("RGBA").resize((_CARD_W, _CARD_H), Image.LANCZOS)
+    if path.exists() and path.stat().st_size >= _CUSTOM_CARD_MIN:
+        img = resize_card(Image.open(path).convert("RGBA"), cw, ch)
+    elif path.exists():
+        img = resize_card(Image.open(path).convert("RGBA"), cw, ch)
     else:
         if key == "back":
-            img = _gen_back_image()
+            img = resize_card(_gen_back_image(), cw, ch)
         else:
-            # parse rank/suit from key
             suit_letter = key[-1] if key else "h"
             rank = key[:-1] if len(key) > 1 else key
-            img = _gen_card_image(rank, suit_letter) if suit_letter in _SUIT_CHAR else _gen_back_image()
-    _card_cache[key] = img
+            base = (
+                _gen_card_image(rank, suit_letter)
+                if suit_letter in _SUIT_CHAR
+                else _gen_back_image()
+            )
+            img = resize_card(base, cw, ch)
+    _card_cache[cache_key] = img
     return img
 
 
@@ -1446,9 +1468,11 @@ async def render_bj_gif(
     _ensure_card_assets()
 
     # Layout constants
+    CW0, CH0 = _bj_card_size()
     W = 560
-    INFO_H = 46          # height of info bar at bottom
-    H = 310 + INFO_H     # total height
+    INFO_H = 46
+    dealer_panel_h0 = max(130, CH0 + 40)
+    H = dealer_panel_h0 + 14 + 20 + CH0 + 24 + INFO_H
 
     BG       = (13, 17, 30)
     PANEL    = (18, 24, 42)
@@ -1465,8 +1489,11 @@ async def render_bj_gif(
         "BUST": RED, "LOSS": RED,
     }
 
-    CW, CH = _CARD_W, _CARD_H   # 71 × 100
+    CW, CH = _bj_card_size()
     GAP = 9
+    dealer_panel_h = max(130, CH + 40)
+    player_y = dealer_panel_h + 14
+    player_cards_y = player_y + 20
 
     font_label  = _font(12)
     font_val    = _font(15, bold=True)
@@ -1482,7 +1509,7 @@ async def render_bj_gif(
         draw = ImageDraw.Draw(img)
 
         # ── Dealer panel ──────────────────────────────────────────────────────
-        draw.rectangle([0, 0, W, 130], fill=PANEL)
+        draw.rectangle([0, 0, W, dealer_panel_h], fill=PANEL)
         draw.text((18, 10), "DEALER", font=font_label, fill=MUTED)
         vis = [c for c in dh if c != "?"]
         dv_str = str(_bj_hand_value(vis)) if "?" not in dh else "?"
@@ -1493,17 +1520,19 @@ async def render_bj_gif(
             _paste_card(img, card if not is_hidden else "?", 18 + ci * (CW + GAP), 30, face_down=is_hidden)
 
         # ── Centre divider ────────────────────────────────────────────────────
-        draw.rectangle([0, 130, W, 144], fill=BG)
-        draw.line([(18, 137), (W - 18, 137)], fill=DIVIDER, width=1)
+        div_y1 = dealer_panel_h
+        div_y2 = dealer_panel_h + 14
+        draw.rectangle([0, div_y1, W, div_y2], fill=BG)
+        draw.line([(18, div_y1 + 7), (W - 18, div_y1 + 7)], fill=DIVIDER, width=1)
 
         # ── Player panel ──────────────────────────────────────────────────────
-        draw.text((18, 148), "YOUR HAND", font=font_label, fill=MUTED)
+        draw.text((18, player_y), "YOUR HAND", font=font_label, fill=MUTED)
         pv = _bj_hand_value(ph)
         pv_color = RED if pv > 21 else WHITE
-        draw.text((108, 148), str(pv), font=font_val, fill=pv_color)
+        draw.text((108, player_y), str(pv), font=font_val, fill=pv_color)
 
         for ci, card in enumerate(ph):
-            _paste_card(img, card, 18 + ci * (CW + GAP), 168)
+            _paste_card(img, card, 18 + ci * (CW + GAP), player_cards_y)
 
         # ── Info bar ──────────────────────────────────────────────────────────
         info_y = H - INFO_H

@@ -17,12 +17,22 @@ Place your own card PNG images here to replace the auto-generated ones.
 
 Name the back image: `back.png`
 
-## Recommended Size
+## Import folder (önerilen)
 
-**71 × 100 px** (standard poker card ratio). The bot scales them automatically.
+VegasBet kartlarını `import/` içine **AC.png**, **0H.png**, **CB.png** isimleriyle koy, sonra:
+
+```bash
+python scripts/import_cards.py
+```
+
+Detay: `import/README.md`
+
+## Display size (GIF)
+
+`display.json` — varsayılan **92×128**. Oyun sırasında Pillow (LANCZOS) ile ölçeklenir.
 
 ## Notes
 
-- If any image is missing, the bot auto-generates it with PIL on startup.
-- You can replace individual cards — missing ones still auto-generate.
+- Küçük placeholder PNG'ler (<8 KB) eksik sayılır; büyük özel kartların üzerine yazılmaz.
+- Eksik kartlar PIL ile üretilir.
 - PNG format only.
