@@ -107,7 +107,7 @@ class CaseEmojiManageView(View):
         for iid in case.get("item_ids", []):
             if iid in lib:
                 out.append((iid, lib[iid]))
-        return out
+        return sorted(out, key=lambda x: int(x[1].get("value", 0)))
 
     def _embed(self) -> discord.Embed:
         case = self._case() or {}

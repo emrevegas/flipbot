@@ -9,6 +9,7 @@ import discord
 from discord.ui import Button, Select, View
 
 from modules.constants import FOOTER_TEXT
+from modules.utils import format_balance
 
 CHUNK_SIZE = 25          # options per select
 MAX_SELECTS = 4          # max 4 selects per view (4 × 25 = 100)
@@ -335,7 +336,7 @@ class PaginatedItemListView(View):
                     label=item.get("name", "?")[:50],
                     value=iid,
                     emoji=item.get("emoji", "❓"),
-                    description=f"ID: {iid}"[:100],
+                    description=f"{format_balance(item.get('value', 0), 'real')}  •  ID: {iid}"[:100],
                 )
                 for iid, item in chunk
             ]

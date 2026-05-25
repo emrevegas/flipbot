@@ -105,6 +105,10 @@ def _get_items(db: dict) -> dict:
 def _get_item(db: dict, item_id: str) -> Optional[dict]:
     return db.get("items", {}).get(item_id)
 
+def _sort_item_entries(entries: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+    """Sort (item_id, item) by value ascending — cheapest first."""
+    return sorted(entries, key=lambda x: int(x[1].get("value", 0)))
+
 def _get_case(db: dict, case_id: str) -> Optional[dict]:
     return db.get("cases", {}).get(case_id)
 
@@ -199,7 +203,7 @@ def _divider() -> str:
 
 def _item_library_embed(db: dict, page: int = 0, lang: str = "en") -> discord.Embed:
     items = _get_items(db)
-    all_items = list(items.items())
+    all_items = _sort_item_entries(list(items.items()))
     total = len(all_items)
     per_page = 9
     pages = max(1, -(-total // per_page))
@@ -556,7 +560,7 @@ class ItemLibraryView(View):
 
     async def _on_edit(self, interaction: discord.Interaction):
         db = _get_db()
-        items = list(_get_items(db).items())
+        items = _sort_item_entries(list(_get_items(db).items()))
         if not items:
             return await interaction.response.send_message(_adm("no_items_short", self.lang), ephemeral=True)
         view = ItemSelectView(self.admin_id, items, "edit", self.page, lang=self.lang)
@@ -564,7 +568,7 @@ class ItemLibraryView(View):
 
     async def _on_delete(self, interaction: discord.Interaction):
         db = _get_db()
-        items = list(_get_items(db).items())
+        items = _sort_item_entries(list(_get_items(db).items()))
         if not items:
             return await interaction.response.send_message(_adm("no_items_short", self.lang), ephemeral=True)
         view = ItemSelectView(self.admin_id, items, "delete", self.page, lang=self.lang)
@@ -1018,7 +1022,7 @@ def AddItemToCaseView(
     from modules.case_emoji_picker import PaginatedItemListView
 
     lang = lang or get_user_lang(user_id)
-    entries = list(available)
+    entries = _sort_item_entries(list(available))
 
     async def on_submit(interaction: discord.Interaction, sel_ids: list[str]) -> None:
         db = _get_db()
@@ -1073,7 +1077,9 @@ def RemoveItemFromCaseView(
     from modules.case_emoji_picker import PaginatedItemListView
 
     lang = lang or get_user_lang(user_id)
-    entries = [(item.get("id", item.get("name", "?")), item) for item in items]
+    entries = _sort_item_entries(
+        [(item.get("id", item.get("name", "?")), item) for item in items]
+    )
 
     async def on_submit(interaction: discord.Interaction, sel_ids: list[str]) -> None:
         remove = set(sel_ids)
