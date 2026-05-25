@@ -198,15 +198,12 @@ def challenge_text_layout(
 
             container.add_item(ui.TextDisplay(body))
 
-            container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
-
-            row = ui.ActionRow()
-
-            for ctrl in controls[:5]:
-
-                row.add_item(ctrl)
-
-            container.add_item(row)
+            if controls:
+                container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
+                row = ui.ActionRow()
+                for ctrl in controls[:5]:
+                    row.add_item(ctrl)
+                container.add_item(row)
 
             self.add_item(container)
 
