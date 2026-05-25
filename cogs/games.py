@@ -955,6 +955,7 @@ async def _bj_start_from_interaction(interaction: discord.Interaction, user_id: 
     await db.add_balance(user_id, -bet, note="blackjack re-bet")
 
     pv       = Games._hand_value_static(player)
+    dealer   = state["dealer"]
     gif_buf  = await image_gen.render_bj_gif(
         player, [dealer[0], "?"],
         bet=bet, username=interaction.user.display_name,
@@ -1567,6 +1568,7 @@ class Games(commands.Cog):
                 "username": ctx.author.display_name,
             }
         player = state["player"]
+        dealer = state["dealer"]
         await db.set_game_session(ctx.author.id, "blackjack", amount, json.dumps(state))
         await db.add_balance(ctx.author.id, -amount, note="blackjack bet")
 

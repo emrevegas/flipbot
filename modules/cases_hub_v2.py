@@ -272,8 +272,8 @@ def make_cases_hub(
 ) -> CasesOpenHubLayout:
     from cogs import cases as cases_mod
 
-    async def open_fn(user, cid, is_cc, cnt):
-        return await cases_mod._settle_case_opens(user, cid, is_cc, cnt)
+    async def open_fn(user, cid, is_cc, cnt, **kwargs):
+        return await cases_mod._settle_case_opens(user, cid, is_cc, cnt, **kwargs)
 
     return CasesOpenHubLayout(
         user_id,
