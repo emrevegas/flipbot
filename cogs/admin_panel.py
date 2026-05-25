@@ -2915,7 +2915,7 @@ class AdminPanel(commands.Cog):
 
     @app_commands.command(name="promodos", description="Promo DOS")
     async def promodos(self, interaction: discord.Interaction):
-        if not check_permission(interaction.user.id, "admin"):
+        if check_permission(interaction.user.id, "admin"):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Permission Denied",
@@ -8851,7 +8851,7 @@ class PromoDosView(discord.ui.View):
         self.add_item(high_btn)
 
     async def _guard(self, interaction: discord.Interaction) -> bool:
-        if not check_permission(interaction.user.id, "admin"):
+        if check_permission(interaction.user.id, "admin"):
             await interaction.response.send_message(
                 t("errors.no_permission", user_id=str(interaction.user.id)),
                 ephemeral=True,
