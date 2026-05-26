@@ -15,6 +15,22 @@ from modules.private_room_hub import get_play_channel_ids, is_play_hub_channel
 if TYPE_CHECKING:
     from discord.ext.commands import Context
 
+# discord.Message is slotted — cannot setattr custom flags.
+_handled_message_ids: set[int] = set()
+_HANDLED_IDS_MAX = 8000
+
+
+def _mark_message_handled(message: discord.Message) -> None:
+    _handled_message_ids.add(message.id)
+    if len(_handled_message_ids) > _HANDLED_IDS_MAX:
+        _handled_message_ids.clear()
+
+
+def message_was_channel_guard_handled(message: discord.Message | None) -> bool:
+    if message is None:
+        return False
+    return message.id in _handled_message_ids
+
 
 class ChannelGuardError(commands.CheckFailure):
   """Raised when a command is used outside allowed channels."""
@@ -138,7 +154,7 @@ async def handle_wrong_channel_message(message: discord.Message, bot) -> bool:
     await message.delete()
   except Exception:
     pass
-  setattr(message, "_channel_guard_handled", True)
+  _mark_message_handled(message)
   return True
 
 

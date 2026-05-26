@@ -137,7 +137,9 @@ class FlipBot(commands.Bot):
             from modules.channel_guard import ChannelGuardError
 
             if isinstance(error, ChannelGuardError):
-                if error.text and not getattr(ctx.message, "_channel_guard_handled", False):
+                from modules.channel_guard import message_was_channel_guard_handled
+
+                if error.text and not message_was_channel_guard_handled(ctx.message):
                     try:
                         await ctx.send(error.text, delete_after=12)
                     except Exception:
