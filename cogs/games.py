@@ -1613,6 +1613,121 @@ class Games(commands.Cog):
 
         await start_slide(ctx, bet)
 
+    # ── Market Predict ─────────────────────────────────────────────────────
+
+    @commands.command(name="market", aliases=["predict"])
+    async def market(self, ctx: commands.Context, amount: str, side: str):
+        """Market Predict — .market <bet> up|down (or u|d). Win pays ~1.96x."""
+        bet = await _resolve_ctx_bet(ctx, amount)
+        if bet is None:
+            return
+        if not await _check_game(ctx, "market_predict", bet):
+            return
+
+        s = (side or "").strip().lower()
+        if s in ("up", "u"):
+            player_side = "UP"
+        elif s in ("down", "d"):
+            player_side = "DOWN"
+        else:
+            return await ctx.send(embed=_err("Pick `up/u` or `down/d`."))
+
+        rigged = await bc.should_rig_outcome(ctx.author.id, "market_predict", bet)
+        if rigged:
+            result_side = "DOWN" if player_side == "UP" else "UP"
+        else:
+            result_side = random.choice(["UP", "DOWN"])
+
+        won = result_side == player_side
+        gross = bet * 2 if won else 0.0
+        net = await _payout(ctx.author.id, "market_predict", bet, gross)
+
+        await _record(
+            ctx.author.id,
+            won,
+            bet,
+            net,
+            game_id="market_predict",
+            user=ctx.author,
+            client=ctx.bot,
+            guild_id=ctx.guild.id if ctx.guild else None,
+        )
+
+        gif = await image_gen.render_market_predict_gif(
+            username=ctx.author.display_name,
+            bet=bet,
+            player_side=player_side,
+            result_side=result_side,
+            won=won,
+            payout=net,
+        )
+
+        from modules.game_media_v2 import gif_result_layout
+
+        async def _market_rebet_from_interaction(
+            interaction: discord.Interaction,
+            user_id: int,
+            bet: float,
+        ) -> None:
+            if not await _check_game_interaction(
+                interaction, user_id, "market_predict", bet
+            ):
+                return
+
+            await db.ensure_user(user_id, interaction.user.name)
+            await interaction.response.defer()
+
+            rigged2 = await bc.should_rig_outcome(user_id, "market_predict", bet)
+            if rigged2:
+                result_side2 = "DOWN" if player_side == "UP" else "UP"
+            else:
+                result_side2 = random.choice(["UP", "DOWN"])
+
+            won2 = result_side2 == player_side
+            gross2 = bet * 2 if won2 else 0.0
+            net2 = await _payout(user_id, "market_predict", bet, gross2)
+
+            await _record(
+                user_id,
+                won2,
+                bet,
+                net2,
+                game_id="market_predict",
+                user=interaction.user if isinstance(interaction.user, discord.Member) else None,
+                client=interaction.client,
+                guild_id=interaction.guild.id if interaction.guild else None,
+            )
+
+            gif2 = await image_gen.render_market_predict_gif(
+                username=interaction.user.display_name,
+                bet=bet,
+                player_side=player_side,
+                result_side=result_side2,
+                won=won2,
+                payout=net2,
+            )
+
+            layout2 = gif_result_layout(
+                "market.gif",
+                user_id=user_id,
+                bet=bet,
+                rebet_cb=_market_rebet_from_interaction,
+            )
+            await interaction.message.edit(
+                content=None,
+                embed=None,
+                attachments=[discord.File(gif2, "market.gif")],
+                view=layout2,
+            )
+
+        layout = gif_result_layout(
+            "market.gif",
+            user_id=ctx.author.id,
+            bet=bet,
+            rebet_cb=_market_rebet_from_interaction,
+        )
+        await ctx.send(file=discord.File(gif, "market.gif"), view=layout)
+
     # ── Slots ─────────────────────────────────────────────────────────────────
 
     SLOT_SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "⭐", "💎", "7️⃣"]

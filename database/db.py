@@ -274,7 +274,8 @@ async def _init_tables():
             ('crystals',  'Crystals',   1, 10, 100000, 0.05, 0.02),
             ('chicken_road', 'Chicken Road', 1, 10, 100000, 0.05, 0.02),
             ('slide',     'Slide',      1, 10, 100000, 0.00, 0.0275),
-            ('jackpot',   'Jackpot',    1, 10, 100000, 0.00, 0.02);
+            ('jackpot',   'Jackpot',    1, 10, 100000, 0.00, 0.02),
+            ('market_predict', 'Market Predict', 1, 10, 100000, 0.00, 0.02);
     """)
     await db.execute(
         "INSERT OR IGNORE INTO games (id, name, enabled, min_bet, max_bet, rigged_chance, house_edge) "

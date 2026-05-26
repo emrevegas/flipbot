@@ -4462,3 +4462,169 @@ async def render_jackpot_spin_gif(
     return buf
 
 
+
+# ── Market Predict (UP/DOWN) ───────────────────────────────────────────────
+
+async def render_market_predict_gif(
+    *,
+    username: str,
+    bet: float,
+    player_side: str,  # "UP" or "DOWN"
+    result_side: str,  # "UP" or "DOWN"
+    won: bool,
+    payout: float,  # credited amount (gross win * (1 - house_edge))
+) -> io.BytesIO:
+    """Market Predict — center horizontal line; final ends UP or DOWN.
+
+    UI inside GIF:
+    - Top app bar: "MARKET" + "PREDICT"
+    - Middle: animated price line w/ center mark
+    - Bottom: username + bet
+    """
+    W, H = 680, 360
+    HDR_H = 56
+    INFO_H = 44
+    PAD_L = 18
+    PAD_R = 18
+
+    CHART_Y1 = HDR_H + 10
+    CHART_Y2 = H - INFO_H - 16
+    CHART_H = CHART_Y2 - CHART_Y1
+    Y_CENTER = CHART_Y1 + CHART_H // 2
+
+    BG = (8, 12, 24)
+    PANEL = (14, 20, 38)
+    MUTED = (110, 120, 145)
+    WHITE = (245, 247, 255)
+    CYAN = (56, 189, 248)
+    GOLD = (255, 196, 0)
+    GREEN = (46, 213, 96)
+    RED = (231, 76, 60)
+
+    if player_side not in ("UP", "DOWN"):
+        player_side = "UP"
+    if result_side not in ("UP", "DOWN"):
+        result_side = "DOWN"
+
+    line_col = GREEN if won else RED
+
+    font_hdr = _font(16, bold=True)
+    font_sm = _font(12)
+    font_name = _font(14, bold=True)
+    font_bet = _font(13, bold=True)
+    font_side = _font(34, bold=True)
+    font_win = _font(18, bold=True)
+
+    def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 8
+
+    # Build random-walk series, then force the last point up/down.
+    n_points = 46
+    amp = min(120, CHART_H // 2 - 10)
+    final_off = int(amp * 0.86)
+
+    series: list[float] = []
+    v = 0.0
+    for i in range(n_points - 1):
+        # random drift + slight damping towards center
+        v += random.uniform(-0.22, 0.22)
+        v *= 0.95
+        v = max(-1.0, min(1.0, v))
+        series.append(v)
+
+    # Force final direction (UP => above center => smaller y)
+    final_v = -final_off / amp if result_side == "UP" else final_off / amp
+    series.append(final_v)
+
+    xs = [PAD_L + i * (W - PAD_L - PAD_R) / (n_points - 1) for i in range(n_points)]
+
+    def _y(val: float) -> float:
+        y = Y_CENTER + (val * amp)
+        # clamp into chart area
+        return max(CHART_Y1 + 6, min(CHART_Y2 - 6, y))
+
+    points = [(int(xs[i]), int(_y(series[i]))) for i in range(n_points)]
+
+    n_anim = 22
+    spin_frame_ms = 230
+    result_hold_ms = 900
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+
+    for fi in range(n_anim):
+        k = int(1 + (fi + 1) * (n_points - 1) / n_anim)
+        k = max(2, min(n_points, k))
+
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+
+        # Header app bar
+        draw.rectangle([0, 0, W, HDR_H], fill=PANEL)
+        draw.text((W / 2 - 140, 18), "MARKET", font=font_hdr, fill=CYAN)
+        draw.text((W / 2 - 70, 18), "PREDICT", font=font_hdr, fill=WHITE)
+
+        # Center mark
+        draw.line([(PAD_L, Y_CENTER), (W - PAD_R, Y_CENTER)], fill=GOLD, width=3)
+
+        # Chart grid (subtle)
+        for t in range(1, 4):
+            yy = CHART_Y1 + t * CHART_H / 4
+            draw.line([(PAD_L, int(yy)), (W - PAD_R, int(yy))], fill=(22, 30, 48), width=1)
+
+        # Price line
+        draw.line(points[:k], fill=line_col, width=5)
+        # endpoint dot
+        ex, ey = points[k - 1]
+        draw.ellipse([ex - 7, ey - 7, ex + 7, ey + 7], fill=line_col, outline=(255, 255, 255), width=2)
+
+        # Bottom info bar
+        draw.rectangle([0, H - INFO_H, W, H], fill=(8, 12, 22))
+        draw.line([(0, H - INFO_H), (W, H - INFO_H)], fill=(35, 45, 72), width=1)
+        uname = (username[:20] + "…") if len(username) > 20 else username
+        draw.text((18, H - INFO_H + 14), uname, font=font_name, fill=MUTED)
+        bet_s = f"Bet {_fmt(bet)} pts"
+        bw = _tw(draw, bet_s, font_bet)
+        draw.text((W - 18 - bw, H - INFO_H + 14), bet_s, font=font_bet, fill=MUTED)
+
+        frames.append(img)
+        durations.append(spin_frame_ms)
+
+    # Final frame with win summary
+    img = frames[-1].copy()
+    draw = ImageDraw.Draw(img)
+    endx, endy = points[-1]
+
+    side_label = "UP" if result_side == "UP" else "DOWN"
+    label_y = Y_CENTER - 60 if result_side == "UP" else Y_CENTER + 18
+    draw.text((W / 2 - _tw(draw, side_label, font_side) / 2, label_y), side_label, font=font_side, fill=WHITE)
+
+    if won:
+        win_txt = "WIN"
+        draw.text((W / 2 - _tw(draw, win_txt, font_win) / 2, label_y + 46), win_txt, font=font_win, fill=GREEN)
+        pay_txt = f"+{_fmt(payout)} pts"
+        draw.text((W / 2 - _tw(draw, pay_txt, font_win) / 2, label_y + 72), pay_txt, font=font_win, fill=GREEN)
+    else:
+        lose_txt = "LOSE"
+        draw.text((W / 2 - _tw(draw, lose_txt, font_win) / 2, label_y + 46), lose_txt, font=font_win, fill=RED)
+
+    frames.append(img)
+    durations.append(result_hold_ms)
+    frames.append(img.copy())
+    durations.append(80)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=1,
+        optimize=False,
+    )
+    buf.seek(0)
+    return buf
+

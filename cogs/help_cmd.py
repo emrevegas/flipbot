@@ -25,6 +25,7 @@ CATEGORIES = {
             ("Hi-Lo", f"`{PREFIX}hilo <amount>`\nAnimated cards — **Higher** / **Lower** / **Cash Out** buttons on the game message."),
             ("Limbo", f"`{PREFIX}limbo <amount> <target_multiplier>`\nAnimated multiplier — land at or above your target to win."),
             ("Slide", f"`{PREFIX}slide <amount>`\nMultiplier strip slides left — pointer picks your payout (GIF result holds 20s)."),
+            ("Market Predict", f"`{PREFIX}market <amount> up|down` (or `u|d`)\nCenter line chart — if rigged, animation flips against your bet.\nWin pays ~**1.96x** (after 2% fee)."),
             ("Jackpot", f"In the **Jackpot room** (admin-set channel):\n"
                          f"`{PREFIX}jp <bet>` or `{PREFIX}jackpot <bet>` — join the pool (chance = your bet ÷ total).\n"
                          f"`{PREFIX}canceljp` — leave before spin (refund). Min **2** players to start."),

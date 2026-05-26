@@ -25,6 +25,7 @@ _GAME_DEFAULT_NAMES = {
     "blackjack": "Blackjack",
     "limbo": "Limbo",
     "slide": "Slide",
+    "market_predict": "Market Predict",
     "jackpot": "Jackpot",
     "slot": "Slots",
     "slots": "Slots",

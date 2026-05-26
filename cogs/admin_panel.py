@@ -380,6 +380,30 @@ def _ensure_slide_game_entry(games_data: dict) -> dict:
     return games_data
 
 
+def _ensure_market_predict_game_entry(games_data: dict) -> dict:
+    if not isinstance(games_data, dict):
+        games_data = {}
+    mp = games_data.get("market_predict")
+    if not isinstance(mp, dict):
+        mp = {}
+    mp.setdefault("name", "Market Predict")
+    mp.setdefault("emoji", "📈")
+    mp.setdefault("enabled", True)
+    mp.setdefault(
+        "description",
+        "Predict UP/DOWN — center line breaks. If rigged, animation flips against your bet."
+    )
+    mp.setdefault("min_bet", 10)
+    mp.setdefault("max_bet", 10000)
+    mp.setdefault("house_edge", 2.0)  # 2% => 1.96x net on win (gross pays 2x)
+    mp.setdefault("rigged_chance", 0.0)
+    mp.setdefault("category", "table_games")
+    mp.setdefault("created_at", int(time.time()))
+    mp.setdefault("last_modified", int(time.time()))
+    games_data["market_predict"] = mp
+    return games_data
+
+
 def _ensure_jackpot_game_entry(games_data: dict) -> dict:
     if not isinstance(games_data, dict):
         games_data = {}
@@ -609,6 +633,7 @@ def _ensure_all_game_entries(games_data: dict) -> dict:
     games_data = _ensure_htw_game_entry(games_data)
     games_data = _ensure_limbo_game_entry(games_data)
     games_data = _ensure_slide_game_entry(games_data)
+    games_data = _ensure_market_predict_game_entry(games_data)
     games_data = _ensure_jackpot_game_entry(games_data)
     games_data = _ensure_slot_game_entry(games_data)
     games_data = _ensure_case_opening_game_entry(games_data)
@@ -4775,7 +4800,7 @@ class _JackpotChannelView(discord.ui.View):
                 ephemeral=True,
             )
 
-    @discord.ui.button(label="Clear Channel", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="Clear Channel", style=discord.ButtonStyle.danger, row=2)
     async def clear_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
         from modules.jackpot_store import get_settings, save_settings
 
@@ -4905,6 +4930,8 @@ class GameDetailView(discord.ui.View):
             self.add_item(_LimboRiggedButton())
         elif game_id == "slide":
             self.add_item(_SlideRiggedButton())
+        elif game_id == "market_predict":
+            self.add_item(_MarketPredictRiggedButton())
         elif game_id == "blackjack":
             self.add_item(_BlackjackRiggedButton())
         elif game_id == "live_blackjack":
@@ -5112,6 +5139,69 @@ class _LimboRiggedButton(discord.ui.Button):
         games_data = _ensure_limbo_game_entry(get_data("server/games") or {})
         set_data("server/games", games_data)
         await interaction.response.send_modal(LimboRiggedModal(games_data.get("limbo", {})))
+
+
+class MarketPredictRiggedModal(discord.ui.Modal):
+    """Market Predict rigged_chance ayarını değiştiren modal."""
+
+    def __init__(self, current_info: dict):
+        super().__init__(title="Market Predict — Rigged Chance", timeout=300)
+        if not isinstance(current_info, dict):
+            current_info = {}
+        self.rigged_chance_input = discord.ui.TextInput(
+            label="Rigged Chance (%) — force opposite direction",
+            placeholder="0.0",
+            default=str(current_info.get("rigged_chance", 0.0)),
+            required=True,
+            max_length=8,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.rigged_chance_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            rigged = float(self.rigged_chance_input.value.replace(",", "."))
+            if rigged < 0 or rigged > 100:
+                raise ValueError
+        except (TypeError, ValueError):
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="❌ Invalid Input",
+                    description="Rigged chance must be a number between 0 and 100.",
+                    color=discord.Color.red(),
+                ),
+                ephemeral=True,
+            )
+
+        games_data = _ensure_market_predict_game_entry(get_data("server/games") or {})
+        mp = games_data.get("market_predict", {})
+        mp["rigged_chance"] = round(rigged, 4)
+        mp["last_modified"] = int(time.time())
+        games_data["market_predict"] = mp
+        await _persist_games_panel(games_data)
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Market Predict Rigged Chance Güncellendi",
+                description=f"📈 Rigged Chance: **{rigged}%**",
+                color=discord.Color.green(),
+            ),
+            ephemeral=True,
+        )
+
+
+class _MarketPredictRiggedButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="📈 Market Predict Rigged %", style=discord.ButtonStyle.danger, row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        games_data = _ensure_market_predict_game_entry(get_data("server/games") or {})
+        set_data("server/games", games_data)
+        await interaction.response.send_modal(
+            MarketPredictRiggedModal(games_data.get("market_predict", {}))
+        )
 
 
 class SlideRiggedModal(discord.ui.Modal):
@@ -8380,6 +8470,7 @@ _PROMO_GAMES = [
     ("HiLo",     "hilo"),
     ("Limbo",    "limbo"),
     ("Slide",    "slide"),
+    ("Market Predict", "market_predict"),
     ("Jackpot",  "jackpot"),
     ("Crystals", "crystals"),
     ("Towers",   "towers"),
