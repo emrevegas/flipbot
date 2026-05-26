@@ -4097,6 +4097,23 @@ class PromoCodeInputModal(discord.ui.Modal, title="🎟️ Redeem Promo Code"):
             member = interaction.guild.get_member(interaction.user.id) or member
         if not isinstance(member, discord.Member):
             member = None
+        if interaction.guild:
+            from modules.server_tag import check_server_tag
+
+            ok_tag, tag_err = await check_server_tag(
+                member if isinstance(member, discord.Member) else None,
+                interaction.guild,
+                self.user_id,
+            )
+            if not ok_tag:
+                embed = discord.Embed(
+                    title="❌ Promo Code Failed",
+                    description=tag_err,
+                    color=discord.Color.red(),
+                )
+                embed.set_footer(text="Vegas Casino | Promo Code System")
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+
         ok, err, template = promo_engine.redeem_promo_code(
             self.user_id,
             code,

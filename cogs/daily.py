@@ -8,6 +8,7 @@ from discord.ext import commands
 from database import db
 from modules import daily_rewards as daily
 from modules import flip_utils as utils
+from modules import server_tag
 from modules.database import check_permission
 from modules.player import Player
 
@@ -43,11 +44,11 @@ class Daily(commands.Cog):
 
         await db.ensure_user(ctx.author.id, ctx.author.name)
 
-        ok_status, status_err = daily.check_daily_status(
+        ok_req, req_err = await daily.check_daily_requirements(
             ctx.author, ctx.guild, ctx.author.id,
         )
-        if not ok_status:
-            return await ctx.send(embed=utils.error_embed(status_err), delete_after=12)
+        if not ok_req:
+            return await ctx.send(embed=utils.error_embed(req_err), delete_after=12)
 
         can, remain = daily.can_claim(ctx.author.id, cfg)
         if not can:
@@ -106,6 +107,7 @@ class Daily(commands.Cog):
                 "`.set daily booster <pts>` — server booster reward\n"
                 "`.set daily <role_id> <pts>` — role tier reward\n"
                 "`.set daily status <keywords>` — custom status requirement\n"
+                "`.set daily tag on|off` — Server Tag required (promo + daily)\n"
                 "`.set daily show` — current settings",
             )
         )
@@ -126,9 +128,32 @@ class Daily(commands.Cog):
         head = args[0].lower()
 
         if head in ("show", "list", "config"):
-            return await ctx.send(
-                embed=utils.info_embed("Daily settings", daily.format_config_summary())
-            )
+            summary = daily.format_config_summary()
+            tag_on = server_tag.require_server_tag_enabled()
+            summary += f"\n\n**Server tag required:** {'Yes (promo + daily)' if tag_on else 'No'}"
+            return await ctx.send(embed=utils.info_embed("Daily settings", summary))
+
+        if head == "tag":
+            if len(args) < 2:
+                return await ctx.send(
+                    embed=utils.error_embed("Usage: `.set daily tag on` or `.set daily tag off`")
+                )
+            mode = args[1].lower()
+            if mode in ("on", "enable", "true", "1"):
+                server_tag.set_require_server_tag(True)
+                return await ctx.send(
+                    embed=utils.success_embed(
+                        "Server Tag is now **required** for `.daily` and `.redeem`."
+                    )
+                )
+            if mode in ("off", "disable", "false", "0"):
+                server_tag.set_require_server_tag(False)
+                return await ctx.send(
+                    embed=utils.success_embed(
+                        "Server Tag requirement **disabled** for `.daily` and `.redeem`."
+                    )
+                )
+            return await ctx.send(embed=utils.error_embed("Use `on` or `off`."))
 
         if head == "booster":
             if len(args) < 2:

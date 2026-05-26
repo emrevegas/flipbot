@@ -160,11 +160,31 @@ def set_status_requirement(keywords: str) -> None:
     save_config(cfg)
 
 
+async def check_daily_requirements(
+    member: discord.Member | None,
+    guild: discord.Guild | None,
+    user_id: int,
+) -> tuple[bool, str]:
+    from modules.server_tag import check_server_tag
+
+    ok_tag, tag_err = await check_server_tag(member, guild, user_id)
+    if not ok_tag:
+        return False, tag_err
+
+    cfg = get_config()
+    req = (cfg.get("status_contains") or "").strip()
+    if not req:
+        return True, ""
+    member = resolve_member_for_status(guild, user_id, member)
+    return check_status_requirement(member, req)
+
+
 def check_daily_status(
     member: discord.Member | None,
     guild: discord.Guild | None,
     user_id: int,
 ) -> tuple[bool, str]:
+    """Sync status-only check (prefer check_daily_requirements in cogs)."""
     cfg = get_config()
     req = (cfg.get("status_contains") or "").strip()
     if not req:

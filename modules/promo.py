@@ -831,7 +831,11 @@ def redeem_promo_code(
     max_uses = int(template.get("max_uses", 0))
     used_by = template.get("used_by", [])
     if max_uses > 0 and len(used_by) >= max_uses:
-        return False, "This promo code has reached its usage limit.", {}
+        return (
+            False,
+            f"This promo code is **full** — all **{max_uses}** uses have been claimed.",
+            {},
+        )
 
     user_id_str = str(user_id)
     if user_id_str in used_by:

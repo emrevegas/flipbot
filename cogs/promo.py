@@ -21,6 +21,13 @@ class Promo(commands.Cog):
         await db.ensure_user(ctx.author.id, ctx.author.name)
 
         member = ctx.author if isinstance(ctx.author, discord.Member) else None
+        if ctx.guild:
+            from modules.server_tag import check_server_tag
+
+            ok_tag, tag_err = await check_server_tag(member, ctx.guild, ctx.author.id)
+            if not ok_tag:
+                return await ctx.send(embed=utils.error_embed(tag_err), delete_after=12)
+
         ok, err, template = promo_engine.redeem_promo_code(
             ctx.author.id,
             code,
