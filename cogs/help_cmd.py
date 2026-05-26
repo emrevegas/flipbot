@@ -81,6 +81,7 @@ CATEGORIES = {
         "description": "Redeem promo codes and track deposit bonuses.",
         "fields": [
             ("Redeem Promo", f"`{PREFIX}redeem <CODE>`\nRedeem a promo code for free points."),
+            ("Daily Reward", f"`{PREFIX}daily`\nClaim daily points (status required if configured)."),
             ("Active Bonus", f"`{PREFIX}bonus`\nView your current active deposit bonus."),
             ("Available Bonuses", f"`{PREFIX}bonuses`\nList all available deposit bonuses."),
             ("Wager Progress", f"`{PREFIX}wager`\nCheck your bonus wager progress."),

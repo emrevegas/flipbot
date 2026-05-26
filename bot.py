@@ -26,6 +26,7 @@ COGS = [
     "cogs.economy",
     "cogs.admin",
     "cogs.promo",
+    "cogs.daily",
     "cogs.affiliate",
     "cogs.rakeback",
     "cogs.admin_panel",      # VegasBot /panel (full hub)
