@@ -218,7 +218,7 @@ class HelpCog(commands.Cog):
                 return await ctx.send(embed=embed, view=view)
         await ctx.send(embed=_main_embed(), view=_HelpMainView())
 
-    @commands.command(name="games", aliases=["game"])
+    @commands.command(name="games", aliases=["g"])
     async def games_cmd(self, ctx: commands.Context):
         """List game commands quickly. .games"""
         g = CATEGORIES["games"]
