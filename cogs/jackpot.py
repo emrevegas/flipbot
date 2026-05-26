@@ -31,6 +31,10 @@ class Jackpot(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
+        from modules.channel_guard import handle_wrong_channel_message
+
+        if await handle_wrong_channel_message(message, self.bot):
+            return
         content = (message.content or "").strip()
         if not content:
             await on_jackpot_channel_message(message)

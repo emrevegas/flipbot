@@ -1,0 +1,194 @@
+"""Restrict user commands to play hub channels; jackpot room allows only .jp / .canceljp."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import discord
+from discord.ext import commands
+
+import config
+from modules.database import check_permission, is_super_admin
+from modules.jackpot_store import is_jackpot_channel
+from modules.private_room_hub import get_play_channel_ids, is_play_hub_channel
+
+if TYPE_CHECKING:
+    from discord.ext.commands import Context
+
+
+class ChannelGuardError(commands.CheckFailure):
+  """Raised when a command is used outside allowed channels."""
+
+  def __init__(self, message: str):
+    self.text = message
+    super().__init__(message)
+
+
+def is_channel_staff(member: discord.abc.User) -> bool:
+  if is_super_admin(member.id):
+    return True
+  if isinstance(member, discord.Member):
+    if member.guild_permissions.administrator:
+      return True
+  uid = str(member.id)
+  if not check_permission(uid, "admin"):
+    return True
+  if not check_permission(uid, "cashier"):
+    return True
+  return False
+
+
+def is_jackpot_prefix(content: str) -> bool:
+  lower = (content or "").strip().lower()
+  p = config.PREFIX.lower()
+  if not lower.startswith(p):
+    return False
+  rest = lower[len(p) :].lstrip()
+  if not rest:
+    return False
+  head = rest.split()[0]
+  if head in ("jackpot", "jp", "canceljp"):
+    return True
+  if rest.startswith("cancel jackpot"):
+    return True
+  return False
+
+
+def format_play_channel_mentions(guild_id: str, guild: discord.Guild | None) -> str:
+  ids = get_play_channel_ids(guild_id)
+  if not ids:
+    return "*(play kanalları henüz kurulmadı — yetkililere başvurun)*"
+  parts: list[str] = []
+  for cid in ids:
+    ch = guild.get_channel(cid) if guild else None
+    parts.append(ch.mention if ch else f"<#{cid}>")
+  return " ".join(parts)
+
+
+def redirect_text(
+  guild_id: str,
+  guild: discord.Guild | None,
+  *,
+  in_jackpot: bool,
+) -> str:
+  plays = format_play_channel_mentions(guild_id, guild)
+  lines = [
+    f"Komutlar yalnızca play kanallarında kullanılabilir: {plays}",
+  ]
+  if in_jackpot:
+    lines.append(
+      f"Bu kanalda yalnızca `{config.PREFIX}jp` / `{config.PREFIX}jackpot` "
+      f"ve `{config.PREFIX}canceljp` kullanılabilir."
+    )
+  return "\n".join(lines)
+
+
+def command_channel_allowed(
+  guild_id: str,
+  channel_id: int,
+  *,
+  content: str = "",
+) -> tuple[bool, str | None]:
+  if is_play_hub_channel(guild_id, channel_id):
+    return True, None
+  if is_jackpot_channel(channel_id) and is_jackpot_prefix(content):
+    return True, None
+  in_jp = is_jackpot_channel(channel_id)
+  return False, redirect_text(guild_id, None, in_jackpot=in_jp)
+
+
+async def handle_wrong_channel_message(message: discord.Message, bot) -> bool:
+  """Reply with play-channel mentions, delete message. Returns True if handled."""
+  if message.author.bot or not message.guild:
+    return False
+  if is_channel_staff(message.author):
+    return False
+
+  ctx = await bot.get_context(message)
+  if not ctx.prefix:
+    return False
+
+  content = (message.content or "").strip()
+  if is_jackpot_prefix(content):
+    return False
+
+  guild_id = str(message.guild.id)
+  allowed, text = command_channel_allowed(guild_id, message.channel.id, content=content)
+  if allowed or not text:
+    return False
+
+  text = redirect_text(
+    guild_id,
+    message.guild,
+    in_jackpot=is_jackpot_channel(message.channel.id),
+  )
+  try:
+    await message.channel.send(
+      text,
+      reference=message,
+      mention_author=True,
+      delete_after=12,
+    )
+  except Exception:
+    try:
+      await message.channel.send(text, delete_after=12)
+    except Exception:
+      pass
+  try:
+    await message.delete()
+  except Exception:
+    pass
+  setattr(message, "_channel_guard_handled", True)
+  return True
+
+
+def assert_command_channel(ctx: Context) -> None:
+  if not ctx.guild or not ctx.channel:
+    return
+  if is_channel_staff(ctx.author):
+    return
+  if getattr(ctx.message, "_channel_guard_handled", False):
+    raise ChannelGuardError("")
+
+  guild_id = str(ctx.guild.id)
+  content = (ctx.message.content if ctx.message else "") or ""
+  allowed, text = command_channel_allowed(guild_id, ctx.channel.id, content=content)
+  if allowed:
+    return
+  text = redirect_text(
+    guild_id,
+    ctx.guild,
+    in_jackpot=is_jackpot_channel(ctx.channel.id),
+  )
+  raise ChannelGuardError(text)
+
+
+async def interaction_channel_allowed(interaction: discord.Interaction) -> tuple[bool, str | None]:
+  if not interaction.guild or not interaction.channel:
+    return True, None
+  user = interaction.user
+  if is_channel_staff(user):
+    return True, None
+
+  guild_id = str(interaction.guild.id)
+  ch_id = interaction.channel.id
+  if is_play_hub_channel(guild_id, ch_id):
+    return True, None
+  if is_jackpot_channel(ch_id):
+    return False, redirect_text(guild_id, interaction.guild, in_jackpot=True)
+  return False, redirect_text(guild_id, interaction.guild, in_jackpot=False)
+
+
+async def interaction_channel_check(interaction: discord.Interaction) -> bool:
+  ok, text = await interaction_channel_allowed(interaction)
+  if ok:
+    return True
+  text = text or ""
+  try:
+    if interaction.response.is_done():
+      await interaction.followup.send(text, ephemeral=True)
+    else:
+      await interaction.response.send_message(text, ephemeral=True)
+  except Exception:
+    pass
+  return False

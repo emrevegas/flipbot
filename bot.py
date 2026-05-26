@@ -31,6 +31,7 @@ COGS = [
     "cogs.admin_panel",      # VegasBot /panel (full hub)
     "cogs.user_management",  # VegasBot /user_panel (full admin user panel)
     "cogs.maintenance",
+    "cogs.channel_guard",
     "cogs.games",
     "cogs.cases",
     "cogs.deposit",
@@ -133,7 +134,21 @@ class FlipBot(commands.Bot):
         elif isinstance(error, commands.BadArgument):
             await ctx.send(embed=_err(str(error)))
         elif isinstance(error, commands.CheckFailure):
-            await ctx.send(embed=_err("You don't have permission to use this command."), delete_after=6)
+            from modules.channel_guard import ChannelGuardError
+
+            if isinstance(error, ChannelGuardError):
+                if error.text and not getattr(ctx.message, "_channel_guard_handled", False):
+                    try:
+                        await ctx.send(error.text, delete_after=12)
+                    except Exception:
+                        pass
+                    try:
+                        if ctx.message:
+                            await ctx.message.delete()
+                    except Exception:
+                        pass
+            else:
+                await ctx.send(embed=_err("You don't have permission to use this command."), delete_after=6)
         elif isinstance(error, commands.CommandNotFound):
             pass
         else:
