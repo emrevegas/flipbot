@@ -46,6 +46,8 @@ async def _run_slots_round(
     won = gross > bet
     net = await _payout(user_id, "slots", bet, float(gross))
     net_change = net - bet
+    user_row = await db.get_user(user_id)
+    balance = float(user_row["balance"]) if user_row else 0.0
 
     await _record(
         user_id,
@@ -64,13 +66,12 @@ async def _run_slots_round(
     return await image_gen.render_slots_gif(
         username=username,
         bet=bet,
+        balance=balance,
         grid_ids=grid_ids,
         wins=wins,
         emoji_map=emoji_map,
         spin_emoji=spin_emoji,
-        won=net_change > 0,
         net_change=net_change,
-        gross_payout=float(gross),
     )
 
 

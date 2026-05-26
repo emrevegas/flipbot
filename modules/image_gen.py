@@ -1486,13 +1486,12 @@ async def render_slots_gif(
     *,
     username: str,
     bet: float,
+    balance: float,
     grid_ids: list[list[str]],
     wins: list[dict],
     emoji_map: dict[str, str],
     spin_emoji: str,
-    won: bool,
     net_change: float,
-    gross_payout: float,
 ) -> io.BytesIO:
     """3×5 slot — columns lock one-by-one; final frame draws winning paylines."""
     from Games.slot import COLS, PAYLINES, ROWS, SYMBOLS
@@ -1624,14 +1623,15 @@ async def render_slots_gif(
         img.paste(Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB"))
 
     def _draw_win_meter(draw: ImageDraw.ImageDraw, *, show_result: bool) -> None:
-        """Casino-style win display — centered below reels, above footer."""
+        """Casino-style meter: +/- payout (green/red) and balance at bottom."""
         x1, y1 = win_meter_x0, win_meter_y0
         x2, y2 = x1 + win_meter_w, y1 + win_meter_h
+        profit = net_change > 0
         draw.rounded_rectangle(
             [x1, y1, x2, y2],
             radius=14,
             fill=WIN_PANEL_FILL if show_result else WIN_PANEL_BG,
-            outline=GOLD if show_result and won else (45, 55, 82),
+            outline=GREEN if show_result and profit else (RED if show_result else (45, 55, 82)),
             width=3 if show_result else 2,
         )
         if not show_result:
@@ -1640,26 +1640,23 @@ async def render_slots_gif(
             draw.text(((W - hw) / 2, y1 + (win_meter_h - 14) // 2), hint, font=font_meter_lbl, fill=MUTED)
             return
 
-        lbl = "WIN" if won else "LOSE"
-        lbl_col = GREEN if won else RED
-        lw = _tw(draw, lbl, font_meter_lbl)
-        draw.text(((W - lw) / 2, y1 + 10), lbl, font=font_meter_lbl, fill=lbl_col)
-
-        if won:
+        if profit:
             amt = f"+{_fmt(net_change)}"
-            sub = f"Payout {_fmt(gross_payout)} pts"
-            amt_col = GOLD
-            sub_col = GREEN
+            amt_col = GREEN
         else:
-            amt = f"-{_fmt(bet)}"
-            sub = "NO WIN"
+            loss = abs(net_change) if net_change < 0 else bet
+            amt = f"-{_fmt(loss)}"
             amt_col = RED
-            sub_col = MUTED
 
         aw = _tw(draw, amt, font_meter_amt)
-        draw.text(((W - aw) / 2, y1 + 30), amt, font=font_meter_amt, fill=amt_col)
-        sw = _tw(draw, sub, font_meter_sub)
-        draw.text(((W - sw) / 2, y1 + win_meter_h - 26), sub, font=font_meter_sub, fill=sub_col)
+        draw.text(((W - aw) / 2, y1 + 18), amt, font=font_meter_amt, fill=amt_col)
+
+        bal_lbl = "Balance"
+        bal_val = f"{_fmt(balance)} pts"
+        blw = _tw(draw, bal_lbl, font_meter_lbl)
+        draw.text((x1 + 16, y1 + win_meter_h - 28), bal_lbl, font=font_meter_lbl, fill=MUTED)
+        bvw = _tw(draw, bal_val, font_meter_sub)
+        draw.text((x2 - 16 - bvw, y1 + win_meter_h - 28), bal_val, font=font_meter_sub, fill=WHITE)
 
     def _make_frame(
         revealed_cols: int,
