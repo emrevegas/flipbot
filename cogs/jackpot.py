@@ -6,12 +6,26 @@ import discord
 from discord.ext import commands
 
 import config
-from modules.jackpot_flow import cancel_jackpot, join_jackpot, on_jackpot_channel_message
+from modules.jackpot_flow import (
+    bootstrap_jackpot_room,
+    cancel_jackpot,
+    join_jackpot,
+    on_jackpot_channel_message,
+    send_jp_feedback,
+)
 
 
 class Jackpot(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._bootstrapped = False
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if self._bootstrapped:
+            return
+        self._bootstrapped = True
+        await bootstrap_jackpot_room(self.bot)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -32,12 +46,9 @@ class Jackpot(commands.Cog):
                 invoked = True
                 parts = content.split()
                 if len(parts) < 2:
-                    await message.channel.send(
-                        embed=discord.Embed(
-                            description=f"❌ Usage: `{prefix}{cmd} <bet>` (e.g. `{prefix}jp 100`, `{prefix}jp all`)",
-                            color=0xE74C3C,
-                        ),
-                        delete_after=12,
+                    await send_jp_feedback(
+                        message.channel,
+                        f"Usage: `{prefix}{cmd} <bet>` (e.g. `{prefix}jp 100`, `{prefix}jp all`)",
                     )
                     try:
                         await message.delete()
@@ -48,10 +59,7 @@ class Jackpot(commands.Cog):
 
                 bet, err = await resolve_bet_amount(message.author.id, parts[1])
                 if err or bet is None:
-                    await message.channel.send(
-                        embed=discord.Embed(description=f"❌ {err or 'Invalid bet.'}", color=0xE74C3C),
-                        delete_after=10,
-                    )
+                    await send_jp_feedback(message.channel, err or "Invalid bet.")
                     try:
                         await message.delete()
                     except Exception:

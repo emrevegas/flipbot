@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+
 import discord
 from discord.ext import commands
 
@@ -21,27 +22,48 @@ from modules.jackpot_media_v2 import (
 from modules.jackpot_store import (
     COUNTDOWN_BASE_SEC,
     COUNTDOWN_EXTEND_SEC,
+    LOBBY_IDLE_REFRESH_SEC,
     MAX_PLAYERS,
     MIN_PLAYERS,
     can_cancel,
+    get_channel_id,
     get_round,
     is_jackpot_channel,
     new_round,
     player_in_round,
     pool_total,
+    resolve_jackpot_channel,
     set_round,
 )
 
 log = logging.getLogger("flipbot.jackpot")
 
 _channel_locks: dict[int, asyncio.Lock] = {}
-_countdown_tasks: dict[int, asyncio.Task] = {}
+_room_tasks: dict[int, asyncio.Task] = {}
+JP_FEEDBACK_DELETE_SEC = 8.0
 
 
 def _lock(channel_id: int) -> asyncio.Lock:
     if channel_id not in _channel_locks:
         _channel_locks[channel_id] = asyncio.Lock()
     return _channel_locks[channel_id]
+
+
+def is_jackpot_staff(member: discord.abc.User) -> bool:
+    """Panel admin/cashier, super admin, or Discord server administrator."""
+    from modules.database import check_permission, is_super_admin
+
+    if is_super_admin(member.id):
+        return True
+    if isinstance(member, discord.Member):
+        if member.guild_permissions.administrator:
+            return True
+    # check_permission returns False when the user HAS the permission
+    if not check_permission(str(member.id), "admin"):
+        return True
+    if not check_permission(str(member.id), "cashier"):
+        return True
+    return False
 
 
 def static_avatar_url(user: discord.abc.User) -> str:
@@ -61,6 +83,50 @@ def _start_countdown(round_data: dict) -> dict:
     round_data["status"] = "countdown"
     round_data["countdown_ends"] = int(time.time()) + secs
     return round_data
+
+
+async def _delete_message_after(message: discord.Message, seconds: float) -> None:
+    await asyncio.sleep(seconds)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+async def send_jp_feedback(
+    channel: discord.abc.Messageable,
+    text: str,
+    *,
+    ok: bool = False,
+    delete_after: float = JP_FEEDBACK_DELETE_SEC,
+) -> discord.Message | None:
+    embed = _ok_embed(text) if ok else _err_embed(text)
+    try:
+        msg = await channel.send(embed=embed, delete_after=delete_after)
+        return msg
+    except Exception:
+        log.exception("Jackpot feedback send failed")
+        return None
+
+
+async def _cleanup_check_game_reply(ctx: commands.Context) -> None:
+    """Remove transient error embed from _check_game (no delete_after there)."""
+    await asyncio.sleep(0.35)
+    lobby_id = int((get_round(ctx.channel.id) or {}).get("message_id") or 0)
+    try:
+        async for msg in ctx.channel.history(limit=12):
+            if msg.author.id != ctx.bot.user.id:
+                continue
+            if lobby_id and msg.id == lobby_id:
+                continue
+            if not msg.embeds:
+                continue
+            desc = (msg.embeds[0].description or "")
+            if desc.startswith("❌"):
+                asyncio.create_task(_delete_message_after(msg, JP_FEEDBACK_DELETE_SEC))
+                break
+    except Exception:
+        pass
 
 
 async def _get_house_edge() -> float:
@@ -95,8 +161,10 @@ async def refresh_lobby_message(
     n = len(players)
     if n < MIN_PLAYERS:
         footer = f"Waiting for players — **{n}/{MIN_PLAYERS}** minimum. Join with `.jp <bet>`"
+    elif round_data.get("status") == "countdown" and rem is not None:
+        footer = f"**{n}** players  •  starts in **{rem}s**"
     else:
-        footer = f"**{n}** players in pool. Countdown runs when the timer ends."
+        footer = f"**{n}** players in pool."
 
     header = (
         f"## 🎰 Jackpot\n"
@@ -114,77 +182,114 @@ async def refresh_lobby_message(
         except Exception:
             message = None
 
-    if message:
-        await message.edit(content=None, embed=None, attachments=files, view=layout)
-    else:
-        message = await channel.send(files=files, view=layout)
-        round_data["message_id"] = message.id
+    try:
+        if message:
+            await message.edit(content=None, embed=None, attachments=files, view=layout)
+        else:
+            message = await channel.send(files=files, view=layout)
+            round_data["message_id"] = message.id
+    except Exception:
+        log.exception("Jackpot lobby refresh failed ch=%s", channel.id)
+        return None
 
     set_round(channel.id, round_data)
     return message
 
 
-async def _cancel_countdown_task(channel_id: int) -> None:
-    task = _countdown_tasks.pop(channel_id, None)
-    if task and not task.done():
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-
-def _schedule_countdown(bot: discord.Client, channel: discord.TextChannel) -> None:
-    cid = channel.id
-    if cid in _countdown_tasks and not _countdown_tasks[cid].done():
+def ensure_jackpot_room_loop(bot: discord.Client, channel_id: int) -> None:
+    """Background tick — idle lobby refresh, countdown, spin trigger."""
+    if channel_id in _room_tasks and not _room_tasks[channel_id].done():
         return
 
-    async def _runner():
-        last_paint = -1
+    async def _runner() -> None:
+        last_idle_refresh = 0.0
+        last_countdown_paint = -1
         try:
             while True:
                 await asyncio.sleep(1)
-                rd = get_round(cid)
-                if not rd or rd.get("status") not in ("countdown",):
+                if not is_jackpot_channel(channel_id):
                     break
-                rem = _countdown_remaining(rd)
-                ch = bot.get_channel(cid)
-                if not isinstance(ch, discord.TextChannel):
-                    try:
-                        fetched = await bot.fetch_channel(cid)
-                        ch = fetched if isinstance(fetched, discord.TextChannel) else channel
-                    except Exception:
-                        ch = channel
-                if rem > 0:
-                    if rem != last_paint and (rem <= 10 or rem % 5 == 0):
-                        last_paint = rem
-                        try:
-                            await refresh_lobby_message(bot, ch, rd)
-                        except Exception:
-                            pass
+                ch = await resolve_jackpot_channel(bot, channel_id)
+                if not ch:
                     continue
-                async with _lock(cid):
-                    rd = get_round(cid)
-                    if not rd or rd.get("status") != "countdown":
-                        break
-                    players = rd.get("players") or []
-                    if len(players) < MIN_PLAYERS:
-                        rd["countdown_secs"] = int(rd.get("countdown_secs") or COUNTDOWN_BASE_SEC) + COUNTDOWN_EXTEND_SEC
-                        rd = _start_countdown(rd)
-                        set_round(cid, rd)
-                        await refresh_lobby_message(bot, ch, rd)
-                        last_paint = _countdown_remaining(rd)
+
+                rd = get_round(channel_id)
+                if not rd:
+                    rd = new_round(channel_id)
+                    set_round(channel_id, rd)
+
+                status = rd.get("status")
+
+                if status == "waiting":
+                    now = time.time()
+                    if now - last_idle_refresh >= LOBBY_IDLE_REFRESH_SEC:
+                        last_idle_refresh = now
+                        async with _lock(channel_id):
+                            rd = get_round(channel_id)
+                            if rd and rd.get("status") == "waiting":
+                                await refresh_lobby_message(bot, ch, rd)
+                    continue
+
+                if status == "countdown":
+                    rem = _countdown_remaining(rd)
+                    if rem > 0:
+                        if rem != last_countdown_paint:
+                            last_countdown_paint = rem
+                            try:
+                                await refresh_lobby_message(bot, ch, rd)
+                            except Exception:
+                                pass
                         continue
-                    await _run_spin(bot, ch, rd)
-                break
+
+                    async with _lock(channel_id):
+                        rd = get_round(channel_id)
+                        if not rd or rd.get("status") != "countdown":
+                            continue
+                        players = rd.get("players") or []
+                        if len(players) < MIN_PLAYERS:
+                            rd["countdown_secs"] = (
+                                int(rd.get("countdown_secs") or COUNTDOWN_BASE_SEC)
+                                + COUNTDOWN_EXTEND_SEC
+                            )
+                            rd = _start_countdown(rd)
+                            set_round(channel_id, rd)
+                            last_countdown_paint = -1
+                            await refresh_lobby_message(bot, ch, rd)
+                            continue
+                        await _run_spin(bot, ch, rd)
+                    last_countdown_paint = -1
+                    continue
+
         except asyncio.CancelledError:
             pass
         except Exception:
-            log.exception("Jackpot countdown error ch=%s", cid)
+            log.exception("Jackpot room loop error ch=%s", channel_id)
         finally:
-            _countdown_tasks.pop(cid, None)
+            _room_tasks.pop(channel_id, None)
 
-    _countdown_tasks[cid] = asyncio.create_task(_runner())
+    _room_tasks[channel_id] = asyncio.create_task(_runner())
+
+
+async def bootstrap_jackpot_room(bot: discord.Client) -> None:
+    """Post lobby menu and start auto-refresh loop for configured channel."""
+    ch_id = get_channel_id()
+    if not ch_id:
+        return
+    ch = await resolve_jackpot_channel(bot, ch_id)
+    if not ch:
+        log.warning("Jackpot channel %s not found", ch_id)
+        return
+
+    rd = get_round(ch_id)
+    if not rd:
+        rd = new_round(ch_id)
+        set_round(ch_id, rd)
+
+    if rd.get("status") in ("waiting", "countdown"):
+        await refresh_lobby_message(bot, ch, rd)
+
+    ensure_jackpot_room_loop(bot, ch_id)
+    log.info("Jackpot room bootstrapped in #%s", ch.name)
 
 
 async def join_jackpot(
@@ -195,16 +300,20 @@ async def join_jackpot(
 ) -> None:
     """Add player to current round in jackpot channel."""
     if not ctx.guild or not isinstance(ctx.channel, discord.TextChannel):
-        return await ctx.send(embed=_err_embed("Jackpot only works in a server text channel."))
+        await send_jp_feedback(ctx.channel, "Jackpot only works in a server text channel.")
+        return
 
     if not is_jackpot_channel(ctx.channel.id):
-        return await ctx.send(
-            embed=_err_embed("This is not the Jackpot room. Ask an admin to set it in **Panel → Games → Jackpot**.")
+        await send_jp_feedback(
+            ctx.channel,
+            "This is not the Jackpot room. Set it in **Panel → Games → Jackpot**.",
         )
+        return
 
     from cogs.games import _check_game
 
     if not await _check_game(ctx, "jackpot", bet):
+        await _cleanup_check_game_reply(ctx)
         return
 
     uid = ctx.author.id
@@ -214,11 +323,14 @@ async def join_jackpot(
             rd = new_round(ctx.channel.id)
         status = rd.get("status")
         if status in ("spinning", "finished"):
-            return await ctx.send(embed=_err_embed("A round is already running. Wait for the next lobby."))
+            await send_jp_feedback(ctx.channel, "A round is already running. Wait for the next lobby.")
+            return
         if player_in_round(rd, uid):
-            return await ctx.send(embed=_err_embed("You are already in this jackpot round."))
+            await send_jp_feedback(ctx.channel, "You are already in this jackpot round.")
+            return
         if len(rd.get("players") or []) >= MAX_PLAYERS:
-            return await ctx.send(embed=_err_embed(f"Round is full (max {MAX_PLAYERS} players)."))
+            await send_jp_feedback(ctx.channel, f"Round is full (max {MAX_PLAYERS} players).")
+            return
 
         await db.add_balance(uid, -bet, note="jackpot bet")
         await db.add_wager(uid, bet)
@@ -243,7 +355,7 @@ async def join_jackpot(
 
         set_round(ctx.channel.id, rd)
         await refresh_lobby_message(ctx.bot, ctx.channel, rd)
-        _schedule_countdown(ctx.bot, ctx.channel)
+        ensure_jackpot_room_loop(ctx.bot, ctx.channel.id)
 
     try:
         mid = get_round(ctx.channel.id)
@@ -256,19 +368,23 @@ async def join_jackpot(
 
 async def cancel_jackpot(ctx: commands.Context) -> None:
     if not ctx.guild or not isinstance(ctx.channel, discord.TextChannel):
-        return await ctx.send(embed=_err_embed("Jackpot only works in a server text channel."))
+        await send_jp_feedback(ctx.channel, "Jackpot only works in a server text channel.")
+        return
     if not is_jackpot_channel(ctx.channel.id):
-        return await ctx.send(embed=_err_embed("This is not the Jackpot room."))
+        await send_jp_feedback(ctx.channel, "This is not the Jackpot room.")
+        return
 
     uid = ctx.author.id
     async with _lock(ctx.channel.id):
         rd = get_round(ctx.channel.id)
         if not rd or not can_cancel(rd):
-            return await ctx.send(embed=_err_embed("No cancellable jackpot round (game may have already started)."))
+            await send_jp_feedback(ctx.channel, "No cancellable jackpot round (game may have already started).")
+            return
         players = rd.get("players") or []
         mine = [p for p in players if int(p.get("user_id", 0)) == uid]
         if not mine:
-            return await ctx.send(embed=_err_embed("You are not in this jackpot round."))
+            await send_jp_feedback(ctx.channel, "You are not in this jackpot round.")
+            return
 
         for p in mine:
             await db.add_balance(uid, float(p.get("bet") or 0), note="jackpot cancel refund")
@@ -276,40 +392,29 @@ async def cancel_jackpot(ctx: commands.Context) -> None:
         rd["players"] = players
 
         if not players:
-            await _cancel_countdown_task(ctx.channel.id)
             rd["status"] = "waiting"
             rd["countdown_ends"] = 0
             set_round(ctx.channel.id, rd)
-            msg_id = rd.get("message_id")
-            if msg_id:
-                try:
-                    m = await ctx.channel.fetch_message(int(msg_id))
-                    await m.edit(
-                        content=None,
-                        embed=None,
-                        attachments=[],
-                        view=jackpot_lobby_layout(
-                            header="## 🎰 Jackpot\nRound cancelled — join with `.jp <bet>`",
-                            footer="",
-                            timeout=None,
-                        ),
-                    )
-                except Exception:
-                    pass
-            return await ctx.send(embed=_ok_embed("Jackpot round cancelled. Your bet was refunded."))
+            await refresh_lobby_message(ctx.bot, ctx.channel, rd)
+            try:
+                await ctx.message.delete()
+            except Exception:
+                pass
+            await send_jp_feedback(ctx.channel, "Jackpot round cancelled. Your bet was refunded.", ok=True)
+            return
 
         if len(players) < MIN_PLAYERS:
             rd["countdown_secs"] = int(rd.get("countdown_secs") or COUNTDOWN_BASE_SEC) + COUNTDOWN_EXTEND_SEC
             rd = _start_countdown(rd)
         set_round(ctx.channel.id, rd)
         await refresh_lobby_message(ctx.bot, ctx.channel, rd)
-        _schedule_countdown(ctx.bot, ctx.channel)
+        ensure_jackpot_room_loop(ctx.bot, ctx.channel.id)
 
     try:
         await ctx.message.delete()
     except Exception:
         pass
-    await ctx.send(embed=_ok_embed("You left the jackpot. Bet refunded."), delete_after=6)
+    await send_jp_feedback(ctx.channel, "You left the jackpot. Bet refunded.", ok=True)
 
 
 async def _run_spin(
@@ -317,7 +422,6 @@ async def _run_spin(
     channel: discord.TextChannel,
     round_data: dict,
 ) -> None:
-    await _cancel_countdown_task(channel.id)
     players = list(round_data.get("players") or [])
     if len(players) < MIN_PLAYERS:
         return
@@ -437,25 +541,28 @@ async def _run_spin(
     rd_new = new_round(channel.id)
     set_round(channel.id, rd_new)
     await refresh_lobby_message(bot, channel, rd_new)
+    ensure_jackpot_room_loop(bot, channel.id)
 
 
 async def purge_channel_messages(channel: discord.TextChannel, round_data: dict) -> None:
-    """Delete user messages; keep bot, admin/cashier, winner join message."""
-    from modules.database import check_permission
-
+    """Delete user messages; keep staff, winner join msg, lobby/result bot posts."""
     preserve = set(int(x) for x in (round_data.get("preserve_message_ids") or []))
     winner_mid = round_data.get("winner_message_id")
     if winner_mid:
         preserve.add(int(winner_mid))
+    lobby_id = int(round_data.get("message_id") or 0)
+    if lobby_id:
+        preserve.add(lobby_id)
+    menu_id = int(round_data.get("menu_message_id") or 0)
+    if menu_id:
+        preserve.add(menu_id)
 
     def _keep(msg: discord.Message) -> bool:
         if msg.id in preserve:
             return True
         if msg.author.bot:
-            return True
-        if check_permission(str(msg.author.id), "admin"):
-            return True
-        if check_permission(str(msg.author.id), "cashier"):
+            return False
+        if is_jackpot_staff(msg.author):
             return True
         return False
 
@@ -478,11 +585,7 @@ async def on_jackpot_channel_message(message: discord.Message) -> None:
     if not is_jackpot_channel(message.channel.id):
         return
 
-    from modules.database import check_permission
-
-    if check_permission(str(message.author.id), "admin"):
-        return
-    if check_permission(str(message.author.id), "cashier"):
+    if is_jackpot_staff(message.author):
         return
 
     rd = get_round(message.channel.id)

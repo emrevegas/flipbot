@@ -4750,10 +4750,30 @@ class _JackpotChannelView(discord.ui.View):
         settings = get_settings()
         settings["channel_id"] = channel.id
         save_settings(settings)
+        from modules.jackpot_flow import bootstrap_jackpot_room
+
+        posted = " Lobby menu posted." if channel else ""
+        try:
+            await bootstrap_jackpot_room(interaction.client)
+        except Exception:
+            posted = " (Could not post lobby — check bot permissions in that channel.)"
         await interaction.response.send_message(
-            f"✅ Jackpot room set to {channel.mention}",
+            f"✅ Jackpot room set to {channel.mention}.{posted}",
             ephemeral=True,
         )
+
+    @discord.ui.button(label="Refresh Menu", style=discord.ButtonStyle.primary, row=2)
+    async def refresh_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from modules.jackpot_flow import bootstrap_jackpot_room
+
+        try:
+            await bootstrap_jackpot_room(interaction.client)
+            await interaction.response.send_message("✅ Jackpot lobby refreshed.", ephemeral=True)
+        except Exception as exc:
+            await interaction.response.send_message(
+                f"❌ Refresh failed: {exc}",
+                ephemeral=True,
+            )
 
     @discord.ui.button(label="Clear Channel", style=discord.ButtonStyle.danger, row=1)
     async def clear_channel(self, interaction: discord.Interaction, button: discord.ui.Button):

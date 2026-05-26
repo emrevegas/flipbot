@@ -16,6 +16,9 @@ MIN_PLAYERS = 2
 MAX_PLAYERS = 24
 
 
+LOBBY_IDLE_REFRESH_SEC = 5
+
+
 def get_settings() -> dict:
     data = get_data(SETTINGS_KEY) or {}
     if not isinstance(data, dict):
@@ -35,6 +38,24 @@ def get_channel_id() -> int | None:
 def is_jackpot_channel(channel_id: int) -> bool:
     jc = get_channel_id()
     return jc is not None and int(channel_id) == jc
+
+
+async def resolve_jackpot_channel(
+    bot,
+    channel_id: int,
+) -> "discord.TextChannel | None":
+    import discord
+
+    ch = bot.get_channel(int(channel_id))
+    if isinstance(ch, discord.TextChannel):
+        return ch
+    try:
+        fetched = await bot.fetch_channel(int(channel_id))
+        if isinstance(fetched, discord.TextChannel):
+            return fetched
+    except Exception:
+        pass
+    return None
 
 
 def _rounds() -> dict:
