@@ -4196,4 +4196,283 @@ def render_case_open_card(item_name: str, item_value: float, case_name: str) -> 
     return buf
 
 
+# ── Jackpot (multiplayer) ─────────────────────────────────────────────────────
+
+JACKPOT_SPIN_MS = 3_200
+JACKPOT_RESULT_HOLD_MS = 12_000
+
+
+async def _fetch_avatar_static(url: str, size: int) -> Image.Image:
+    """Fetch avatar; GIF URLs are requested as PNG via caller."""
+    img = await _fetch_avatar(url, size)
+    return img if img is not None else _default_avatar(size)
+
+
+def _jp_short(name: str, mx: int = 14) -> str:
+    name = (name or "Player").strip()
+    return (name[: mx - 1] + "…") if len(name) > mx else name
+
+
+async def render_jackpot_lobby_png(
+    players: list[dict],
+    *,
+    pool: float,
+    countdown_secs: int | None = None,
+    status_line: str = "",
+) -> io.BytesIO:
+    """Lobby card — avatars, username, bet, win % per player."""
+    from Games.jackpot import format_chance, player_chance
+
+    W, H = 680, max(220, 88 + min(len(players), 8) * 72 + 56)
+    BG = (8, 12, 24)
+    PANEL = (14, 20, 38)
+    WHITE = (245, 247, 255)
+    MUTED = (110, 120, 145)
+    CYAN = (56, 189, 248)
+    GOLD = (255, 196, 0)
+    GREEN = (46, 213, 96)
+
+    font_hdr = _font(16, bold=True)
+    font_sm = _font(12)
+    font_name = _font(14, bold=True)
+    font_bet = _font(13, bold=True)
+    font_pct = _font(13, bold=True)
+
+    def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 8
+
+    avatars: list[Image.Image] = []
+    for p in players:
+        url = p.get("avatar_url") or ""
+        avatars.append(await _fetch_avatar_static(url, 48))
+
+    img = Image.new("RGB", (W, H), BG)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, 0, W, 52], fill=PANEL)
+    draw.text((18, 16), "JACKPOT", font=font_hdr, fill=CYAN)
+
+    sub = status_line or f"Pool {_fmt(pool)} pts  •  {len(players)} player(s)"
+    draw.text((18, 34), sub[:70], font=font_sm, fill=MUTED)
+    if countdown_secs is not None and countdown_secs > 0:
+        cd = f"Starts in {countdown_secs}s"
+        cw = _tw(draw, cd, font_sm)
+        draw.text((W - 18 - cw, 34), cd, font=font_sm, fill=GOLD)
+
+    y = 64
+    cols = 2 if len(players) > 4 else 1
+    col_w = (W - 48) // cols
+    for i, p in enumerate(players):
+        col = i % cols
+        row = i // cols
+        x = 24 + col * col_w
+        py = y + row * 68
+
+        bet = float(p.get("bet") or 0)
+        pct = player_chance(bet, pool) * 100.0 if pool > 0 else 0.0
+        av = avatars[i] if i < len(avatars) else _default_avatar(48)
+        img.paste(av, (x, py), av)
+
+        nx = x + 58
+        uname = _jp_short(str(p.get("username") or "Player"), 16)
+        draw.text((nx, py + 4), uname, font=font_name, fill=WHITE)
+        draw.text((nx, py + 24), f"{_fmt(bet)} pts", font=font_bet, fill=MUTED)
+        ch = format_chance(pct)
+        cw = _tw(draw, ch, font_pct)
+        draw.text((nx + col_w - 70 - cw, py + 24), ch, font=font_pct, fill=GREEN)
+
+    foot_y = H - 36
+    draw.line([(24, foot_y - 8), (W - 24, foot_y - 8)], fill=(35, 45, 72), width=1)
+    foot = f"Total pool {_fmt(pool)} pts"
+    draw.text((24, foot_y), foot, font=font_sm, fill=WHITE)
+    if len(players) < 2:
+        need = "Need 2+ players to start"
+        nw = _tw(draw, need, font_sm)
+        draw.text((W - 24 - nw, foot_y), need, font=font_sm, fill=GOLD)
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    return buf
+
+
+async def render_jackpot_spin_gif(
+    players: list[dict],
+    winner_index: int,
+    *,
+    pool: float,
+    payout: float,
+    house_edge_pct: float = 2.0,
+) -> io.BytesIO:
+    """Scroll player boxes right→left; stop on winner; show +payout."""
+    from Games.jackpot import format_chance, player_chance
+
+    W, H = 680, 320
+    HDR_H = 52
+    STRIP_Y = 72
+    BOX_W, BOX_H = 118, 140
+    GAP = 12
+    STEP = BOX_W + GAP
+    POINTER_X = W // 2
+
+    BG = (8, 12, 24)
+    PANEL = (14, 20, 38)
+    WHITE = (245, 247, 255)
+    MUTED = (110, 120, 145)
+    GREEN = (46, 213, 96)
+    GOLD = (255, 196, 0)
+    CYAN = (56, 189, 248)
+
+    font_hdr = _font(15, bold=True)
+    font_name = _font(13, bold=True)
+    font_sm = _font(11)
+    font_pct = _font(12, bold=True)
+    font_win = _font(36, bold=True)
+    font_pay = _font(22, bold=True)
+
+    def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 8
+
+    avatars: list[Image.Image] = []
+    for p in players:
+        url = p.get("avatar_url") or ""
+        avatars.append(await _fetch_avatar_static(url, 56))
+
+    n = len(players)
+    strip_len = max(28, n * 4 + 12)
+    win_slot = strip_len - 6
+    strip_indices: list[int] = []
+    for _ in range(strip_len):
+        strip_indices.append(random.randint(0, n - 1) if n else 0)
+    strip_indices[win_slot] = winner_index % n
+
+    strip_x_end = POINTER_X - win_slot * STEP - BOX_W // 2
+    scroll_dist = STEP * max(10, n * 2)
+    strip_x_start = strip_x_end + scroll_dist
+
+    def _draw_player_box(
+        base: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        x: int,
+        y: int,
+        pidx: int,
+        *,
+        highlight: bool = False,
+    ) -> None:
+        if pidx < 0 or pidx >= n:
+            return
+        p = players[pidx]
+        bet = float(p.get("bet") or 0)
+        pct = player_chance(bet, pool) * 100.0
+        border = GOLD if highlight else (48, 58, 88)
+        fill = (18, 26, 48) if not highlight else (28, 36, 58)
+        draw.rounded_rectangle(
+            [x, y, x + BOX_W, y + BOX_H],
+            radius=14,
+            fill=fill,
+            outline=border,
+            width=4 if highlight else 2,
+        )
+        av = avatars[pidx] if pidx < len(avatars) else _default_avatar(56)
+        ax, ay = x + (BOX_W - 56) // 2, y + 10
+        base.paste(av, (ax, ay), av)
+        uname = _jp_short(str(p.get("username") or "Player"), 12)
+        uw = _tw(draw, uname, font_name)
+        draw.text((x + (BOX_W - uw) / 2, y + 72), uname, font=font_name, fill=WHITE)
+        ch = format_chance(pct)
+        cw = _tw(draw, ch, font_pct)
+        draw.text((x + (BOX_W - cw) / 2, y + 92), ch, font=font_pct, fill=GREEN)
+        bs = f"{_fmt(bet)}"
+        bw = _tw(draw, bs, font_sm)
+        draw.text((x + (BOX_W - bw) / 2, y + 112), bs, font=font_sm, fill=MUTED)
+
+    def make_frame(strip_x: float, *, final: bool) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([0, 0, W, HDR_H], fill=PANEL)
+        draw.text((18, 14), "JACKPOT", font=font_hdr, fill=CYAN)
+        sub = f"Pool {_fmt(pool)} pts  •  {house_edge_pct:g}% fee"
+        draw.text((18, 32), sub, font=font_sm, fill=MUTED)
+
+        sx = int(strip_x)
+        for i, pidx in enumerate(strip_indices):
+            cx = sx + i * STEP
+            if cx + BOX_W < -30 or cx > W + 30:
+                continue
+            hi = final and i == win_slot
+            _draw_player_box(img, draw, cx, STRIP_Y, pidx, highlight=hi)
+
+        py1, py2 = STRIP_Y - 4, STRIP_Y + BOX_H + 4
+        draw.line([(POINTER_X, py1), (POINTER_X, py2)], fill=GOLD, width=3)
+        draw.polygon(
+            [(POINTER_X, py1 - 2), (POINTER_X - 12, py1 - 18), (POINTER_X + 12, py1 - 18)],
+            fill=GOLD,
+        )
+
+        if final and 0 <= winner_index < n:
+            wp = players[winner_index]
+            big_av = avatars[winner_index]
+            cx = W // 2
+            ay = STRIP_Y + BOX_H + 28
+            big = big_av.resize((72, 72), Image.LANCZOS)
+            mask = Image.new("L", (72, 72), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
+            big.putalpha(mask)
+            img.paste(big, (cx - 36, ay), big)
+            uname = _jp_short(str(wp.get("username") or "Winner"), 18)
+            uw = _tw(draw, uname, font_name)
+            draw.text((cx - uw / 2, ay + 78), uname, font=font_name, fill=WHITE)
+            bet = float(wp.get("bet") or 0)
+            pct = player_chance(bet, pool) * 100.0
+            line2 = format_chance(pct)
+            l2w = _tw(draw, line2, font_pct)
+            draw.text((cx - l2w / 2, ay + 98), line2, font=font_pct, fill=MUTED)
+            pay = f"+{_fmt(payout)} pts"
+            pw = _tw(draw, pay, font_pay)
+            draw.text((cx - pw / 2, ay + 118), pay, font=font_pay, fill=GREEN)
+            wl = "WINNER"
+            ww = _tw(draw, wl, font_win)
+            draw.text((cx - ww / 2, ay - 42), wl, font=font_win, fill=GOLD)
+
+        return img
+
+    n_anim = 24
+
+    def _ease(t: float) -> float:
+        t = min(1.0, max(0.0, t))
+        return 1.0 - (1.0 - t) ** 2.4
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+    frame_ms = max(40, JACKPOT_SPIN_MS // n_anim)
+    for i in range(n_anim):
+        t = _ease((i + 1) / n_anim)
+        sx = strip_x_start + (strip_x_end - strip_x_start) * t
+        frames.append(make_frame(sx, final=False))
+        durations.append(frame_ms)
+
+    final = make_frame(strip_x_end, final=True)
+    frames.append(final)
+    durations.append(JACKPOT_RESULT_HOLD_MS)
+    frames.append(final.copy())
+    durations.append(80)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=1,
+        optimize=False,
+    )
+    buf.seek(0)
+    return buf
+
 

@@ -25,6 +25,9 @@ CATEGORIES = {
             ("Hi-Lo", f"`{PREFIX}hilo <amount>`\nAnimated cards — **Higher** / **Lower** / **Cash Out** buttons on the game message."),
             ("Limbo", f"`{PREFIX}limbo <amount> <target_multiplier>`\nAnimated multiplier — land at or above your target to win."),
             ("Slide", f"`{PREFIX}slide <amount>`\nMultiplier strip slides left — pointer picks your payout (GIF result holds 20s)."),
+            ("Jackpot", f"In the **Jackpot room** (admin-set channel):\n"
+                         f"`{PREFIX}jp <bet>` or `{PREFIX}jackpot <bet>` — join the pool (chance = your bet ÷ total).\n"
+                         f"`{PREFIX}canceljp` — leave before spin (refund). Min **2** players to start."),
             ("Slots", f"`{PREFIX}slots <amount>`\nSpin the slot machine."),
             ("Crystals", f"`{PREFIX}crystals <bet>`\nReveal 5 crystals and match for prizes."),
             ("Towers", f"`{PREFIX}towers <bet> [easy|normal|hard]`\nClimb the tower grid."),

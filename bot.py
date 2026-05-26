@@ -47,6 +47,7 @@ COGS = [
     "cogs.private_rooms",
     "cogs.live_blackjack",
     "cogs.live_stats",
+    "cogs.jackpot",
 ]
 
 

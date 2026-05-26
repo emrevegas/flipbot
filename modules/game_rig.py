@@ -32,7 +32,7 @@ RIGGED_PROMO_GAMES: tuple[tuple[str, str, str], ...] = (
     ("case_opening", "Case Opening", "📦"),
 )
 
-NO_RIG_GAMES = frozenset({"crystals", "crystal", "case_battle", "live_blackjack"})
+NO_RIG_GAMES = frozenset({"crystals", "crystal", "case_battle", "live_blackjack", "jackpot"})
 
 PROMODOS_LOW_RANGE = (3.0, 8.0)
 PROMODOS_HIGH_RANGE = (22.0, 35.0)

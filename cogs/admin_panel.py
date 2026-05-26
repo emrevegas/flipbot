@@ -380,6 +380,27 @@ def _ensure_slide_game_entry(games_data: dict) -> dict:
     return games_data
 
 
+def _ensure_jackpot_game_entry(games_data: dict) -> dict:
+    if not isinstance(games_data, dict):
+        games_data = {}
+    jp = games_data.get("jackpot")
+    if not isinstance(jp, dict):
+        jp = {}
+    jp.setdefault("name", "Jackpot")
+    jp.setdefault("emoji", "🎰")
+    jp.setdefault("enabled", True)
+    jp.setdefault("description", "Multiplayer pool — bet share = win chance. 2% fee on pool.")
+    jp.setdefault("min_bet", 10)
+    jp.setdefault("max_bet", 100000)
+    jp.setdefault("house_edge", 2.0)
+    jp.setdefault("rigged_chance", 0.0)
+    jp.setdefault("category", "special_games")
+    jp.setdefault("created_at", int(time.time()))
+    jp.setdefault("last_modified", int(time.time()))
+    games_data["jackpot"] = jp
+    return games_data
+
+
 def _ensure_htw_game_entry(games_data: dict) -> dict:
     if not isinstance(games_data, dict):
         games_data = {}
@@ -588,6 +609,7 @@ def _ensure_all_game_entries(games_data: dict) -> dict:
     games_data = _ensure_htw_game_entry(games_data)
     games_data = _ensure_limbo_game_entry(games_data)
     games_data = _ensure_slide_game_entry(games_data)
+    games_data = _ensure_jackpot_game_entry(games_data)
     games_data = _ensure_slot_game_entry(games_data)
     games_data = _ensure_case_opening_game_entry(games_data)
     games_data = _ensure_case_battle_game_entry(games_data)
@@ -4678,6 +4700,71 @@ class CoinflipRiggedModal(discord.ui.Modal):
         )
 
 
+class _JackpotChannelButton(discord.ui.Button):
+    """Dedicated Jackpot room — chat is auto-deleted; bets via .jp / .jackpot."""
+
+    def __init__(self):
+        super().__init__(
+            label="🎰 Jackpot Room",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        from modules.jackpot_store import get_settings
+
+        settings = get_settings()
+        ch_id = settings.get("channel_id")
+        embed = discord.Embed(
+            title="🎰 Jackpot Room",
+            description=(
+                "Players join with `.jp <bet>` or `.jackpot <bet>`.\n"
+                "Win chance = bet ÷ pool. **2%** house fee on the winner payout.\n"
+                "User messages are deleted (bot + admin messages stay).\n"
+                "`.canceljp` refunds your bet before the spin starts.\n\n"
+                f"**Channel:** {'<#' + str(ch_id) + '>' if ch_id else '❌ Not set'}"
+            ),
+            color=discord.Color.gold(),
+        )
+        await interaction.response.send_message(embed=embed, view=_JackpotChannelView(), ephemeral=True)
+
+
+class _JackpotChannelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+
+    @discord.ui.select(
+        cls=discord.ui.ChannelSelect,
+        channel_types=[discord.ChannelType.text],
+        placeholder="Select Jackpot channel…",
+        min_values=1,
+        max_values=1,
+        row=0,
+    )
+    async def set_channel(
+        self, interaction: discord.Interaction, select: discord.ui.ChannelSelect
+    ):
+        from modules.jackpot_store import get_settings, save_settings
+
+        channel = select.values[0]
+        settings = get_settings()
+        settings["channel_id"] = channel.id
+        save_settings(settings)
+        await interaction.response.send_message(
+            f"✅ Jackpot room set to {channel.mention}",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Clear Channel", style=discord.ButtonStyle.danger, row=1)
+    async def clear_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from modules.jackpot_store import get_settings, save_settings
+
+        settings = get_settings()
+        settings.pop("channel_id", None)
+        save_settings(settings)
+        await interaction.response.send_message("✅ Jackpot channel cleared.", ephemeral=True)
+
+
 class _CaseBattleLogChannelButton(discord.ui.Button):
     """Case Battle log channel — PvP only; bot battles stay in private room."""
 
@@ -4812,6 +4899,8 @@ class GameDetailView(discord.ui.View):
             self.add_item(_CoinflipRiggedButton())
         elif game_id == "case_battle":
             self.add_item(_CaseBattleLogChannelButton())
+        elif game_id == "jackpot":
+            self.add_item(_JackpotChannelButton())
         # Tüm oyunlar için house edge butonu (row=1)
         self.add_item(_HouseEdgeButton(game_id))
     
@@ -8271,6 +8360,7 @@ _PROMO_GAMES = [
     ("HiLo",     "hilo"),
     ("Limbo",    "limbo"),
     ("Slide",    "slide"),
+    ("Jackpot",  "jackpot"),
     ("Crystals", "crystals"),
     ("Towers",   "towers"),
 ]
