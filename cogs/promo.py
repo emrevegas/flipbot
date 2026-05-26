@@ -22,7 +22,10 @@ class Promo(commands.Cog):
 
         member = ctx.author if isinstance(ctx.author, discord.Member) else None
         ok, err, template = promo_engine.redeem_promo_code(
-            ctx.author.id, code, member=member,
+            ctx.author.id,
+            code,
+            member=member,
+            guild=ctx.guild,
         )
         if not ok:
             return await ctx.send(embed=utils.error_embed(err), delete_after=10)

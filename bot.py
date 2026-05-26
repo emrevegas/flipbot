@@ -57,6 +57,7 @@ class FlipBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
+        intents.presences = True
         super().__init__(
             command_prefix=commands.when_mentioned_or(config.PREFIX),
             intents=intents,
@@ -121,6 +122,10 @@ class FlipBot(commands.Bot):
 
     async def on_ready(self):
         log.info(f"Ready as {self.user} (ID: {self.user.id})")
+        if not self.intents.presences:
+            log.warning(
+                "Presences intent is disabled — promo/giveaway custom-status checks may fail."
+            )
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,

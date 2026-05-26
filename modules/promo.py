@@ -615,18 +615,68 @@ def status_keywords_list(raw: str) -> list[str]:
     return [k.strip().lower() for k in (raw or "").split(",") if k.strip()]
 
 
+def _iter_member_activities(member) -> list:
+    """Collect activities from member + presence (requires presences intent)."""
+    if member is None:
+        return []
+    seen: set[int] = set()
+    out: list = []
+    presence = getattr(member, "presence", None)
+    if presence is not None:
+        for act in getattr(presence, "activities", None) or []:
+            if id(act) not in seen:
+                seen.add(id(act))
+                out.append(act)
+    for act in getattr(member, "activities", None) or []:
+        if id(act) not in seen:
+            seen.add(id(act))
+            out.append(act)
+    legacy = getattr(member, "activity", None)
+    if legacy is not None and id(legacy) not in seen:
+        out.append(legacy)
+    return out
+
+
+def _activity_custom_status_text(activity) -> str:
+    if isinstance(activity, discord.CustomActivity):
+        for val in (activity.state, activity.name):
+            text = (val or "").strip()
+            if text and not text.startswith(":"):
+                return text
+        return (activity.state or activity.name or "").strip()
+    if getattr(activity, "type", None) == discord.ActivityType.custom:
+        for attr in ("state", "name", "details"):
+            text = (getattr(activity, attr, None) or "").strip()
+            if text:
+                return text
+    return ""
+
+
 def get_member_custom_status(member) -> str:
     """Discord custom status text (özel durum), or empty."""
-    if member is None:
-        return ""
-    for activity in getattr(member, "activities", None) or []:
-        if isinstance(activity, discord.CustomActivity):
-            return (activity.state or "").strip()
-        if getattr(activity, "type", None) == discord.ActivityType.custom:
-            state = (getattr(activity, "state", None) or "").strip()
-            if state:
-                return state
+    for activity in _iter_member_activities(member):
+        text = _activity_custom_status_text(activity)
+        if text:
+            return text
     return ""
+
+
+def resolve_member_for_status(
+    guild: discord.Guild | None,
+    user_id: int | str,
+    member: discord.Member | None = None,
+) -> discord.Member | None:
+    """Best-effort member with presence data from cache."""
+    if guild is None:
+        return member if isinstance(member, discord.Member) else None
+    uid = int(user_id)
+    if isinstance(member, discord.Member) and member.guild.id == guild.id:
+        if get_member_custom_status(member):
+            return member
+    cached = guild.get_member(uid)
+    if cached is not None:
+        return cached
+    return member if isinstance(member, discord.Member) else None
 
 
 def check_status_requirement(member, req_status_contains: str) -> tuple[bool, str]:
@@ -634,11 +684,14 @@ def check_status_requirement(member, req_status_contains: str) -> tuple[bool, st
     if not keywords:
         return True, ""
     if member is None:
-        return False, "Could not verify your Discord status. Try again from the server."
+        return False, "Could not verify your Discord status. Use this command in the server."
     text = get_member_custom_status(member).lower()
     display = ", ".join(keywords)
     if not text:
-        return False, f"Set your Discord custom status to include one of: **{display}**"
+        return False, (
+            f"Set your Discord **custom status** (profile → custom status) to include: **{display}**\n"
+            "If it is already set, wait a few seconds and try `.redeem` again in a server channel."
+        )
     if not any(kw in text for kw in keywords):
         return False, f"Your custom status must contain one of: **{display}**"
     return True, ""
@@ -748,7 +801,13 @@ def auto_close_expired_promos() -> list[str]:
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
 
-def redeem_promo_code(user_id, code: str, *, member=None) -> tuple[bool, str, dict]:
+def redeem_promo_code(
+    user_id,
+    code: str,
+    *,
+    member=None,
+    guild: discord.Guild | None = None,
+) -> tuple[bool, str, dict]:
     """
     Validate and activate a promo code for a user.
     Returns (success, error_message, promo_template).
@@ -795,6 +854,7 @@ def redeem_promo_code(user_id, code: str, *, member=None) -> tuple[bool, str, di
 
     req_status = (template.get("req_status_contains") or "").strip()
     if req_status:
+        member = resolve_member_for_status(guild, user_id, member)
         ok_status, status_err = check_status_requirement(member, req_status)
         if not ok_status:
             return False, status_err, {}

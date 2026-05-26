@@ -4097,7 +4097,12 @@ class PromoCodeInputModal(discord.ui.Modal, title="🎟️ Redeem Promo Code"):
             member = interaction.guild.get_member(interaction.user.id) or member
         if not isinstance(member, discord.Member):
             member = None
-        ok, err, template = promo_engine.redeem_promo_code(self.user_id, code, member=member)
+        ok, err, template = promo_engine.redeem_promo_code(
+            self.user_id,
+            code,
+            member=member,
+            guild=interaction.guild,
+        )
 
         if not ok:
             embed = discord.Embed(
