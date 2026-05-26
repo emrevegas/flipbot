@@ -12,7 +12,7 @@ CATEGORIES = {
         "emoji": "🎮", "label": "Games",
         "color": 0xFEE75C,
         "title": "🎮 Games",
-        "description": "All casino games are played with prefix commands.",
+        "description": "All casino games are played with prefix commands. Bets: amount, **all** (full balance), or **half** (50%).",
         "fields": [
             ("Coin Flip", f"`{PREFIX}cf <amount> [hot/cold]` — vs bot (animated GIF in message)\n"
                            f"`{PREFIX}cf @user <amount> hot|cold` — PvP (30s accept)"),
@@ -21,7 +21,7 @@ CATEGORIES = {
             ("HTW", f"`{PREFIX}htw <bet>` — vs **{config.BOT_DISPLAY_NAME}**\n"
                      f"`{PREFIX}htw @user <bet>` — PvP challenge (30s to accept; Decline & Cancel)."),
             ("Blackjack", f"`{PREFIX}blackjack <amount>`  or  `{PREFIX}bj <amount>`\nPlay blackjack with interactive buttons (Hit / Stand / Double)."),
-            ("Mines", f"`{PREFIX}mines <amount> [mine_count]`\nClick the grid to reveal gems. Cashout button in the grid."),
+            ("Mines", f"`{PREFIX}mines <amount> [mine_count]` — e.g. `{PREFIX}mines all 1`, `{PREFIX}mines half 5`\nClick the grid to reveal gems. Cashout button in the grid."),
             ("Hi-Lo", f"`{PREFIX}hilo <amount>`\nAnimated cards — **Higher** / **Lower** / **Cash Out** buttons on the game message."),
             ("Limbo", f"`{PREFIX}limbo <amount> <target_multiplier>`\nAnimated multiplier — land at or above your target to win."),
             ("Slide", f"`{PREFIX}slide <amount>`\nMultiplier strip slides left — pointer picks your payout (GIF result holds 20s)."),

@@ -18,19 +18,16 @@ from modules import flip_balance_cap as bc
 DICE_GIF = "dice.gif"
 
 
-def parse_dice_args(ctx: commands.Context) -> tuple[discord.Member | None, float | None]:
-    """`.dice <bet>` or `.dice @user <bet>`."""
+async def parse_dice_args(ctx: commands.Context) -> tuple[discord.Member | None, float | None]:
+    """`.dice <bet>` or `.dice @user <bet>` — bet may be all / half."""
+    from modules.bet_parse import find_bet_in_tokens
+
     parts = ctx.message.content.split()
     tokens = parts[1:] if len(parts) > 1 else []
     opponent = ctx.message.mentions[0] if ctx.message.mentions else None
-    bet = None
-    for tok in reversed(tokens):
-        if tok.startswith("<@"):
-            continue
-        try:
-            bet = float(tok.replace(",", ""))
-        except ValueError:
-            continue
+    user = await db.get_user(ctx.author.id)
+    balance = float((user or {}).get("balance", 0))
+    bet = find_bet_in_tokens(tokens, balance)
     return opponent, bet
 
 

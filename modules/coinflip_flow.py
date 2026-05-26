@@ -52,12 +52,16 @@ def parse_side(raw: str) -> str | None:
     return None
 
 
-def parse_cf_args(ctx: commands.Context) -> tuple[discord.Member | None, float | None, str | None]:
+async def parse_cf_args(ctx: commands.Context) -> tuple[discord.Member | None, float | None, str | None]:
+    from modules.bet_parse import parse_bet_token
+
     parts = ctx.message.content.split()
     tokens = parts[1:] if len(parts) > 1 else []
     opponent = ctx.message.mentions[0] if ctx.message.mentions else None
-    bet = None
     choice = None
+    bet = None
+    user = await db.get_user(ctx.author.id)
+    balance = float((user or {}).get("balance", 0))
     for tok in tokens:
         if tok.startswith("<@"):
             continue
@@ -65,10 +69,9 @@ def parse_cf_args(ctx: commands.Context) -> tuple[discord.Member | None, float |
         if side:
             choice = side
             continue
-        try:
-            bet = float(tok.replace(",", ""))
-        except ValueError:
-            continue
+        b = parse_bet_token(tok, balance)
+        if b is not None:
+            bet = b
     return opponent, bet, choice
 
 

@@ -103,6 +103,17 @@ def _ok(msg: str) -> discord.Embed:
     return discord.Embed(description=f"✅ {msg}", color=0x2ECC71)
 
 
+async def _resolve_ctx_bet(ctx: commands.Context, amount_raw: str) -> float | None:
+    """Parse amount / all / half against author balance."""
+    from modules.bet_parse import resolve_bet_amount
+
+    bet, err = await resolve_bet_amount(ctx.author.id, amount_raw)
+    if err:
+        await ctx.send(embed=_err(err))
+        return None
+    return bet
+
+
 async def _check_game(ctx: commands.Context, game_id: str, bet: float) -> bool:
     """Validate user status and bet. Returns True if OK to play."""
     uid = ctx.author.id
@@ -330,18 +341,16 @@ async def _record(
 _HTW_RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 
 
-def _parse_htw_args(ctx: commands.Context) -> tuple[discord.Member | None, float | None]:
-    """`.htw <bet>` or `.htw @user <bet>`."""
+async def _parse_htw_args(ctx: commands.Context) -> tuple[discord.Member | None, float | None]:
+    """`.htw <bet>` or `.htw @user <bet>` — bet may be all / half."""
+    from modules.bet_parse import find_bet_in_tokens
+
     parts = ctx.message.content.split()
     tokens = parts[1:] if len(parts) > 1 else []
     opponent = ctx.message.mentions[0] if ctx.message.mentions else None
-    bet = None
-    for tok in reversed(tokens):
-        try:
-            bet = float(tok.replace(",", ""))
-            break
-        except ValueError:
-            continue
+    user = await db.get_user(ctx.author.id)
+    balance = float((user or {}).get("balance", 0))
+    bet = find_bet_in_tokens(tokens, balance)
     return opponent, bet
 
 
@@ -1435,10 +1444,10 @@ class Games(commands.Cog):
             start_cf_pvp,
         )
 
-        opponent, bet, choice = parse_cf_args(ctx)
+        opponent, bet, choice = await parse_cf_args(ctx)
         if bet is None or bet <= 0:
             return await ctx.send(embed=_err(
-                "Usage: `.cf <bet> [hot/cold]`  •  `.cf @user <bet> hot|cold`"
+                "Usage: `.cf <bet> [hot/cold]`  •  `.cf @user <bet> hot|cold`  •  bet: **all** / **half**"
             ))
 
         await db.ensure_user(ctx.author.id, ctx.author.name)
@@ -1470,10 +1479,10 @@ class Games(commands.Cog):
         """`.dice <bet>` vs house  •  `.dice @user <bet>` PvP — highest roll wins."""
         from modules.dice_flow import parse_dice_args, start_dice_bot_game, start_dice_pvp
 
-        opponent, bet = parse_dice_args(ctx)
+        opponent, bet = await parse_dice_args(ctx)
         if bet is None or bet <= 0:
             return await ctx.send(embed=_err(
-                "Usage: `.dice <bet>` vs bot  •  `.dice @user <bet>` PvP"
+                "Usage: `.dice <bet>` vs bot  •  `.dice @user <bet>` PvP  •  bet: **all** / **half**"
             ))
 
         await db.ensure_user(ctx.author.id, ctx.author.name)
@@ -1503,9 +1512,11 @@ class Games(commands.Cog):
     @commands.command(name="htw", aliases=["wheel", "htwheel"])
     async def htw(self, ctx: commands.Context):
         """Spin vs house or challenge a player. `.htw <bet>` or `.htw @user <bet>`"""
-        opponent, bet = _parse_htw_args(ctx)
+        opponent, bet = await _parse_htw_args(ctx)
         if bet is None or bet <= 0:
-            return await ctx.send(embed=_err("Usage: `.htw <bet>` vs bot  •  `.htw @user <bet>` PvP"))
+            return await ctx.send(embed=_err(
+                "Usage: `.htw <bet>` vs bot  •  `.htw @user <bet>` PvP  •  bet: number, **all**, or **half**"
+            ))
 
         if opponent is None:
             return await _htw_play_vs_bot(ctx, bet)
@@ -1546,11 +1557,15 @@ class Games(commands.Cog):
     # ── Limbo ─────────────────────────────────────────────────────────────────
 
     @commands.command(name="limbo")
-    async def limbo(self, ctx: commands.Context, amount: float, target: float = 2.0):
-        """Limbo — land at or above target to win. .limbo 100 2.5"""
+    async def limbo(self, ctx: commands.Context, amount: str, target: float = 2.0):
+        """Limbo — land at or above target to win. .limbo 100 2.5  •  .limbo all 2"""
         from Games.limbo import LimboGame
 
         await db.ensure_user(ctx.author.id, ctx.author.name)
+        bet = await _resolve_ctx_bet(ctx, amount)
+        if bet is None:
+            return
+        amount = bet
         if not await _check_game(ctx, "limbo", amount):
             return
         if target < 1.01 or target > 1000:
@@ -1587,13 +1602,16 @@ class Games(commands.Cog):
     # ── Slide ─────────────────────────────────────────────────────────────────
 
     @commands.command(name="slide")
-    async def slide(self, ctx: commands.Context, amount: float):
-        """Slide — multipliers scroll; pointer picks your payout. .slide 100"""
-        if not await _check_game(ctx, "slide", amount):
+    async def slide(self, ctx: commands.Context, amount: str):
+        """Slide — multipliers scroll; pointer picks your payout. .slide 100  •  .slide all"""
+        bet = await _resolve_ctx_bet(ctx, amount)
+        if bet is None:
+            return
+        if not await _check_game(ctx, "slide", bet):
             return
         from modules.slide_flow import start_slide
 
-        await start_slide(ctx, amount)
+        await start_slide(ctx, bet)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -1609,9 +1627,13 @@ class Games(commands.Cog):
     }
 
     @commands.command(name="slots", aliases=["slot"])
-    async def slots(self, ctx: commands.Context, amount: float):
-        """Spin the slot machine. .slots 100"""
+    async def slots(self, ctx: commands.Context, amount: str):
+        """Spin the slot machine. .slots 100  •  .slots half"""
         await db.ensure_user(ctx.author.id, ctx.author.name)
+        bet = await _resolve_ctx_bet(ctx, amount)
+        if bet is None:
+            return
+        amount = bet
         if not await _check_game(ctx, "slots", amount):
             return
 
@@ -1663,9 +1685,13 @@ class Games(commands.Cog):
     # ── Blackjack ─────────────────────────────────────────────────────────────
 
     @commands.command(name="blackjack", aliases=["bj"])
-    async def blackjack(self, ctx: commands.Context, amount: float):
-        """Start a blackjack game. .blackjack 100"""
+    async def blackjack(self, ctx: commands.Context, amount: str):
+        """Start a blackjack game. .blackjack 100  •  .bj all"""
         await db.ensure_user(ctx.author.id, ctx.author.name)
+        bet = await _resolve_ctx_bet(ctx, amount)
+        if bet is None:
+            return
+        amount = bet
         if not await _check_game(ctx, "blackjack", amount):
             return
 
@@ -1842,10 +1868,13 @@ class Games(commands.Cog):
     # ── Hi-Lo ─────────────────────────────────────────────────────────────────
 
     @commands.command(name="hilo", aliases=["hl"])
-    async def hilo(self, ctx: commands.Context, amount: float):
-        """Start Hi-Lo with animated cards and buttons. .hilo 100"""
+    async def hilo(self, ctx: commands.Context, amount: str):
+        """Start Hi-Lo with animated cards and buttons. .hilo 100  •  .hilo half"""
+        bet = await _resolve_ctx_bet(ctx, amount)
+        if bet is None:
+            return
         from modules.hilo_flow import start_hilo_command
-        await start_hilo_command(ctx, amount)
+        await start_hilo_command(ctx, bet)
 
     @commands.command(name="higher")
     async def hilo_higher(self, ctx: commands.Context):
@@ -1884,9 +1913,13 @@ class Games(commands.Cog):
     # ── Mines ─────────────────────────────────────────────────────────────────
 
     @commands.command(name="mines")
-    async def mines(self, ctx: commands.Context, amount: float, mine_count: int = 3):
-        """Start a mines game. .mines 100 3 — click grid buttons to reveal, cashout button to collect."""
+    async def mines(self, ctx: commands.Context, amount: str, mine_count: int = 3):
+        """Start a mines game. .mines 100 3  •  .mines all 1  •  .mines half 5"""
         await db.ensure_user(ctx.author.id, ctx.author.name)
+        bet = await _resolve_ctx_bet(ctx, amount)
+        if bet is None:
+            return
+        amount = bet
         if not await _check_game(ctx, "mines", amount):
             return
         if not 1 <= mine_count <= 19:
@@ -1925,13 +1958,12 @@ class Games(commands.Cog):
     async def crystals(self, ctx: commands.Context, amount: str = ""):
         """Reveal 5 crystals and match for prizes.  .crystals <bet>"""
         if not amount:
-            return await ctx.send(embed=_err("Usage: `.crystals <bet>`"))
-        try:
-            bet = float(amount.replace(",", ""))
-        except ValueError:
-            return await ctx.send(embed=_err("Invalid bet amount."))
-
+            return await ctx.send(embed=_err("Usage: `.crystals <bet>` — number, **all**, or **half**"))
         await db.ensure_user(ctx.author.id, ctx.author.name)
+        bet = await _resolve_ctx_bet(ctx, amount)
+        if bet is None:
+            return
+
         if not await _check_game(ctx, "crystals", bet):
             return
 
@@ -1955,18 +1987,16 @@ class Games(commands.Cog):
     async def towers(self, ctx: commands.Context, amount: str = "", mode: str = "easy"):
         """Start a Towers game.  .towers <bet> [easy|normal|hard]"""
         if not amount:
-            return await ctx.send(embed=_err("Usage: `.towers <bet> [easy|normal|hard]`"))
-
-        try:
-            bet = float(amount.replace(",", ""))
-        except ValueError:
-            return await ctx.send(embed=_err("Invalid bet amount."))
+            return await ctx.send(embed=_err("Usage: `.towers <bet> [easy|normal|hard]` — **all** / **half** OK"))
 
         mode = mode.lower()
         if mode not in ("easy", "normal", "hard"):
             return await ctx.send(embed=_err("Mode must be **easy**, **normal**, or **hard**.  `.towers <bet> [easy|normal|hard]`"))
 
         await db.ensure_user(ctx.author.id, ctx.author.name)
+        bet = await _resolve_ctx_bet(ctx, amount)
+        if bet is None:
+            return
         if not await _check_game(ctx, "towers", bet):
             return
 
@@ -2008,12 +2038,7 @@ class Games(commands.Cog):
     async def chickenroad(self, ctx: commands.Context, amount: str = "", mode: str = "easy"):
         """Cross the road — cash out anytime.  .chickenroad <bet> [easy|normal|hard]"""
         if not amount:
-            return await ctx.send(embed=_err("Usage: `.chickenroad <bet> [easy|normal|hard]`"))
-
-        try:
-            bet = float(amount.replace(",", ""))
-        except ValueError:
-            return await ctx.send(embed=_err("Invalid bet amount."))
+            return await ctx.send(embed=_err("Usage: `.chickenroad <bet> [easy|normal|hard]` — **all** / **half** OK"))
 
         mode = mode.lower()
         if mode not in ("easy", "normal", "hard"):
@@ -2022,6 +2047,9 @@ class Games(commands.Cog):
             ))
 
         await db.ensure_user(ctx.author.id, ctx.author.name)
+        bet = await _resolve_ctx_bet(ctx, amount)
+        if bet is None:
+            return
         if not await _check_game(ctx, "chicken_road", bet):
             return
 
