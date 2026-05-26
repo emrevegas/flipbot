@@ -24,6 +24,7 @@ _GAME_DEFAULT_NAMES = {
     "hilo": "Hi-Lo",
     "blackjack": "Blackjack",
     "limbo": "Limbo",
+    "slide": "Slide",
     "slot": "Slots",
     "slots": "Slots",
     "towers": "Towers",

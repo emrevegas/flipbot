@@ -27,6 +27,7 @@ RIGGED_PROMO_GAMES: tuple[tuple[str, str, str], ...] = (
     ("coinflip", "Coinflip", "🪙"),
     ("htw", "Hot Towel War", "🎡"),
     ("limbo", "Limbo", "🚀"),
+    ("slide", "Slide", "🎢"),
     ("slot", "Slots", "🎰"),
     ("case_opening", "Case Opening", "📦"),
 )

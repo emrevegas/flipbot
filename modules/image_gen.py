@@ -721,6 +721,236 @@ async def render_limbo_gif(
     return buf
 
 
+# ── Slide GIF ────────────────────────────────────────────────────────────────
+
+SLIDE_RESULT_HOLD_MS = 20_000
+SLIDE_SPIN_MS = 2_400
+
+
+def _slide_mult_label(mult: float) -> str:
+    if mult <= 0:
+        return "0x"
+    if mult < 10:
+        return f"{mult:g}x"
+    return f"{int(mult)}x" if mult == int(mult) else f"{mult:g}x"
+
+
+def _slide_tier_style(mult: float) -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
+    """fill, border, text."""
+    if mult >= 50:
+        return (42, 32, 8), (255, 210, 50), (255, 235, 120)
+    if mult >= 25:
+        return (48, 18, 12), (220, 70, 55), (255, 180, 140)
+    if mult >= 10:
+        return (52, 12, 28), (200, 45, 75), (255, 140, 160)
+    if mult >= 5:
+        return (32, 18, 52), (168, 85, 247), (220, 180, 255)
+    if mult >= 2:
+        return (12, 38, 28), (46, 213, 96), (160, 255, 200)
+    if mult >= 1:
+        return (14, 28, 48), (56, 189, 248), (180, 230, 255)
+    if mult >= 0.5:
+        return (22, 26, 38), (90, 105, 130), (170, 180, 200)
+    return (18, 20, 28), (120, 55, 55), (200, 120, 120)
+
+
+def _slide_ease_out(t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return 1.0 - (1.0 - t) ** 2.4
+
+
+async def render_slide_gif(
+    username: str,
+    bet: float,
+    result_mult: float,
+    *,
+    won: bool,
+    net_change: float,
+) -> io.BytesIO:
+    """Slide — multipliers scroll right→left; pointer stops on result; 20s hold, loop once."""
+    from Games.slide import random_strip_cell
+
+    W, H = 680, 300
+    HDR_H = 52
+    STRIP_Y = 88
+    CELL_W, CELL_H = 76, 92
+    GAP = 10
+    STEP = CELL_W + GAP
+    POINTER_X = W // 2
+
+    BG = (8, 12, 24)
+    PANEL = (14, 20, 38)
+    WHITE = (245, 247, 255)
+    MUTED = (110, 120, 145)
+    GREEN = (46, 213, 96)
+    RED = (231, 76, 60)
+    GOLD = (255, 196, 0)
+
+    font_user = _font(15, bold=True)
+    font_bet = _font(14, bold=True)
+    font_cell = _font(17, bold=True)
+    font_cell_sm = _font(13, bold=True)
+    font_res = _font(40, bold=True)
+    font_pts = _font(20, bold=True)
+    font_tag = _font(10, bold=True)
+
+    def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 8
+
+    strip_len = 36
+    win_idx = strip_len - 7
+    strip: list[float] = [random_strip_cell() for _ in range(strip_len)]
+    strip[win_idx] = result_mult
+
+    strip_x_end = POINTER_X - win_idx * STEP - CELL_W // 2
+    scroll_dist = STEP * 14
+    strip_x_start = strip_x_end + scroll_dist
+
+    def _draw_cell(
+        draw: ImageDraw.ImageDraw,
+        x: int,
+        y: int,
+        mult: float,
+        *,
+        highlight: bool = False,
+    ) -> None:
+        fill, border, text_col = _slide_tier_style(mult)
+        if highlight:
+            border = (255, 220, 80)
+            fill = tuple(min(255, c + 18) for c in fill)
+        draw.rounded_rectangle(
+            [x, y, x + CELL_W, y + CELL_H],
+            radius=12,
+            fill=fill,
+            outline=border,
+            width=4 if highlight else 2,
+        )
+        label = _slide_mult_label(mult)
+        font = font_cell if len(label) <= 5 else font_cell_sm
+        lw = _tw(draw, label, font)
+        draw.text((x + (CELL_W - lw) / 2, y + 28), label, font=font, fill=text_col)
+        if mult >= 50:
+            tag = "MAX"
+            tc = GOLD
+        elif mult >= 25:
+            tag = "RARE"
+            tc = (255, 160, 120)
+        elif mult >= 10:
+            tag = "HOT"
+            tc = (255, 120, 150)
+        elif mult >= 5:
+            tag = "HIGH"
+            tc = (200, 160, 255)
+        else:
+            tag = ""
+            tc = MUTED
+        if tag:
+            tw = _tw(draw, tag, font_tag)
+            draw.text((x + (CELL_W - tw) / 2, y + 8), tag, font=font_tag, fill=tc)
+
+    def make_frame(
+        strip_x: float,
+        *,
+        show_result: bool = False,
+    ) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+
+        draw.rectangle([0, 0, W, HDR_H], fill=PANEL)
+        uname = (username[:22] + "…") if len(username) > 22 else username
+        draw.text((18, 16), uname, font=font_user, fill=WHITE)
+        bet_s = f"Bet {_fmt(bet)} pts"
+        bw = _tw(draw, bet_s, font_bet)
+        draw.text((W - 18 - bw, 18), bet_s, font=font_bet, fill=MUTED)
+
+        track_y1, track_y2 = STRIP_Y - 8, STRIP_Y + CELL_H + 16
+        draw.rounded_rectangle(
+            [24, track_y1, W - 24, track_y2],
+            radius=16,
+            fill=(10, 16, 32),
+            outline=(40, 52, 82),
+            width=2,
+        )
+
+        sx = int(strip_x)
+        for i, mult in enumerate(strip):
+            cx = sx + i * STEP
+            if cx + CELL_W < -20 or cx > W + 20:
+                continue
+            hi = show_result and i == win_idx
+            _draw_cell(draw, cx, STRIP_Y, mult, highlight=hi)
+
+        py1, py2 = STRIP_Y - 4, STRIP_Y + CELL_H + 4
+        draw.line([(POINTER_X, py1), (POINTER_X, py2)], fill=GOLD, width=3)
+        draw.polygon(
+            [
+                (POINTER_X, py1 - 2),
+                (POINTER_X - 12, py1 - 18),
+                (POINTER_X + 12, py1 - 18),
+            ],
+            fill=GOLD,
+        )
+        draw.polygon(
+            [
+                (POINTER_X, py2 + 2),
+                (POINTER_X - 10, py2 + 16),
+                (POINTER_X + 10, py2 + 16),
+            ],
+            fill=GOLD,
+        )
+
+        if show_result:
+            res_y = STRIP_Y + CELL_H + 28
+            result_label = "WIN" if won else "LOSS"
+            rc = GREEN if won else RED
+            rw = _tw(draw, result_label, font_res)
+            draw.text(((W - rw) / 2, res_y), result_label, font=font_res, fill=rc)
+            pfx = "+" if net_change > 0 else ""
+            sub = f"{pfx}{_fmt(net_change)} pts"
+            sw = _tw(draw, sub, font_pts)
+            sub_col = GREEN if net_change > 0 else RED
+            draw.text(((W - sw) / 2, res_y + 46), sub, font=font_pts, fill=sub_col)
+            land = f"{_slide_mult_label(result_mult)}"
+            lw = _tw(draw, land, font_bet)
+            draw.text(((W - lw) / 2, res_y + 76), land, font=font_bet, fill=MUTED)
+
+        return img
+
+    n_anim = 22
+    frame_ms = max(40, SLIDE_SPIN_MS // n_anim)
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+
+    for i in range(n_anim):
+        t = _slide_ease_out((i + 1) / n_anim)
+        sx = strip_x_start + (strip_x_end - strip_x_start) * t
+        frames.append(make_frame(sx))
+        durations.append(frame_ms)
+
+    final = make_frame(strip_x_end, show_result=True)
+    frames.append(final)
+    durations.append(SLIDE_RESULT_HOLD_MS)
+    frames.append(final.copy())
+    durations.append(80)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=1,
+        optimize=False,
+        disposal=2,
+    )
+    buf.seek(0)
+    return buf
+
+
 # ── HTW (Head-to-Head Wheel) GIF ─────────────────────────────────────────────
 
 HTW_WHEEL_ORDER: list[int] = [

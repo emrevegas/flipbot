@@ -359,6 +359,27 @@ def _ensure_limbo_game_entry(games_data: dict) -> dict:
     return games_data
 
 
+def _ensure_slide_game_entry(games_data: dict) -> dict:
+    if not isinstance(games_data, dict):
+        games_data = {}
+    slide = games_data.get("slide")
+    if not isinstance(slide, dict):
+        slide = {}
+    slide.setdefault("name", "Slide")
+    slide.setdefault("emoji", "🎢")
+    slide.setdefault("enabled", True)
+    slide.setdefault("description", "Multiplier strip — pointer picks your payout.")
+    slide.setdefault("min_bet", 10)
+    slide.setdefault("max_bet", 10000)
+    slide.setdefault("house_edge", 2.75)
+    slide.setdefault("rigged_chance", 0.0)
+    slide.setdefault("category", "table_games")
+    slide.setdefault("created_at", int(time.time()))
+    slide.setdefault("last_modified", int(time.time()))
+    games_data["slide"] = slide
+    return games_data
+
+
 def _ensure_slot_game_entry(games_data: dict) -> dict:
     if not isinstance(games_data, dict):
         games_data = {}
@@ -490,6 +511,7 @@ def _ensure_all_game_entries(games_data: dict) -> dict:
     games_data = _ensure_dice_game_entry(games_data)
     games_data = _ensure_coinflip_game_entry(games_data)
     games_data = _ensure_limbo_game_entry(games_data)
+    games_data = _ensure_slide_game_entry(games_data)
     games_data = _ensure_slot_game_entry(games_data)
     games_data = _ensure_case_opening_game_entry(games_data)
     games_data = _ensure_case_battle_game_entry(games_data)
@@ -4676,6 +4698,8 @@ class GameDetailView(discord.ui.View):
             self.add_item(_SlotSetupButton())
         elif game_id == "limbo":
             self.add_item(_LimboRiggedButton())
+        elif game_id == "slide":
+            self.add_item(_SlideRiggedButton())
         elif game_id == "blackjack":
             self.add_item(_BlackjackRiggedButton())
         elif game_id == "live_blackjack":
@@ -4883,6 +4907,63 @@ class _LimboRiggedButton(discord.ui.Button):
         games_data = _ensure_limbo_game_entry(get_data("server/games") or {})
         set_data("server/games", games_data)
         await interaction.response.send_modal(LimboRiggedModal(games_data.get("limbo", {})))
+
+
+class SlideRiggedModal(discord.ui.Modal):
+    """Slide rigged_chance setting."""
+
+    def __init__(self, current_info: dict):
+        super().__init__(title="Slide — Rigged Chance", timeout=300)
+        if not isinstance(current_info, dict):
+            current_info = {}
+        self.rigged_chance_input = discord.ui.TextInput(
+            label="Rigged Chance (%) — force low multiplier",
+            placeholder="0.0",
+            default=str(current_info.get("rigged_chance", 0.0)),
+            required=True,
+            max_length=8,
+            style=discord.TextStyle.short,
+        )
+        self.add_item(self.rigged_chance_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            rigged = float(self.rigged_chance_input.value.replace(",", "."))
+            if rigged < 0 or rigged > 100:
+                raise ValueError
+        except (TypeError, ValueError):
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="❌ Invalid Input",
+                    description="Rigged chance must be a number between 0 and 100.",
+                    color=discord.Color.red(),
+                ),
+                ephemeral=True,
+            )
+        games_data = _ensure_slide_game_entry(get_data("server/games") or {})
+        slide = games_data.get("slide", {})
+        slide["rigged_chance"] = round(rigged, 4)
+        slide["last_modified"] = int(time.time())
+        games_data["slide"] = slide
+        set_data("server/games", games_data)
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Slide Rigged Chance Updated",
+                description=f"🎲 Rigged Chance: **{rigged}%**",
+                color=discord.Color.green(),
+            ),
+            ephemeral=True,
+        )
+
+
+class _SlideRiggedButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🎲 Slide Rigged %", style=discord.ButtonStyle.danger, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        games_data = _ensure_slide_game_entry(get_data("server/games") or {})
+        set_data("server/games", games_data)
+        await interaction.response.send_modal(SlideRiggedModal(games_data.get("slide", {})))
 
 
 class _MinesRiggedButton(discord.ui.Button):
@@ -8093,6 +8174,7 @@ _PROMO_GAMES = [
     ("Roulette", "roulette"),
     ("HiLo",     "hilo"),
     ("Limbo",    "limbo"),
+    ("Slide",    "slide"),
     ("Crystals", "crystals"),
     ("Towers",   "towers"),
 ]
