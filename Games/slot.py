@@ -141,6 +141,19 @@ def _spin_grid(pf_fl: Optional[list] = None) -> list[list[dict]]:
     return [[_spin_reel(floats[row * COLS + col]) for col in range(COLS)] for row in range(ROWS)]
 
 
+def spin_round(
+    bet: int,
+    pf_fl: Optional[list] = None,
+    num_lines: int = NUM_LINES,
+) -> tuple[list[list[dict]], list[dict], int]:
+    """Spin 3×5 grid and evaluate paylines. Returns (grid, wins, total_payout)."""
+    grid = _spin_grid(pf_fl)
+    wins = _evaluate_paylines(grid, num_lines)
+    line_bet = bet / num_lines
+    total_payout = int(sum(w["mult"] * line_bet for w in wins))
+    return grid, wins, total_payout
+
+
 def _evaluate_paylines(grid: list[list[dict]], num_lines: int = NUM_LINES) -> list[dict]:
     """Evaluate the first `num_lines` paylines and return sorted win list."""
     wins = []
@@ -277,6 +290,19 @@ def _build_embed(
     embed.set_thumbnail(url=user.display_avatar.url)
     embed.set_footer(text="🔐 Provably Fair · Vegas Bot")
     return embed
+
+
+def spin_round(
+    bet: int,
+    pf_fl: Optional[list] = None,
+    num_lines: int = NUM_LINES,
+) -> tuple[list[list[dict]], list[dict], int]:
+    """Spin grid and evaluate paylines. Returns (grid, wins, total_payout)."""
+    grid = _spin_grid(pf_fl)
+    wins = _evaluate_paylines(grid, num_lines)
+    line_bet = bet / num_lines
+    total_payout = int(sum(w["mult"] * line_bet for w in wins))
+    return grid, wins, total_payout
 
 
 # ─── Game class ───────────────────────────────────────────────────────────────

@@ -29,7 +29,7 @@ CATEGORIES = {
             ("Jackpot", f"In the **Jackpot room** (admin-set channel):\n"
                          f"`{PREFIX}jp <bet>` or `{PREFIX}jackpot <bet>` — join the pool (chance = your bet ÷ total).\n"
                          f"`{PREFIX}canceljp` — leave before spin (refund). Min **2** players to start."),
-            ("Slots", f"`{PREFIX}slots <amount>`\nSpin the slot machine."),
+            ("Slots", f"`{PREFIX}slots <amount>`\n3×5 slot — 30 paylines, animated reels."),
             ("Crystals", f"`{PREFIX}crystals <bet>`\nReveal 5 crystals and match for prizes."),
             ("Towers", f"`{PREFIX}towers <bet> [easy|normal|hard]`\nClimb the tower grid."),
             ("Chicken Road", f"`{PREFIX}chickenroad <bet> [easy|normal|hard]`  (`{PREFIX}cr`)\nCross lanes before the car hits."),

@@ -1784,72 +1784,17 @@ class Games(commands.Cog):
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
-    SLOT_SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "⭐", "💎", "7️⃣"]
-    SLOT_PAYOUTS = {
-        "7️⃣": 10.0,
-        "💎": 7.0,
-        "⭐": 5.0,
-        "🍇": 4.0,
-        "🍊": 3.0,
-        "🍋": 2.5,
-        "🍒": 2.0,
-    }
-
     @commands.command(name="slots", aliases=["slot"])
     async def slots(self, ctx: commands.Context, amount: str):
-        """Spin the slot machine. .slots 100  •  .slots half"""
-        await db.ensure_user(ctx.author.id, ctx.author.name)
-        bet = await _resolve_ctx_bet(ctx, amount)
+        """3×5 slot — 30 paylines. .slots 100  •  .slots all"""
+        bet = await _resolve_ctx_bet(ctx, amount, game_id="slots")
         if bet is None:
             return
-        amount = bet
-        if not await _check_game(ctx, "slots", amount):
+        if not await _check_game(ctx, "slots", bet):
             return
+        from modules.slot_flow import start_slots
 
-        rigged = await bc.should_rig_outcome(ctx.author.id, "slots", amount)
-
-        if rigged:
-            reels = [random.choice(self.SLOT_SYMBOLS) for _ in range(3)]
-            while len(set(reels)) == 1:
-                reels = [random.choice(self.SLOT_SYMBOLS) for _ in range(3)]
-        else:
-            if random.random() < 0.30:
-                sym = random.choice(self.SLOT_SYMBOLS)
-                reels = [sym, sym, sym]
-            elif random.random() < 0.45:
-                sym = random.choice(self.SLOT_SYMBOLS)
-                reels = [sym, sym, random.choice(self.SLOT_SYMBOLS)]
-                random.shuffle(reels)
-            else:
-                reels = [random.choice(self.SLOT_SYMBOLS) for _ in range(3)]
-
-        if len(set(reels)) == 1:
-            multi = self.SLOT_PAYOUTS.get(reels[0], 2.0)
-            gross = amount * multi
-        elif len(set(reels)) == 2:
-            gross = amount * 1.5
-        else:
-            gross = 0
-
-        won = gross > 0
-        net = await _payout(ctx.author.id, "slots", amount, gross)
-        await _record(
-            ctx.author.id, won, amount, net,
-            game_id="slot",
-            user=ctx.author,
-            client=ctx.bot,
-            guild_id=ctx.guild.id if ctx.guild else None,
-        )
-
-        loop = asyncio.get_event_loop()
-        img_buf = await loop.run_in_executor(
-            None, image_gen.render_slots_card, reels, amount, net
-        )
-        outcome = "WIN" if won else "LOSS"
-        await ctx.send(
-            content=f"{'🏆' if won else '💔'} **{outcome}!** {ctx.author.mention}",
-            file=discord.File(img_buf, "slots.png"),
-        )
+        await start_slots(ctx, bet)
 
     # ── Blackjack ─────────────────────────────────────────────────────────────
 

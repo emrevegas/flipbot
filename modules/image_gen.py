@@ -1464,6 +1464,253 @@ def render_slots_card(reels: list[str], bet: float, win_amount: float) -> io.Byt
     return buf
 
 
+# ── Slots 3×5 GIF (30 paylines, column cascade) ───────────────────────────────
+
+_SLOTS_COL_FRAMES = 7
+_SLOTS_COL_MS = 95
+_SLOTS_HOLD_MS = 4_500
+
+_SLOTS_LINE_COLORS = [
+    (255, 196, 0),
+    (46, 213, 96),
+    (56, 189, 248),
+    (255, 120, 180),
+    (180, 140, 255),
+    (255, 140, 60),
+    (120, 220, 255),
+    (255, 90, 90),
+]
+
+
+async def render_slots_gif(
+    *,
+    username: str,
+    bet: float,
+    grid_ids: list[list[str]],
+    wins: list[dict],
+    emoji_map: dict[str, str],
+    spin_emoji: str,
+    won: bool,
+    net_change: float,
+    gross_payout: float,
+) -> io.BytesIO:
+    """3×5 slot — columns lock one-by-one; final frame draws winning paylines."""
+    from Games.slot import COLS, PAYLINES, ROWS, SYMBOLS
+
+    W, H = 680, 420
+    HDR_H = 56
+    INFO_H = 44
+    PAD = 16
+
+    BG = (8, 12, 24)
+    PANEL = (14, 20, 38)
+    MUTED = (110, 120, 145)
+    WHITE = (245, 247, 255)
+    CYAN = (56, 189, 248)
+    GREEN = (46, 213, 96)
+    RED = (231, 76, 60)
+    GOLD = (255, 196, 0)
+
+    id_to_sym = {s["id"]: s for s in SYMBOLS}
+    pool_ids = [s["id"] for s in SYMBOLS]
+
+    CELL_W, CELL_H = 108, 86
+    GAP = 10
+    grid_w = COLS * CELL_W + (COLS - 1) * GAP
+    grid_h = ROWS * CELL_H + (ROWS - 1) * GAP
+    grid_x0 = (W - grid_w) // 2
+    grid_y0 = HDR_H + 28
+
+    font_hdr = _font(16, bold=True)
+    font_name = _font(14, bold=True)
+    font_bet = _font(13, bold=True)
+    font_side = _font(44, bold=True)
+    font_win = _font(20, bold=True)
+    font_ln = _font(11, bold=True)
+
+    def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
+        try:
+            return draw_obj.textlength(text, font=font)
+        except Exception:
+            return len(text) * 8
+
+    def _cell_xy(col: int, row: int) -> tuple[int, int]:
+        return grid_x0 + col * (CELL_W + GAP), grid_y0 + row * (CELL_H + GAP)
+
+    def _cell_center(col: int, row: int) -> tuple[int, int]:
+        x, y = _cell_xy(col, row)
+        return x + CELL_W // 2, y + CELL_H // 2
+
+    tokens: set[str] = {spin_emoji}
+    for row in grid_ids:
+        for sid in row:
+            tokens.add(emoji_map.get(sid, id_to_sym.get(sid, {}).get("emoji", "❓")))
+    for _ in range(6):
+        tokens.add(emoji_map.get(random.choice(pool_ids), "🎰"))
+
+    import aiohttp
+
+    emoji_cache: dict[str, Image.Image] = {}
+    async with aiohttp.ClientSession() as session:
+        for tok in tokens:
+            if tok and tok not in emoji_cache:
+                emoji_cache[tok] = await _load_emoji_rgba(str(tok), 58, session)
+
+    def _token_for_id(sid: str) -> str:
+        return emoji_map.get(sid, id_to_sym.get(sid, {}).get("emoji", "❓"))
+
+    def _paste_cell(
+        base: Image.Image,
+        col: int,
+        row: int,
+        token: str,
+        *,
+        dim: float = 1.0,
+        highlight: bool = False,
+    ) -> None:
+        x, y = _cell_xy(col, row)
+        layer = Image.new("RGBA", (CELL_W, CELL_H), (0, 0, 0, 0))
+        ld = ImageDraw.Draw(layer)
+        fill = (18, 24, 42)
+        border = (58, 66, 88)
+        if highlight:
+            fill = (28, 38, 58)
+            border = GOLD
+        ld.rounded_rectangle([2, 2, CELL_W - 3, CELL_H - 3], radius=12, fill=fill, outline=border, width=3)
+        em = emoji_cache.get(token)
+        if em is None:
+            em = emoji_cache.get(spin_emoji, emoji_cache[list(emoji_cache.keys())[0]])
+        em = em.copy()
+        ox = (CELL_W - em.width) // 2
+        oy = (CELL_H - em.height) // 2
+        layer.paste(em, (ox, oy), em)
+        if dim < 1.0:
+            r, g, b, a = layer.split()
+            a = a.point(lambda p: int(p * dim) if p else 0)
+            layer = Image.merge("RGBA", (r, g, b, a))
+        base.paste(layer, (x, y), layer)
+
+    def _draw_paylines(img: Image.Image) -> None:
+        if not wins:
+            return
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        od = ImageDraw.Draw(overlay)
+        shown = wins[:8]
+        for wi, w in enumerate(shown):
+            line_idx = int(w.get("line_num", 1)) - 1
+            if line_idx < 0 or line_idx >= len(PAYLINES):
+                continue
+            payline = PAYLINES[line_idx]
+            count = int(w.get("count", 3))
+            col = _SLOTS_LINE_COLORS[wi % len(_SLOTS_LINE_COLORS)]
+            pts = [_cell_center(c, payline[c]) for c in range(min(count, COLS))]
+            if len(pts) >= 2:
+                od.line(pts, fill=(*col, 220), width=5)
+            for c, (px, py) in enumerate(pts):
+                od.ellipse([px - 6, py - 6, px + 6, py + 6], fill=(*col, 255), outline=(255, 255, 255, 200), width=2)
+                if c == 0:
+                    lbl = f"L{line_idx + 1}"
+                    lw = _tw(od, lbl, font_ln)
+                    od.text((px - lw / 2, py - 22), lbl, font=font_ln, fill=(*col, 255))
+        img.paste(Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB"))
+
+    def _make_frame(
+        revealed_cols: int,
+        *,
+        spin_col: int | None = None,
+        spin_phase: int = 0,
+        final: bool = False,
+    ) -> Image.Image:
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+
+        draw.rectangle([0, 0, W, HDR_H], fill=PANEL)
+        t1, t2 = "SLOT", "MACHINE"
+        tw1 = _tw(draw, t1, font_hdr)
+        tw2 = _tw(draw, t2, font_hdr)
+        draw.text(((W - (tw1 + 12 + tw2)) / 2, 18), t1, font=font_hdr, fill=CYAN)
+        draw.text(((W - (tw1 + 12 + tw2)) / 2 + tw1 + 12, 18), t2, font=font_hdr, fill=WHITE)
+        sub = "30 LINES"
+        sw = _tw(draw, sub, font_hdr)
+        draw.text((W - PAD - sw, 18), sub, font=font_hdr, fill=MUTED)
+
+        draw.rounded_rectangle(
+            [grid_x0 - 12, grid_y0 - 12, grid_x0 + grid_w + 12, grid_y0 + grid_h + 12],
+            radius=18,
+            fill=(10, 16, 32),
+            outline=(40, 52, 82),
+            width=2,
+        )
+
+        for col in range(COLS):
+            for row in range(ROWS):
+                if col < revealed_cols or (final and col < COLS):
+                    sid = grid_ids[row][col]
+                    _paste_cell(img, col, row, _token_for_id(sid))
+                elif spin_col is not None and col == spin_col:
+                    sid = pool_ids[(spin_phase + row + col * 3) % len(pool_ids)]
+                    _paste_cell(img, col, row, _token_for_id(sid), dim=0.92)
+                else:
+                    _paste_cell(img, col, row, spin_emoji, dim=0.75)
+
+        if final:
+            _draw_paylines(img)
+            draw = ImageDraw.Draw(img)
+            res_y = grid_y0 + grid_h + 18
+            label = "WIN" if won else "LOSE"
+            col = GREEN if won else RED
+            lw = _tw(draw, label, font_side)
+            draw.text(((W - lw) / 2, res_y), label, font=font_side, fill=col)
+            if won:
+                line2 = f"+{_fmt(net_change)} pts"
+            else:
+                line2 = f"-{_fmt(bet)} pts"
+            l2w = _tw(draw, line2, font_win)
+            draw.text(((W - l2w) / 2, res_y + 50), line2, font=font_win, fill=col)
+            if won and gross_payout > 0:
+                line3 = f"Payout {_fmt(gross_payout)} pts"
+                l3w = _tw(draw, line3, font_bet)
+                draw.text(((W - l3w) / 2, res_y + 78), line3, font=font_bet, fill=MUTED)
+
+        draw.rectangle([0, H - INFO_H, W, H], fill=(8, 12, 22))
+        draw.line([(0, H - INFO_H), (W, H - INFO_H)], fill=(35, 45, 72), width=1)
+        uname = (username[:20] + "…") if len(username) > 20 else username
+        draw.text((18, H - INFO_H + 14), uname, font=font_name, fill=MUTED)
+        bet_s = f"Bet {_fmt(bet)} pts"
+        bw = _tw(draw, bet_s, font_bet)
+        draw.text((W - 18 - bw, H - INFO_H + 14), bet_s, font=font_bet, fill=MUTED)
+
+        return img
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+
+    for col in range(COLS):
+        for phase in range(_SLOTS_COL_FRAMES):
+            frames.append(_make_frame(col, spin_col=col, spin_phase=phase))
+            durations.append(_SLOTS_COL_MS)
+        frames.append(_make_frame(col + 1))
+        durations.append(120)
+
+    for _ in range(4):
+        frames.append(_make_frame(COLS, final=True))
+        durations.append(_SLOTS_HOLD_MS // 4)
+
+    buf = io.BytesIO()
+    frames[0].save(
+        buf,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=1,
+        optimize=False,
+        disposal=2,
+    )
+    buf.seek(0)
+    return buf
+
+
 # ── Stats Card ─────────────────────────────────────────────────────────────────
 
 def render_stats_card(username: str, stats: dict, wagered: float = 0) -> io.BytesIO:
