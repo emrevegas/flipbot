@@ -41,11 +41,8 @@ _channel_locks: dict[int, asyncio.Lock] = {}
 _room_tasks: dict[int, asyncio.Task] = {}
 JP_FEEDBACK_DELETE_SEC = 8.0
 
-# Ratelimit: lobby edit only when state changed; 10s idle/countdown, 1s in final seconds.
+# Lobby edit only on roster/pool/status changes — never on countdown ticks alone.
 JP_UI_MIN_REFRESH_WAIT_SEC = 10
-JP_UI_MIN_REFRESH_COUNTDOWN_NORMAL_SEC = 10
-JP_UI_MIN_REFRESH_COUNTDOWN_LAST_SEC = 1
-JP_UI_COUNTDOWN_LAST_SECONDS = 5
 JP_UI_PLAYER_CHANGE_MIN_SEC = 3
 
 
@@ -109,40 +106,21 @@ def _pause_countdown_to_waiting(round_data: dict) -> dict:
 
 
 def _lobby_ui_snapshot(round_data: dict) -> list:
-    """JSON-serializable lobby state for skip-unchanged edits."""
+    """Lobby fingerprint — excludes countdown seconds (time alone must not trigger edits)."""
     players = round_data.get("players") or []
     status = round_data.get("status") or "waiting"
     pool = round(pool_total(players), 2)
-    rem = _countdown_remaining(round_data) if status == "countdown" else None
-    if rem is not None and rem > JP_UI_COUNTDOWN_LAST_SECONDS:
-        rem_key = rem // JP_UI_MIN_REFRESH_COUNTDOWN_NORMAL_SEC
-    elif rem is not None:
-        rem_key = rem
-    else:
-        rem_key = None
     player_key = [
         [int(p.get("user_id", 0)), round(float(p.get("bet") or 0), 2)]
         for p in sorted(players, key=lambda x: int(x.get("user_id", 0)))
     ]
-    return [status, player_key, pool, rem_key]
+    return [status, player_key, pool]
 
 
-def _min_refresh_interval(round_data: dict, *, player_change: bool) -> float:
-    status = round_data.get("status")
-    rem = _countdown_remaining(round_data) if status == "countdown" else None
-    if status == "waiting":
-        interval = float(JP_UI_MIN_REFRESH_WAIT_SEC)
-    elif status == "countdown" and rem is not None:
-        interval = (
-            float(JP_UI_MIN_REFRESH_COUNTDOWN_LAST_SEC)
-            if rem <= JP_UI_COUNTDOWN_LAST_SECONDS
-            else float(JP_UI_MIN_REFRESH_COUNTDOWN_NORMAL_SEC)
-        )
-    else:
-        interval = float(JP_UI_MIN_REFRESH_WAIT_SEC)
+def _min_refresh_interval(*, player_change: bool) -> float:
     if player_change:
-        interval = max(interval, float(JP_UI_PLAYER_CHANGE_MIN_SEC))
-    return interval
+        return float(JP_UI_PLAYER_CHANGE_MIN_SEC)
+    return float(JP_UI_MIN_REFRESH_WAIT_SEC)
 
 
 async def _delete_message_after(message: discord.Message, seconds: float) -> None:
@@ -219,24 +197,29 @@ async def refresh_lobby_message(
 
     now_ts = time.time()
     last_ts = float(round_data.get("ui_last_refresh") or 0)
-    min_interval = _min_refresh_interval(round_data, player_change=player_change)
+    min_interval = _min_refresh_interval(player_change=player_change)
     if min_interval > 0 and (now_ts - last_ts) < min_interval:
         round_data["ui_dirty"] = True
         set_round(channel.id, round_data)
         return None
 
+    status_line = ""
+    if round_data.get("status") == "countdown":
+        status_line = f"Pool {pool:,.0f} pts  •  {len(players)} players  •  countdown"
+
     lobby_buf = await image_gen.render_jackpot_lobby_png(
         players,
         pool=pool,
-        countdown_secs=rem,
+        countdown_secs=None,
+        status_line=status_line,
     )
     lobby_buf.seek(0)
 
     n = len(players)
     if n < MIN_PLAYERS:
         footer = f"Waiting for players — **{n}/{MIN_PLAYERS}** minimum. Join with `.jp <bet>`"
-    elif round_data.get("status") == "countdown" and rem is not None:
-        footer = f"**{n}** players  •  starts in **{rem}s**"
+    elif round_data.get("status") == "countdown":
+        footer = f"**{n}** players  •  round starting soon…"
     else:
         footer = f"**{n}** players in pool."
 
@@ -306,10 +289,11 @@ def ensure_jackpot_room_loop(bot: discord.Client, channel_id: int) -> None:
                 if status == "countdown":
                     rem = _countdown_remaining(rd)
                     if rem > 0:
-                        async with _lock(channel_id):
-                            rd = get_round(channel_id)
-                            if rd and rd.get("status") == "countdown":
-                                await refresh_lobby_message(bot, ch, rd)
+                        if rd.get("ui_dirty"):
+                            async with _lock(channel_id):
+                                rd = get_round(channel_id)
+                                if rd and rd.get("status") == "countdown":
+                                    await refresh_lobby_message(bot, ch, rd)
                         continue
 
                     async with _lock(channel_id):
