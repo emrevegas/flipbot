@@ -570,6 +570,52 @@ def _limbo_ease_out(t: float) -> float:
     return 1.0 - (1.0 - t) ** 2.2
 
 
+def _ratio_log(value: float, *, max_value: float = 50.0) -> float:
+    """Map value to 0–1 for vertical bar fill (log scale)."""
+    value = max(0.0, float(value))
+    cap = max(0.01, float(max_value))
+    return min(1.0, math.log1p(value) / math.log1p(cap))
+
+
+def _draw_limbo_style_bar(
+    draw: ImageDraw.ImageDraw,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    ratio: float,
+    *,
+    label: str = "",
+    marker_color: tuple[int, int, int] = (255, 196, 0),
+    fill_color: tuple[int, int, int] = (28, 38, 72),
+    track_fill: tuple[int, int, int] = (12, 18, 34),
+    track_outline: tuple[int, int, int] = (42, 52, 88),
+    font_label=None,
+    font_value=None,
+    value_text: str = "",
+) -> None:
+    """Vertical Limbo-style track — fill rises from bottom with ratio 0–1."""
+    ratio = max(0.0, min(1.0, ratio))
+    draw.rounded_rectangle(
+        [x1, y1, x2, y2], radius=14,
+        fill=track_fill, outline=track_outline, width=2,
+    )
+    inner_h = max(4, y2 - y1 - 8)
+    fill_top = int(y1 + 4 + (1.0 - ratio) * inner_h)
+    fill_bot = y2 - 4
+    if fill_top < fill_bot:
+        draw.rectangle([x1 + 4, fill_top, x2 - 4, fill_bot], fill=fill_color)
+    draw.line([(x1 - 6, fill_top), (x2 + 6, fill_top)], fill=marker_color, width=3)
+    if font_label and label:
+        draw.text((x2 + 10, fill_top - 10), label, font=font_label, fill=marker_color)
+    if font_value and value_text:
+        try:
+            vw = draw.textlength(value_text, font=font_value)
+        except Exception:
+            vw = len(value_text) * 10
+        draw.text(((x1 + x2 - vw) // 2, y1 - 28), value_text, font=font_value, fill=(245, 247, 255))
+
+
 async def render_limbo_gif(
     username: str,
     bet: float,
@@ -770,9 +816,12 @@ async def render_slide_gif(
     """Slide — multipliers scroll right→left; pointer stops on result; 20s hold, loop once."""
     from Games.slide import random_strip_cell
 
-    W, H = 680, 300
-    HDR_H = 52
-    STRIP_Y = 88
+    W, H = 680, 380
+    HDR_H = 48
+    BAR_H = 86
+    BAR_Y1 = HDR_H + 10
+    BAR_Y2 = BAR_Y1 + BAR_H
+    STRIP_Y = BAR_Y2 + 18
     CELL_W, CELL_H = 76, 92
     GAP = 10
     STEP = CELL_W + GAP
@@ -793,6 +842,9 @@ async def render_slide_gif(
     font_res = _font(40, bold=True)
     font_pts = _font(20, bold=True)
     font_tag = _font(10, bold=True)
+    font_bar_lbl = _font(12)
+    font_bar_val = _font(22, bold=True)
+    CYAN = (56, 189, 248)
 
     def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
         try:
@@ -855,16 +907,31 @@ async def render_slide_gif(
         strip_x: float,
         *,
         show_result: bool = False,
+        bar_mult: float = 0.0,
     ) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
         draw = ImageDraw.Draw(img)
 
         draw.rectangle([0, 0, W, HDR_H], fill=PANEL)
+        draw.text((18, 14), "SLIDE", font=font_user, fill=CYAN)
         uname = (username[:22] + "…") if len(username) > 22 else username
-        draw.text((18, 16), uname, font=font_user, fill=WHITE)
+        bw = _tw(draw, uname, font_bet)
+        draw.text((W - 18 - bw, 16), uname, font=font_bet, fill=WHITE)
         bet_s = f"Bet {_fmt(bet)} pts"
-        bw = _tw(draw, bet_s, font_bet)
-        draw.text((W - 18 - bw, 18), bet_s, font=font_bet, fill=MUTED)
+        b2 = _tw(draw, bet_s, font_bar_lbl)
+        draw.text((W - 18 - b2, 32), bet_s, font=font_bar_lbl, fill=MUTED)
+
+        bx1, bx2 = W // 2 - 30, W // 2 + 30
+        _draw_limbo_style_bar(
+            draw, bx1, BAR_Y1, bx2, BAR_Y2,
+            _ratio_log(bar_mult, max_value=50.0),
+            label=_slide_mult_label(bar_mult) if show_result else "",
+            marker_color=GOLD,
+            fill_color=(32, 42, 88),
+            font_label=font_bar_lbl,
+            font_value=font_bar_val,
+            value_text=_slide_mult_label(bar_mult),
+        )
 
         track_y1, track_y2 = STRIP_Y - 8, STRIP_Y + CELL_H + 16
         draw.rounded_rectangle(
@@ -927,10 +994,11 @@ async def render_slide_gif(
     for i in range(n_anim):
         t = _slide_ease_out((i + 1) / n_anim)
         sx = strip_x_start + (strip_x_end - strip_x_start) * t
-        frames.append(make_frame(sx))
+        bm = result_mult * t
+        frames.append(make_frame(sx, bar_mult=bm))
         durations.append(frame_ms)
 
-    final = make_frame(strip_x_end, show_result=True)
+    final = make_frame(strip_x_end, show_result=True, bar_mult=result_mult)
     frames.append(final)
     durations.append(SLIDE_RESULT_HOLD_MS)
     frames.append(final.copy())
@@ -1086,7 +1154,8 @@ async def render_htw_gif(
     is_push: bool = False,
 ) -> io.BytesIO:
     """HTW — spinning numbers, green winner / red loser, payout & loss below."""
-    W, H = 620, 340
+    W, H = 620, 400
+    BAR_Y1, BAR_Y2 = 50, 118
     BG = (10, 14, 28)
     PANEL = (16, 22, 40)
     WHITE = (245, 247, 255)
@@ -1098,8 +1167,9 @@ async def render_htw_gif(
     NEUTRAL = (180, 190, 210)
 
     left_cx, right_cx = W // 4, 3 * W // 4
-    card_y = 118
+    card_y = 168
     card_w, card_h = 200, 148
+    name_y = 126
     spin_frames = 26
     loser_dim = 0.42
 
@@ -1110,6 +1180,8 @@ async def render_htw_gif(
     font_usd = _font(13)
     font_foot = _font(15, bold=True)
     font_push = _font(36, bold=True)
+    font_bar_lbl = _font(12)
+    font_bar_val = _font(20, bold=True)
 
     left_won = left_payout > 0 and left_lost <= 0 and not is_push
     right_won = right_payout > 0 and right_lost <= 0 and not is_push
@@ -1215,17 +1287,31 @@ async def render_htw_gif(
         tw = _tw(draw, title, font_hdr)
         draw.text(((W - tw) // 2, 12), title, font=font_hdr, fill=CYAN)
 
+        peak = max(l_display, r_display)
+        bar_ratio = peak / 36.0
+        bar_lbl = f"{l_display} | {r_display}" if final else ""
+        _draw_limbo_style_bar(
+            draw, W // 2 - 30, BAR_Y1, W // 2 + 30, BAR_Y2,
+            bar_ratio,
+            label=bar_lbl,
+            marker_color=GOLD,
+            fill_color=(36, 28, 72),
+            font_label=font_bar_lbl,
+            font_value=font_bar_val,
+            value_text=f"{l_display} / {r_display}" if final else str(peak),
+        )
+
         ln, rn = _short(left_name), _short(right_name)
         lw, rw = _tw(draw, ln, font_name), _tw(draw, rn, font_name)
         dim_name = (100, 110, 128)
         if final and not is_push:
-            draw.text((left_cx - lw // 2, 58), ln, font=font_name,
+            draw.text((left_cx - lw // 2, name_y), ln, font=font_name,
                       fill=WHITE if left_won else dim_name)
-            draw.text((right_cx - rw // 2, 58), rn, font=font_name,
+            draw.text((right_cx - rw // 2, name_y), rn, font=font_name,
                       fill=WHITE if right_won else dim_name)
         else:
-            draw.text((left_cx - lw // 2, 58), ln, font=font_name, fill=WHITE)
-            draw.text((right_cx - rw // 2, 58), rn, font=font_name, fill=WHITE)
+            draw.text((left_cx - lw // 2, name_y), ln, font=font_name, fill=WHITE)
+            draw.text((right_cx - rw // 2, name_y), rn, font=font_name, fill=WHITE)
 
         img = _draw_player_card(
             img, left_cx, l_display,
@@ -3074,7 +3160,8 @@ async def render_coinflip_gif(
     right_lost: float = 0.0,
 ) -> io.BytesIO:
     """Animated Hot/Cold coin flip. mode: 'bot' (2 columns) or 'pvp' (3 columns)."""
-    W, H = 660, 360
+    W, H = 660, 400
+    BAR_Y1, BAR_Y2 = 48, 112
     BG = (10, 14, 28)
     PANEL = (16, 22, 40)
     WHITE = (245, 247, 255)
@@ -3092,6 +3179,10 @@ async def render_coinflip_gif(
     font_amt = _font(18, bold=True)
     font_foot = _font(15, bold=True)
     font_usd = _font(13)
+    font_bar_lbl = _font(12)
+    font_bar_val = _font(20, bold=True)
+    HOT_FILL = (72, 28, 18)
+    COLD_FILL = (18, 36, 72)
 
     async with aiohttp.ClientSession() as session:
         hot_img = await _load_emoji_rgba(hot_emoji, 68, session)
@@ -3120,15 +3211,15 @@ async def render_coinflip_gif(
         left_cx = W // 5
         center_cx = W // 2
         right_cx = 4 * W // 5
-        card_cy = 158
-        col_hdr_y = 72
+        card_cy = 188
+        col_hdr_y = 122
         center_card_w, center_card_h = 120, 110
     else:
         left_cx = W // 4
         center_cx = W // 2
         right_cx = 3 * W // 4
-        card_cy = 118 + CARD_H // 2
-        col_hdr_y = 58
+        card_cy = 168 + CARD_H // 2
+        col_hdr_y = 122
 
     def _draw_cf_result_stack(
         draw: ImageDraw.ImageDraw,
@@ -3151,13 +3242,40 @@ async def render_coinflip_gif(
         draw.text((cx - w1 / 2, y), wl, font=font_lbl, fill=wcol)
         draw.text((cx - w2 / 2, y + h1 + gap), pline, font=font_amt, fill=pcol)
 
-    def _make_bot_frame(*, spin_hot: bool, final: bool) -> Image.Image:
+    def _draw_cf_bar(draw: ImageDraw.ImageDraw, *, spin_hot: bool, final: bool, spin_t: float) -> None:
+        if final:
+            is_hot = result == "HOT"
+            ratio = 0.88 if is_hot else 0.22
+            fill = HOT_FILL if is_hot else COLD_FILL
+            mc = (255, 140, 60) if is_hot else (100, 180, 255)
+            lbl = result
+            val = result
+        else:
+            ratio = 0.25 + 0.55 * spin_t
+            fill = HOT_FILL if spin_hot else COLD_FILL
+            mc = (255, 160, 80) if spin_hot else (120, 170, 255)
+            lbl = "HOT" if spin_hot else "COLD"
+            val = ""
+        _draw_limbo_style_bar(
+            draw, W // 2 - 30, BAR_Y1, W // 2 + 30, BAR_Y2,
+            ratio,
+            label=lbl,
+            marker_color=mc,
+            fill_color=fill,
+            font_label=font_bar_lbl,
+            font_value=font_bar_val if final else None,
+            value_text=val,
+        )
+
+    def _make_bot_frame(*, spin_hot: bool, final: bool, spin_t: float = 0.0) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
         draw = ImageDraw.Draw(img)
         draw.rectangle([0, 0, W, 44], fill=PANEL)
         title = "HOT & COLD  •  COIN FLIP"
         tw = _tw(draw, title, font_hdr)
         draw.text(((W - tw) / 2, 12), title, font=font_hdr, fill=CYAN)
+
+        _draw_cf_bar(draw, spin_hot=spin_hot, final=final, spin_t=spin_t)
 
         for label, cx in (("Choice", left_cx), ("Outcome", right_cx)):
             lw = _tw(draw, label, font_cap)
@@ -3248,7 +3366,7 @@ async def render_coinflip_gif(
             uw = _tw(draw, line2, font_usd)
             draw.text((cx - uw / 2, y2 - 24), line2, font=font_usd, fill=(*col, 200))
 
-    def _make_pvp_frame(*, spin_hot: bool, final: bool) -> Image.Image:
+    def _make_pvp_frame(*, spin_hot: bool, final: bool, spin_t: float = 0.0) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
         draw = ImageDraw.Draw(img)
         draw.rectangle([0, 0, W, 44], fill=PANEL)
@@ -3256,9 +3374,11 @@ async def render_coinflip_gif(
         tw = _tw(draw, title, font_hdr)
         draw.text(((W - tw) / 2, 12), title, font=font_hdr, fill=CYAN)
 
+        _draw_cf_bar(draw, spin_hot=spin_hot, final=final, spin_t=spin_t)
+
         ln, rn = _short(left_name), _short(right_name)
         dim_name = (100, 110, 128)
-        name_y = 58
+        name_y = 122
         if final:
             lw_n = _tw(draw, ln, font_name)
             rw_n = _tw(draw, rn, font_name)
@@ -3332,7 +3452,7 @@ async def render_coinflip_gif(
             spin_hot = (result == "HOT") if _rnd.random() < eased else (i % 2 == 0)
         else:
             spin_hot = i % 2 == 0
-        frames.append(make_frame(spin_hot=spin_hot, final=False))
+        frames.append(make_frame(spin_hot=spin_hot, final=False, spin_t=eased))
         durations.append(int(75 + eased * 145))
     for _ in range(4):
         frames.append(make_frame(spin_hot=(result == "HOT"), final=True))
