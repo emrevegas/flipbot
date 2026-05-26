@@ -70,7 +70,8 @@ async def _run_slots_round(
         wins=wins,
         emoji_map=emoji_map,
         spin_emoji=spin_emoji,
-        net_change=net_change,
+        payout=payout,
+        won=won,
     )
 
 
