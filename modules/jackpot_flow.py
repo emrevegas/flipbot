@@ -339,9 +339,11 @@ async def join_jackpot(
         return
 
     if not is_jackpot_channel(ctx.channel.id):
+        ch_id = get_channel_id()
+        target = f"<#{ch_id}>" if ch_id else "**(not set)**"
         await send_jp_feedback(
             ctx.channel,
-            "This is not the Jackpot room. Set it in **Panel → Games → Jackpot**.",
+            f"This is not the Jackpot room. Use {target} (set in **Panel → Games → Jackpot**).",
         )
         return
 
@@ -406,7 +408,9 @@ async def cancel_jackpot(ctx: commands.Context) -> None:
         await send_jp_feedback(ctx.channel, "Jackpot only works in a server text channel.")
         return
     if not is_jackpot_channel(ctx.channel.id):
-        await send_jp_feedback(ctx.channel, "This is not the Jackpot room.")
+        ch_id = get_channel_id()
+        target = f"<#{ch_id}>" if ch_id else "**(not set)**"
+        await send_jp_feedback(ctx.channel, f"This is not the Jackpot room. Use {target}.")
         return
 
     uid = ctx.author.id
