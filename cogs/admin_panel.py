@@ -9365,7 +9365,7 @@ def _build_promodos_embed(active: bool) -> discord.Embed:
         value="\n".join(lines) if lines else "—",
         inline=False,
     )
-    embed.set_footer(text="Crystals rig yok · PvP rig yok · /promodos ile Aktif/Deaktif, Düşük/Yüksek rig")
+    embed.set_footer(text="Crystals rig yok · PvP rig yok · /promodos: Aktif/Deaktif, Düşük/Orta/Yüksek rig")
     return embed
 
 
@@ -9400,6 +9400,15 @@ class PromoDosView(discord.ui.View):
         )
         low_btn.callback = self._on_low
         self.add_item(low_btn)
+
+        mid_btn = discord.ui.Button(
+            label="Orta rig",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+            custom_id="promodos:mid",
+        )
+        mid_btn.callback = self._on_mid
+        self.add_item(mid_btn)
 
         high_btn = discord.ui.Button(
             label="Yüksek rig",
@@ -9446,6 +9455,16 @@ class PromoDosView(discord.ui.View):
         if not await self._guard(interaction):
             return
         rolled = roll_promodos_percentages("high")
+        _save_promodos_state(self.active, rolled)
+        await interaction.response.edit_message(
+            embed=_build_promodos_embed(self.active),
+            view=PromoDosView(self.active),
+        )
+
+    async def _on_mid(self, interaction: discord.Interaction):
+        if not await self._guard(interaction):
+            return
+        rolled = roll_promodos_percentages("mid")
         _save_promodos_state(self.active, rolled)
         await interaction.response.edit_message(
             embed=_build_promodos_embed(self.active),

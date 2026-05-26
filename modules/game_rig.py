@@ -78,7 +78,7 @@ async def should_rig_outcome(
 
 def roll_promodos_percentages(mode: str = "inactive") -> dict[str, float]:
     """
-    mode: inactive | active | low | high
+    mode: inactive | active | low | mid | high
     Writes rigged_chance into server/games for all RIGGED_PROMO_GAMES keys.
     """
     from modules.database import set_data
@@ -97,6 +97,9 @@ def roll_promodos_percentages(mode: str = "inactive") -> dict[str, float]:
             games_data[key] = entry
         if mode == "low":
             low, high = PROMODOS_LOW_RANGE
+        elif mode == "mid":
+            low = (PROMODOS_LOW_RANGE[0] + PROMODOS_HIGH_RANGE[0]) / 2.0
+            high = (PROMODOS_LOW_RANGE[1] + PROMODOS_HIGH_RANGE[1]) / 2.0
         elif mode == "high":
             low, high = PROMODOS_HIGH_RANGE
         elif mode == "active":
