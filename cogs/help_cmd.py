@@ -218,6 +218,25 @@ class HelpCog(commands.Cog):
                 return await ctx.send(embed=embed, view=view)
         await ctx.send(embed=_main_embed(), view=_HelpMainView())
 
+    @commands.command(name="games", aliases=["game"])
+    async def games_cmd(self, ctx: commands.Context):
+        """List game commands quickly. .games"""
+        g = CATEGORIES["games"]
+        lines = []
+        for name, value in g["fields"]:
+            lines.append(f"**{name}**\n{value}")
+        embed = discord.Embed(
+            title="🎮 Games",
+            description=(
+                f"Prefix: `{PREFIX}`\n"
+                "Bets: number, **all**, **half** (if balance > max bet, **all** becomes max bet).\n\n"
+                + "\n\n".join(lines[:12])
+            ),
+            color=g["color"],
+        )
+        embed.set_footer(text=f"Use `{PREFIX}help games` for the full help menu.")
+        await ctx.send(embed=embed)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(HelpCog(bot))
