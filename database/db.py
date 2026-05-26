@@ -272,11 +272,16 @@ async def _init_tables():
             ('slots',     'Slots',      1, 10, 100000, 0.05, 0.02),
             ('towers',    'Towers',     1, 10, 100000, 0.05, 0.02),
             ('crystals',  'Crystals',   1, 10, 100000, 0.05, 0.02),
-            ('chicken_road', 'Chicken Road', 1, 10, 100000, 0.05, 0.02);
+            ('chicken_road', 'Chicken Road', 1, 10, 100000, 0.05, 0.02),
+            ('slide',     'Slide',      1, 10, 100000, 0.00, 0.0275);
     """)
     await db.execute(
         "INSERT OR IGNORE INTO games (id, name, enabled, min_bet, max_bet, rigged_chance, house_edge) "
         "VALUES ('htw', 'HTW', 1, 10, 100000, 0.05, 0.02)"
+    )
+    await db.execute(
+        "INSERT OR IGNORE INTO games (id, name, enabled, min_bet, max_bet, rigged_chance, house_edge) "
+        "VALUES ('slide', 'Slide', 1, 10, 100000, 0.0, 0.0275)"
     )
     # Seed default rakeback tiers if none exist
     count = (await (await db.execute("SELECT COUNT(*) FROM rakeback_tiers")).fetchone())[0]
@@ -664,6 +669,49 @@ async def get_game_config(game_id: str) -> dict | None:
         "SELECT * FROM games WHERE id=?", (game_id,)
     )).fetchone()
     return dict(row) if row else None
+
+
+def _panel_house_edge_to_sql(he: float) -> float:
+    """server/games uses percent (e.g. 2.75); SQLite games.house_edge uses decimal."""
+    he = float(he)
+    if he >= 1.0:
+        return round(he / 100.0, 6)
+    return he
+
+
+async def upsert_game_from_panel(game_id: str, info: dict) -> None:
+    """Sync one panel game entry into SQLite (used for .slide / _check_game)."""
+    if not isinstance(info, dict):
+        return
+    name = str(info.get("name") or game_id.replace("_", " ").title())
+    enabled = 1 if info.get("enabled", True) else 0
+    min_bet = float(info.get("min_bet", 10))
+    max_bet = float(info.get("max_bet", 100000))
+    rigged = float(info.get("rigged_chance", 0.0))
+    he = _panel_house_edge_to_sql(info.get("house_edge", 2.0))
+    dbc = await get_db()
+    await dbc.execute(
+        """INSERT INTO games (id, name, enabled, min_bet, max_bet, rigged_chance, house_edge)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             name=excluded.name,
+             enabled=excluded.enabled,
+             min_bet=excluded.min_bet,
+             max_bet=excluded.max_bet,
+             rigged_chance=excluded.rigged_chance,
+             house_edge=excluded.house_edge""",
+        (game_id, name, enabled, min_bet, max_bet, rigged, he),
+    )
+    await dbc.commit()
+
+
+async def sync_panel_games_to_sqlite(games_data: dict) -> None:
+    """Push server/games panel config into SQLite games table."""
+    if not isinstance(games_data, dict):
+        return
+    for game_id, info in games_data.items():
+        if isinstance(info, dict):
+            await upsert_game_from_panel(game_id, info)
 
 
 async def get_all_games() -> list[dict]:

@@ -73,6 +73,13 @@ class FlipBot(commands.Bot):
     async def setup_hook(self):
         # Init DB + caches
         await db.get_db()
+        try:
+            from modules.database import get_data
+            from cogs.admin_panel import _persist_games_panel
+            await _persist_games_panel(get_data("server/games") or {})
+            log.info("Synced server/games panel config to SQLite games table")
+        except Exception:
+            log.error(f"Failed to sync panel games to SQLite:\n{traceback.format_exc()}")
         from modules import flip_utils as _utils
         await _utils.refresh_tier_cache()
         # Pre-generate card + tower assets if missing

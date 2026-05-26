@@ -380,6 +380,80 @@ def _ensure_slide_game_entry(games_data: dict) -> dict:
     return games_data
 
 
+def _ensure_htw_game_entry(games_data: dict) -> dict:
+    if not isinstance(games_data, dict):
+        games_data = {}
+    htw = games_data.get("htw")
+    if not isinstance(htw, dict):
+        htw = {}
+    htw.setdefault("name", "HTW")
+    htw.setdefault("emoji", "🎡")
+    htw.setdefault("enabled", True)
+    htw.setdefault("description", "Head-to-head wheel — higher spin wins.")
+    htw.setdefault("min_bet", 10)
+    htw.setdefault("max_bet", 10000)
+    htw.setdefault("house_edge", 5.0)
+    htw.setdefault("rigged_chance", 0.0)
+    htw.setdefault("category", "table_games")
+    htw.setdefault("created_at", int(time.time()))
+    htw.setdefault("last_modified", int(time.time()))
+    games_data["htw"] = htw
+    return games_data
+
+
+def _ensure_chicken_road_game_entry(games_data: dict) -> dict:
+    if not isinstance(games_data, dict):
+        games_data = {}
+    cr = games_data.get("chicken_road")
+    if not isinstance(cr, dict):
+        cr = {}
+    cr.setdefault("name", "Chicken Road")
+    cr.setdefault("emoji", "🐔")
+    cr.setdefault("enabled", True)
+    cr.setdefault("description", "Cross lanes before the car hits.")
+    cr.setdefault("min_bet", 10)
+    cr.setdefault("max_bet", 10000)
+    cr.setdefault("house_edge", 5.0)
+    cr.setdefault("rigged_chance", 0.0)
+    cr.setdefault("category", "special_games")
+    cr.setdefault("created_at", int(time.time()))
+    cr.setdefault("last_modified", int(time.time()))
+    games_data["chicken_road"] = cr
+    return games_data
+
+
+def _repair_game_entry(game_id: str, info) -> dict:
+    """Fill missing emoji/name so game management UI never KeyErrors."""
+    if not isinstance(info, dict):
+        info = {}
+    defaults = {
+        "name": game_id.replace("_", " ").title(),
+        "emoji": "🎮",
+        "enabled": False,
+        "description": "",
+        "min_bet": 10,
+        "max_bet": 10000,
+        "house_edge": 2.0,
+        "rigged_chance": 0.0,
+        "category": "other",
+    }
+    for key, val in defaults.items():
+        info.setdefault(key, val)
+    return info
+
+
+def _merge_game_aliases(games_data: dict) -> dict:
+    """slots → slot duplicate cleanup."""
+    if not isinstance(games_data, dict):
+        return {}
+    if "slots" in games_data:
+        if "slot" not in games_data or not isinstance(games_data.get("slot"), dict):
+            games_data["slot"] = games_data.pop("slots")
+        else:
+            games_data.pop("slots", None)
+    return games_data
+
+
 def _ensure_slot_game_entry(games_data: dict) -> dict:
     if not isinstance(games_data, dict):
         games_data = {}
@@ -504,12 +578,14 @@ def _ensure_hilo_game_entry(games_data: dict) -> dict:
 
 def _ensure_all_game_entries(games_data: dict) -> dict:
     """Tüm oyunların server/games'de kaydının olduğundan emin ol."""
+    games_data = _merge_game_aliases(games_data if isinstance(games_data, dict) else {})
     games_data = _ensure_mines_game_entry(games_data)
     games_data = _ensure_crystals_game_entry(games_data)
     games_data = _ensure_towers_game_entry(games_data)
     games_data = _ensure_roulette_game_entry(games_data)
     games_data = _ensure_dice_game_entry(games_data)
     games_data = _ensure_coinflip_game_entry(games_data)
+    games_data = _ensure_htw_game_entry(games_data)
     games_data = _ensure_limbo_game_entry(games_data)
     games_data = _ensure_slide_game_entry(games_data)
     games_data = _ensure_slot_game_entry(games_data)
@@ -518,6 +594,21 @@ def _ensure_all_game_entries(games_data: dict) -> dict:
     games_data = _ensure_blackjack_game_entry(games_data)
     games_data = _ensure_live_blackjack_game_entry(games_data)
     games_data = _ensure_hilo_game_entry(games_data)
+    games_data = _ensure_chicken_road_game_entry(games_data)
+    for gid in list(games_data.keys()):
+        if isinstance(games_data[gid], dict):
+            games_data[gid] = _repair_game_entry(gid, games_data[gid])
+        else:
+            del games_data[gid]
+    return games_data
+
+
+async def _persist_games_panel(games_data: dict) -> dict:
+    """Normalize panel JSON and mirror into SQLite for prefix game commands."""
+    games_data = _ensure_all_game_entries(games_data)
+    set_data("server/games", games_data)
+    from database import db as flip_db
+    await flip_db.sync_panel_games_to_sqlite(games_data)
     return games_data
 
 
@@ -821,8 +912,7 @@ async def _admin_open_route(interaction: discord.Interaction, route: str) -> Non
         return
 
     if route == "game_management":
-        games_data = _ensure_all_game_entries(get_data("server/games") or {})
-        set_data("server/games", games_data)
+        await _persist_games_panel(get_data("server/games") or {})
         await interaction.response.edit_message(
             embed=_build_game_list_management_embed(interaction.user.id),
             view=GameListManagementView(interaction.user.id),
@@ -3198,13 +3288,15 @@ def _build_game_list_management_embed(user_id: int | str) -> discord.Embed:
         inline=False,
     )
     for game_id, game_info in games_data.items():
+        if not isinstance(game_info, dict):
+            continue
         status = (
             t("game_management.enabled", user_id=uid)
             if game_info.get("enabled")
             else t("game_management.disabled", user_id=uid)
         )
         embed.add_field(
-            name=f"{game_info['emoji']} {game_info['name']}",
+            name=f"{game_info.get('emoji', '🎮')} {game_info.get('name', game_id)}",
             value=(
                 f"**Status:** {status}\n"
                 f"**Min:** {format_balance(game_info.get('min_bet', 0), 'real')}\n"
@@ -3225,8 +3317,7 @@ class BackToGameListButton(discord.ui.Button):
         self.panel_user_id = user_id
 
     async def callback(self, interaction: discord.Interaction):
-        games_data = _ensure_all_game_entries(get_data("server/games") or {})
-        set_data("server/games", games_data)
+        await _persist_games_panel(get_data("server/games") or {})
         await interaction.response.edit_message(
             embed=_build_game_list_management_embed(interaction.user.id),
             view=GameListManagementView(interaction.user.id),
@@ -3325,8 +3416,7 @@ class GameStatsOverviewView(discord.ui.View):
 
     @discord.ui.button(label="⬅️ Back", style=discord.ButtonStyle.secondary, row=1)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
-        games_data = _ensure_all_game_entries(get_data("server/games") or {})
-        set_data("server/games", games_data)
+        await _persist_games_panel(get_data("server/games") or {})
         await interaction.response.edit_message(
             embed=_build_game_list_management_embed(interaction.user.id),
             view=GameListManagementView(interaction.user.id),
@@ -3339,18 +3429,25 @@ class GameListSelect(discord.ui.Select):
     def __init__(self):
         games_data = _ensure_all_game_entries(get_data("server/games") or {})
         set_data("server/games", games_data)
-        
+
         options = []
-        for game_id, game_info in games_data.items():
+        for game_id, game_info in sorted(games_data.items(), key=lambda x: x[1].get("name", x[0]) if isinstance(x[1], dict) else x[0]):
+            if not isinstance(game_info, dict):
+                continue
             status_emoji = "✅" if game_info.get("enabled") else "❌"
+            label = str(game_info.get("name", game_id))[:100]
             options.append(
                 discord.SelectOption(
-                    label=game_info["name"],
-                    description=f"{status_emoji} | Category: {game_info.get('category', 'N/A')}",
-                    emoji=game_info["emoji"],
-                    value=game_id
+                    label=label,
+                    description=f"{status_emoji} | Category: {game_info.get('category', 'N/A')}"[:100],
+                    emoji=game_info.get("emoji") or "🎮",
+                    value=game_id,
                 )
             )
+        if not options:
+            options = [
+                discord.SelectOption(label="No games", value="_none", description="—"),
+            ]
         
         super().__init__(
             placeholder="Select a game to manage...",
@@ -3362,19 +3459,20 @@ class GameListSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         """Oyun seçildiğinde detay göster"""
         game_id = self.values[0]
-        games_data = _ensure_all_game_entries(get_data("server/games") or {})
-        set_data("server/games", games_data)
-        game_stats = get_data("server/game_stats")
-        
-        game_info = games_data.get(game_id)
+        if game_id == "_none":
+            return await interaction.response.defer()
+        games_data = await _persist_games_panel(get_data("server/games") or {})
+        game_stats = get_data("server/game_stats") or {}
+
+        game_info = games_data.get(game_id) or _repair_game_entry(game_id, {})
         stats = game_stats.get(game_id, {}).get("all_time", {})
-        
+
         status = t("game_management.enabled", user_id=str(interaction.user.id)) if game_info.get("enabled") else t("game_management.disabled", user_id=str(interaction.user.id))
-        
+
         embed = discord.Embed(
             title=t("game_management.game_detail_title", user_id=str(interaction.user.id)).format(
-                emoji=game_info["emoji"],
-                name=game_info["name"]
+                emoji=game_info.get("emoji", "🎮"),
+                name=game_info.get("name", game_id),
             ),
             description=game_info.get("description", "No description"),
             color=discord.Color.green() if game_info.get("enabled") else discord.Color.red()
@@ -4720,14 +4818,13 @@ class GameDetailView(discord.ui.View):
     @discord.ui.button(label="Toggle Status", style=discord.ButtonStyle.primary, emoji="🔄", row=0)
     async def toggle_status(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Oyun durumunu değiştir"""
-        games_data = get_data("server/games")
-        game_info = games_data.get(self.game_id)
-        
-        # Durumu değiştir
+        games_data = _ensure_all_game_entries(get_data("server/games") or {})
+        game_info = games_data.get(self.game_id) or _repair_game_entry(self.game_id, {})
+
         game_info["enabled"] = not game_info.get("enabled", False)
         games_data[self.game_id] = game_info
-        set_data("server/games", games_data)
-        
+        await _persist_games_panel(games_data)
+
         status_text = t("game_management.status_enabled", user_id=str(interaction.user.id)) if game_info["enabled"] else t("game_management.status_disabled", user_id=str(interaction.user.id))
         
         embed = discord.Embed(
@@ -4772,8 +4869,7 @@ class GameDetailView(discord.ui.View):
 
     @discord.ui.button(label="⬅️ Back to List", style=discord.ButtonStyle.secondary, row=2)
     async def back_to_list(self, interaction: discord.Interaction, button: discord.ui.Button):
-        games_data = _ensure_all_game_entries(get_data("server/games") or {})
-        set_data("server/games", games_data)
+        await _persist_games_panel(get_data("server/games") or {})
         await interaction.response.edit_message(
             embed=_build_game_list_management_embed(interaction.user.id),
             view=GameListManagementView(interaction.user.id),
@@ -4818,7 +4914,7 @@ class _HouseEdgeModal(discord.ui.Modal, title="House Edge"):
         game_info["house_edge"] = round(house_edge, 4)
         game_info["last_modified"] = int(time.time())
         games_data[self.game_id] = game_info
-        set_data("server/games", games_data)
+        await _persist_games_panel(games_data)
         await interaction.response.send_message(
             embed=discord.Embed(
                 title="✅ House Edge Updated",
@@ -4945,7 +5041,7 @@ class SlideRiggedModal(discord.ui.Modal):
         slide["rigged_chance"] = round(rigged, 4)
         slide["last_modified"] = int(time.time())
         games_data["slide"] = slide
-        set_data("server/games", games_data)
+        await _persist_games_panel(games_data)
         await interaction.response.send_message(
             embed=discord.Embed(
                 title="✅ Slide Rigged Chance Updated",
