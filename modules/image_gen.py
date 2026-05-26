@@ -4514,8 +4514,8 @@ async def render_market_predict_gif(
     font_sm = _font(12)
     font_name = _font(14, bold=True)
     font_bet = _font(13, bold=True)
-    font_side = _font(34, bold=True)
-    font_win = _font(18, bold=True)
+    font_side = _font(48, bold=True)
+    font_win = _font(30, bold=True)
 
     def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
         try:

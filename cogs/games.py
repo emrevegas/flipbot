@@ -103,14 +103,67 @@ def _ok(msg: str) -> discord.Embed:
     return discord.Embed(description=f"✅ {msg}", color=0x2ECC71)
 
 
-async def _resolve_ctx_bet(ctx: commands.Context, amount_raw: str) -> float | None:
-    """Parse amount / all / half against author balance."""
+async def _resolve_ctx_bet(
+    ctx: commands.Context,
+    amount_raw: str,
+    *,
+    game_id: str | None = None,
+) -> float | None:
+    """Parse amount / all / half against author balance.
+
+    Special rule: for `all`/`max`, if user balance exceeds game max bet,
+    auto-clamp to that game's max_bet.
+    """
     from modules.bet_parse import resolve_bet_amount
 
     bet, err = await resolve_bet_amount(ctx.author.id, amount_raw)
     if err:
         await ctx.send(embed=_err(err))
         return None
+    if bet is None:
+        return None
+
+    key = (amount_raw or "").strip().lower().replace(" ", "")
+    if key in ("all", "max"):
+        gid = game_id
+        if not gid and ctx.command:
+            cmd_name = (ctx.command.name or "").lower()
+            gid_map = {
+                "cf": "coinflip",
+                "coinflip": "coinflip",
+                "flip": "coinflip",
+                "dice": "dice",
+                "roll": "dice",
+                "htw": "htw",
+                "wheel": "htw",
+                "htwheel": "htw",
+                "limbo": "limbo",
+                "slide": "slide",
+                "market": "market_predict",
+                "predict": "market_predict",
+                "slots": "slots",
+                "slot": "slots",
+                "blackjack": "blackjack",
+                "bj": "blackjack",
+                "hilo": "hilo",
+                "hl": "hilo",
+                "mines": "mines",
+                "mine": "mines",
+                "towers": "towers",
+                "chickenroad": "chicken_road",
+                "cr": "chicken_road",
+                "chicken_road": "chicken_road",
+                "crystals": "crystals",
+                "crystal": "crystals",
+            }
+            gid = gid_map.get(cmd_name)
+
+        if gid:
+            cfg = await db.get_game_config(gid)
+            if cfg:
+                max_bet = float(cfg.get("max_bet", 0) or 0)
+                if max_bet > 0 and bet > max_bet:
+                    bet = max_bet
     return bet
 
 
