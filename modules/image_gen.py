@@ -4506,7 +4506,9 @@ async def render_market_predict_gif(
     if result_side not in ("UP", "DOWN"):
         result_side = "DOWN"
 
-    line_col = GREEN if won else RED
+    # Dynamic segment color: above center => green, below => red
+    def _seg_col(y: int) -> tuple[int, int, int]:
+        return GREEN if y < Y_CENTER else RED
 
     font_hdr = _font(16, bold=True)
     font_sm = _font(12)
@@ -4521,23 +4523,32 @@ async def render_market_predict_gif(
         except Exception:
             return len(text) * 8
 
-    # Build random-walk series, then force the last point up/down.
+    # Build random-walk series with smooth steering into final direction.
     n_points = 46
     amp = min(120, CHART_H // 2 - 10)
-    final_off = int(amp * 0.86)
+    final_off = int(amp * 0.72)
 
     series: list[float] = []
     v = 0.0
-    for i in range(n_points - 1):
-        # random drift + slight damping towards center
-        v += random.uniform(-0.22, 0.22)
-        v *= 0.95
+    steer_steps = 10
+    final_v = (-final_off / amp) if result_side == "UP" else (final_off / amp)
+    final_v = max(-1.0, min(1.0, final_v))
+    for i in range(n_points):
+        if i < n_points - steer_steps:
+            # random drift + damping towards center
+            v += random.uniform(-0.20, 0.20)
+            v *= 0.94
+        else:
+            # smooth steer into the final direction to avoid a "sudden spike" vibe
+            t = (i - (n_points - steer_steps)) / max(1, steer_steps - 1)
+            # increasing pull strength near the end
+            pull = 0.12 + 0.38 * (t ** 1.6)
+            v = (1.0 - pull) * v + pull * final_v
+            # small noise even while steering
+            v += random.uniform(-0.05, 0.05) * (1.0 - t)
+            v *= 0.97
         v = max(-1.0, min(1.0, v))
         series.append(v)
-
-    # Force final direction (UP => above center => smaller y)
-    final_v = -final_off / amp if result_side == "UP" else final_off / amp
-    series.append(final_v)
 
     xs = [PAD_L + i * (W - PAD_L - PAD_R) / (n_points - 1) for i in range(n_points)]
 
@@ -4563,8 +4574,16 @@ async def render_market_predict_gif(
 
         # Header app bar
         draw.rectangle([0, 0, W, HDR_H], fill=PANEL)
-        draw.text((W / 2 - 140, 18), "MARKET", font=font_hdr, fill=CYAN)
-        draw.text((W / 2 - 70, 18), "PREDICT", font=font_hdr, fill=WHITE)
+        title_left = "MARKET"
+        title_right = "PREDICT"
+        tw1 = _tw(draw, title_left, font_hdr)
+        tw2 = _tw(draw, title_right, font_hdr)
+        draw.text(((W - (tw1 + 10 + tw2)) / 2, 18), title_left, font=font_hdr, fill=CYAN)
+        draw.text(((W - (tw1 + 10 + tw2)) / 2 + tw1 + 10, 18), title_right, font=font_hdr, fill=WHITE)
+
+        pick = f"{player_side}"
+        pw = _tw(draw, pick, font_hdr)
+        draw.text((W - PAD_R - pw, 18), pick, font=font_hdr, fill=CYAN)
 
         # Center mark
         draw.line([(PAD_L, Y_CENTER), (W - PAD_R, Y_CENTER)], fill=GOLD, width=3)
@@ -4574,11 +4593,17 @@ async def render_market_predict_gif(
             yy = CHART_Y1 + t * CHART_H / 4
             draw.line([(PAD_L, int(yy)), (W - PAD_R, int(yy))], fill=(22, 30, 48), width=1)
 
-        # Price line
-        draw.line(points[:k], fill=line_col, width=5)
+        # Price line (segment colored by above/below center)
+        pts = points[:k]
+        for j in range(1, len(pts)):
+            x1, y1 = pts[j - 1]
+            x2, y2 = pts[j]
+            col = _seg_col((y1 + y2) // 2)
+            draw.line([(x1, y1), (x2, y2)], fill=col, width=5)
         # endpoint dot
-        ex, ey = points[k - 1]
-        draw.ellipse([ex - 7, ey - 7, ex + 7, ey + 7], fill=line_col, outline=(255, 255, 255), width=2)
+        ex, ey = pts[-1]
+        end_col = _seg_col(ey)
+        draw.ellipse([ex - 7, ey - 7, ex + 7, ey + 7], fill=end_col, outline=(255, 255, 255), width=2)
 
         # Bottom info bar
         draw.rectangle([0, H - INFO_H, W, H], fill=(8, 12, 22))
@@ -4597,18 +4622,21 @@ async def render_market_predict_gif(
     draw = ImageDraw.Draw(img)
     endx, endy = points[-1]
 
-    side_label = "UP" if result_side == "UP" else "DOWN"
-    label_y = Y_CENTER - 60 if result_side == "UP" else Y_CENTER + 18
-    draw.text((W / 2 - _tw(draw, side_label, font_side) / 2, label_y), side_label, font=font_side, fill=WHITE)
+    # Result block centered; color depends on final position relative to center.
+    res_col = GREEN if endy < Y_CENTER else RED
+    res_y = Y_CENTER - 70
+    label = "WIN" if won else "LOSE"
+    lw = _tw(draw, label, font_side)
+    draw.text(((W - lw) / 2, res_y), label, font=font_side, fill=res_col)
 
     if won:
-        win_txt = "WIN"
-        draw.text((W / 2 - _tw(draw, win_txt, font_win) / 2, label_y + 46), win_txt, font=font_win, fill=GREEN)
-        pay_txt = f"+{_fmt(payout)} pts"
-        draw.text((W / 2 - _tw(draw, pay_txt, font_win) / 2, label_y + 72), pay_txt, font=font_win, fill=GREEN)
+        line2 = f"+{_fmt(payout)} pts"
+        col2 = GREEN
     else:
-        lose_txt = "LOSE"
-        draw.text((W / 2 - _tw(draw, lose_txt, font_win) / 2, label_y + 46), lose_txt, font=font_win, fill=RED)
+        line2 = f"-{_fmt(bet)} pts"
+        col2 = RED
+    l2w = _tw(draw, line2, font_win)
+    draw.text(((W - l2w) / 2, res_y + 46), line2, font=font_win, fill=col2)
 
     frames.append(img)
     durations.append(result_hold_ms)
