@@ -60,34 +60,106 @@ class UserManagement(commands.Cog):
         embed.set_footer(text="Only you can use this panel.")
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         
-    @app_commands.command(name="give_role_all", description="Give a role to all members in the server")
-    @app_commands.describe(role="The role to give to all members")
-    async def give_role_all(self, interaction: discord.Interaction, role: discord.Role):
-        """Give a role to every member - Admin only"""
-        if check_permission(str(interaction.user.id), "admin"):
-            return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
+    async def _give_role_to_all_members(
+        self,
+        guild: discord.Guild,
+        role: discord.Role,
+        actor: discord.abc.User,
+    ) -> tuple[int, int, str | None]:
+        """Returns (success, failed, error_message)."""
+        me = guild.me
+        if me is None:
+            try:
+                me = await guild.fetch_member(self.client.user.id)
+            except Exception:
+                return 0, 0, "Bot member not found in this server."
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if role.managed:
+            return 0, 0, "That role is managed by an integration and cannot be assigned manually."
+        if role >= me.top_role:
+            return 0, 0, "I cannot assign that role — it is above my highest role."
+        if isinstance(actor, discord.Member) and role >= actor.top_role:
+            if not actor.guild_permissions.administrator:
+                return 0, 0, "You cannot assign a role that is above your highest role."
+
+        if guild.member_count and len(guild.members) < guild.member_count:
+            try:
+                await guild.chunk()
+            except Exception:
+                pass
 
         success = 0
         failed = 0
-        for member in interaction.guild.members:
-            if member.bot:
-                continue
-            if role in member.roles:
+        for member in guild.members:
+            if member.bot or role in member.roles:
                 continue
             try:
-                await member.add_roles(role, reason=f"give_role_all by {interaction.user}")
+                await member.add_roles(role, reason=f"giveroleall by {actor}")
                 success += 1
             except Exception:
                 failed += 1
+        return success, failed, None
+
+    @app_commands.command(
+        name="giveroleall",
+        description="Give a role to all members in the server (admin)",
+    )
+    @app_commands.describe(role="The role to give to all members")
+    @app_commands.guild_only()
+    async def giveroleall(self, interaction: discord.Interaction, role: discord.Role):
+        """Give a role to every member — admin only."""
+        if check_permission(str(interaction.user.id), "admin"):
+            return await interaction.response.send_message(
+                "❌ You don't have permission to use this command!",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        success, failed, err = await self._give_role_to_all_members(
+            interaction.guild, role, interaction.user,
+        )
+        if err:
+            return await interaction.followup.send(f"❌ {err}", ephemeral=True)
 
         embed = discord.Embed(
             title="✅ Role Given",
-            description=f"{role.mention} has been given to all members.\n\n✅ Success: **{success}**\n❌ Failed: **{failed}**",
-            color=discord.Color.green()
+            description=(
+                f"{role.mention} has been given to all members.\n\n"
+                f"✅ Success: **{success}**\n❌ Failed: **{failed}**"
+            ),
+            color=discord.Color.green(),
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="give_role_all",
+        description="Alias for /giveroleall",
+    )
+    @app_commands.describe(role="The role to give to all members")
+    @app_commands.guild_only()
+    async def give_role_all(self, interaction: discord.Interaction, role: discord.Role):
+        await self.giveroleall(interaction, role)
+
+    @commands.command(name="giveroleall", aliases=["give_role_all"])
+    @commands.guild_only()
+    async def giveroleall_prefix(self, ctx: commands.Context, role: discord.Role):
+        """Give a role to all members. Example: .giveroleall @VIP"""
+        if check_permission(str(ctx.author.id), "admin"):
+            return await ctx.send("❌ You don't have permission to use this command!")
+
+        msg = await ctx.send(f"⏳ Giving {role.mention} to all members…")
+        success, failed, err = await self._give_role_to_all_members(
+            ctx.guild, role, ctx.author,
+        )
+        if err:
+            return await msg.edit(content=f"❌ {err}")
+
+        await msg.edit(
+            content=(
+                f"✅ {role.mention} given to all members.\n"
+                f"Success: **{success}** · Failed: **{failed}**"
+            )
+        )
 
     @app_commands.command(name="remove_role_all", description="Remove a role from all members in the server")
     @app_commands.describe(role="The role to remove from all members")
