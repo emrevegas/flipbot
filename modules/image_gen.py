@@ -1523,11 +1523,16 @@ async def render_slots_gif(
     grid_h = ROWS * CELL_H + (ROWS - 1) * GAP
     grid_x0 = (W - grid_w) // 2
     grid_y0 = HDR_H + 22
-    win_panel_y0 = grid_y0 + grid_h + 22
+    footer_top = H - INFO_H
+    grid_bottom = grid_y0 + grid_h
     win_meter_w = min(360, grid_w + 40)
-    win_meter_h = WIN_PANEL_H - 16
+    win_meter_h = 90
     win_meter_x0 = (W - win_meter_w) // 2
-    win_meter_y0 = win_panel_y0 + 8
+    # Anchor above footer so balance text is never clipped
+    win_meter_y0 = footer_top - win_meter_h - 10
+    min_meter_top = grid_bottom + 14
+    if win_meter_y0 < min_meter_top:
+        win_meter_y0 = min_meter_top
 
     font_hdr = _font(16, bold=True)
     font_name = _font(14, bold=True)
@@ -1654,12 +1659,13 @@ async def render_slots_gif(
         gap = 7
         block_w = aw + gap + pw
         ax = (W - block_w) / 2
-        draw.text((ax, y1 + 12), amt_core, font=font_meter_amt, fill=amt_col)
-        draw.text((ax + aw + gap, y1 + 20), pts_txt, font=font_meter_pts, fill=amt_col)
+        draw.text((ax, y1 + 10), amt_core, font=font_meter_amt, fill=amt_col)
+        draw.text((ax + aw + gap, y1 + 17), pts_txt, font=font_meter_pts, fill=amt_col)
 
-        draw.line([(x1 + 14, y1 + 50), (x2 - 14, y1 + 50)], fill=(45, 55, 82), width=1)
+        sep_y = y1 + 46
+        draw.line([(x1 + 14, sep_y), (x2 - 14, sep_y)], fill=(45, 55, 82), width=1)
 
-        bal_y = y1 + 58
+        bal_y = y1 + 54
         bal_lbl = "Balance"
         bal_val = f"{_fmt(balance)} pts"
         draw.text((x1 + 16, bal_y), bal_lbl, font=font_meter_lbl, fill=MUTED)
