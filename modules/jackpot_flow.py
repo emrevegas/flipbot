@@ -42,6 +42,12 @@ _channel_locks: dict[int, asyncio.Lock] = {}
 _room_tasks: dict[int, asyncio.Task] = {}
 JP_FEEDBACK_DELETE_SEC = 8.0
 
+# Ratelimit koruması: UI mesajını çok sık edit etmemek.
+JP_UI_MIN_REFRESH_WAIT_SEC = 10
+JP_UI_MIN_REFRESH_COUNTDOWN_NORMAL_SEC = 3
+JP_UI_MIN_REFRESH_COUNTDOWN_LAST_SEC = 1
+JP_UI_COUNTDOWN_LAST_SECONDS = 5
+
 
 def _lock(channel_id: int) -> asyncio.Lock:
     if channel_id not in _channel_locks:
@@ -160,6 +166,22 @@ async def refresh_lobby_message(
     pool = pool_total(players)
     rem = _countdown_remaining(round_data) if round_data.get("status") == "countdown" else None
 
+    # Throttle: son UI yenilemeden sonra çok kısa süre geçtiyse edit etmiyoruz.
+    now_ts = time.time()
+    last_ts = float(round_data.get("ui_last_refresh") or 0)
+    min_interval = 0.0
+    status = round_data.get("status")
+    if status == "waiting":
+        min_interval = JP_UI_MIN_REFRESH_WAIT_SEC
+    elif status == "countdown" and rem is not None:
+        min_interval = (
+            JP_UI_MIN_REFRESH_COUNTDOWN_LAST_SEC
+            if rem <= JP_UI_COUNTDOWN_LAST_SECONDS
+            else JP_UI_MIN_REFRESH_COUNTDOWN_NORMAL_SEC
+        )
+    if min_interval > 0 and (now_ts - last_ts) < min_interval:
+        return None
+
     lobby_buf = await image_gen.render_jackpot_lobby_png(
         players,
         pool=pool,
@@ -201,6 +223,7 @@ async def refresh_lobby_message(
         log.exception("Jackpot lobby refresh failed ch=%s", channel.id)
         return None
 
+    round_data["ui_last_refresh"] = now_ts
     set_round(channel.id, round_data)
     return message
 
@@ -242,7 +265,10 @@ def ensure_jackpot_room_loop(bot: discord.Client, channel_id: int) -> None:
                 if status == "countdown":
                     rem = _countdown_remaining(rd)
                     if rem > 0:
-                        if rem != last_countdown_paint:
+                        should_paint = (
+                            rem <= JP_UI_COUNTDOWN_LAST_SECONDS or (rem % 3 == 0)
+                        )
+                        if should_paint and rem != last_countdown_paint:
                             last_countdown_paint = rem
                             try:
                                 await refresh_lobby_message(bot, ch, rd)

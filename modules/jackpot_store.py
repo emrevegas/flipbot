@@ -16,7 +16,7 @@ MIN_PLAYERS = 2
 MAX_PLAYERS = 24
 
 
-LOBBY_IDLE_REFRESH_SEC = 5
+LOBBY_IDLE_REFRESH_SEC = 10
 
 
 def get_settings() -> dict:
