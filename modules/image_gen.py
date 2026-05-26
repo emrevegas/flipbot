@@ -1491,7 +1491,7 @@ async def render_slots_gif(
     wins: list[dict],
     emoji_map: dict[str, str],
     spin_emoji: str,
-    net_change: float,
+    payout: float,
 ) -> io.BytesIO:
     """3×5 slot — columns lock one-by-one; final frame draws winning paylines."""
     from Games.slot import COLS, PAYLINES, ROWS, SYMBOLS

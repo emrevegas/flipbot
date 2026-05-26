@@ -44,8 +44,7 @@ async def _run_slots_round(
     grid, wins, gross = _spin_until_fair(bet, rigged=rigged)
 
     won = gross > bet
-    net = await _payout(user_id, "slots", bet, float(gross))
-    net_change = net - bet
+    payout = await _payout(user_id, "slots", bet, float(gross))
     user_row = await db.get_user(user_id)
     balance = float(user_row["balance"]) if user_row else 0.0
 
@@ -53,7 +52,7 @@ async def _run_slots_round(
         user_id,
         won,
         bet,
-        net,
+        payout,
         game_id="slots",
         user=user,
         client=client,
