@@ -1492,6 +1492,7 @@ async def render_slots_gif(
     emoji_map: dict[str, str],
     spin_emoji: str,
     payout: float,
+    won: bool,
 ) -> io.BytesIO:
     """3×5 slot — columns lock one-by-one; final frame draws winning paylines."""
     from Games.slot import COLS, PAYLINES, ROWS, SYMBOLS
@@ -1627,12 +1628,11 @@ async def render_slots_gif(
         """Casino-style meter: +/- payout (green/red) and balance at bottom."""
         x1, y1 = win_meter_x0, win_meter_y0
         x2, y2 = x1 + win_meter_w, y1 + win_meter_h
-        profit = net_change > 0
         draw.rounded_rectangle(
             [x1, y1, x2, y2],
             radius=14,
             fill=WIN_PANEL_FILL if show_result else WIN_PANEL_BG,
-            outline=GREEN if show_result and profit else (RED if show_result else (45, 55, 82)),
+            outline=GREEN if show_result and won else (RED if show_result else (45, 55, 82)),
             width=3 if show_result else 2,
         )
         if not show_result:
@@ -1641,12 +1641,11 @@ async def render_slots_gif(
             draw.text(((W - hw) / 2, y1 + (win_meter_h - 14) // 2), hint, font=font_meter_lbl, fill=MUTED)
             return
 
-        if profit:
-            amt_core = f"+{_fmt(net_change)}"
+        if won and payout > 0:
+            amt_core = f"+{_fmt(payout)}"
             amt_col = GREEN
         else:
-            loss = abs(net_change) if net_change < 0 else bet
-            amt_core = f"-{_fmt(loss)}"
+            amt_core = f"-{_fmt(bet)}"
             amt_col = RED
 
         pts_txt = "pts"
