@@ -1589,42 +1589,11 @@ class Games(commands.Cog):
     @commands.command(name="slide")
     async def slide(self, ctx: commands.Context, amount: float):
         """Slide — multipliers scroll; pointer picks your payout. .slide 100"""
-        from Games.slide import gross_payout, pick_rigged_multiplier, roll_multiplier
-
-        await db.ensure_user(ctx.author.id, ctx.author.name)
         if not await _check_game(ctx, "slide", amount):
             return
+        from modules.slide_flow import start_slide
 
-        rigged = await bc.should_rig_outcome(ctx.author.id, "slide", amount)
-        if rigged:
-            result_mult = pick_rigged_multiplier()
-        else:
-            result_mult = roll_multiplier()
-
-        gross = gross_payout(amount, result_mult)
-        won = gross > amount
-        net = await _payout(ctx.author.id, "slide", amount, gross)
-        net_change = net - amount
-
-        await _record(
-            ctx.author.id,
-            won,
-            amount,
-            net,
-            game_id="slide",
-            user=ctx.author,
-            client=ctx.bot,
-            guild_id=ctx.guild.id if ctx.guild else None,
-        )
-
-        gif = await image_gen.render_slide_gif(
-            username=ctx.author.display_name,
-            bet=amount,
-            result_mult=result_mult,
-            won=net_change > 0,
-            net_change=net_change,
-        )
-        await ctx.send(file=discord.File(gif, "slide.gif"))
+        await start_slide(ctx, amount)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 

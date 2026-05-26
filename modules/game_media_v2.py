@@ -114,10 +114,8 @@ def gif_result_layout(
 
             container.add_item(gallery)
 
-
-
             if user_id and bet > 0:
-
+                container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
                 row = ui.ActionRow()
 
                 rb = ui.Button(label="Re-bet", style=discord.ButtonStyle.secondary, emoji="🔄")
