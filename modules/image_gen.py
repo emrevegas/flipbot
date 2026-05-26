@@ -1526,13 +1526,15 @@ async def render_slots_gif(
     footer_top = H - INFO_H
     grid_bottom = grid_y0 + grid_h
     win_meter_w = min(360, grid_w + 40)
-    win_meter_h = 90
     win_meter_x0 = (W - win_meter_w) // 2
-    # Anchor above footer so balance text is never clipped
-    win_meter_y0 = footer_top - win_meter_h - 10
-    min_meter_top = grid_bottom + 14
+    gap_above_footer = 12
+    gap_below_grid = 12
+    win_meter_h = 90
+    win_meter_y0 = footer_top - win_meter_h - gap_above_footer
+    min_meter_top = grid_bottom + gap_below_grid
     if win_meter_y0 < min_meter_top:
         win_meter_y0 = min_meter_top
+        win_meter_h = max(72, footer_top - gap_above_footer - win_meter_y0)
 
     font_hdr = _font(16, bold=True)
     font_name = _font(14, bold=True)
