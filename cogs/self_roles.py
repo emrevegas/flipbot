@@ -445,10 +445,28 @@ class SelfRolesAdminView(discord.ui.View):
         view.add_item(SelfRolesRemoveSelect(guild, cfg, user_id))
         view.add_item(SelfRolesPostButton(user_id))
         view.add_item(SelfRolesTextButton(user_id))
-        from cogs.admin_panel import BackToServerSettingsButton
-
-        view.add_item(BackToServerSettingsButton(hub="channels", user_id=user_id))
+        view.add_item(SelfRolesBackButton(hub="channels", user_id=user_id))
         return view
+
+
+class SelfRolesBackButton(discord.ui.Button):
+    """Geri butonu (SelfRoles panelinde row çakışmasını önlemek için row=4)."""
+
+    def __init__(self, hub: str = "channels", user_id: int = 0):
+        from modules.admin_panel_nav import back_hub_label
+
+        self.hub = hub
+        self.user_id = user_id
+        super().__init__(
+            label=back_hub_label(hub, user_id),
+            style=discord.ButtonStyle.secondary,
+            row=4,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        from modules.admin_panel_nav import go_hub
+
+        await go_hub(interaction, self.hub, user_id=interaction.user.id)
 
 
 class SelfRoles(commands.Cog):
