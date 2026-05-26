@@ -50,6 +50,7 @@ COGS = [
     "cogs.live_blackjack",
     "cogs.live_stats",
     "cogs.jackpot",
+    "cogs.self_roles",
 ]
 
 
@@ -117,6 +118,20 @@ class FlipBot(commands.Bot):
             register_ticket_views(self)
         except Exception:
             log.error(f"Failed to register ticket views:\n{traceback.format_exc()}")
+        try:
+            from cogs.self_roles import build_menu_view
+            from modules.self_roles_store import get_config
+
+            n = 0
+            for guild in self.guilds:
+                cfg = get_config(guild.id)
+                if cfg.get("roles"):
+                    self.add_view(build_menu_view(guild.id, cfg))
+                    n += 1
+            if n:
+                log.info(f"Registered self-role menus for {n} guild(s)")
+        except Exception:
+            log.error(f"Failed to register self-role views:\n{traceback.format_exc()}")
         # Sync slash commands
         synced = await self.tree.sync()
         log.info(f"Synced {len(synced)} slash commands")

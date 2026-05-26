@@ -60,7 +60,9 @@ def build_hub_embed(hub: str, interaction: discord.Interaction, user_id: int | s
                 f"**{t('admin_panel.routes.private_category', user_id=uid).replace('📁 ', '')}:** "
                 f"{ch(server_data.get('private_category_id'))}\n"
                 f"**{t('admin_panel.routes.ticket_category', user_id=uid).replace('📁 ', '')}:** "
-                f"{ch((get_data('server/ticket_settings') or {}).get('category_id'))}"
+                f"{ch((get_data('server/ticket_settings') or {}).get('category_id'))}\n"
+                f"**Self roles:** "
+                f"{ch((server_data.get('self_roles') or {}).get('channel_id'))}"
             ),
             inline=False,
         )
@@ -207,6 +209,11 @@ def hub_select_options(hub: str, user_id: int | str) -> tuple[list[discord.Selec
                 label=t("admin_panel.hubs.channels.opt_maintenance", user_id=uid),
                 value="maintenance",
                 emoji="🔧",
+            ),
+            discord.SelectOption(
+                label="Self Roles",
+                value="self_roles",
+                emoji="🎭",
             ),
             back,
         ], t("admin_panel.hubs.channels.select_placeholder", user_id=uid)

@@ -878,6 +878,17 @@ async def _admin_open_route(interaction: discord.Interaction, route: str) -> Non
         )
         return
 
+    if route == "self_roles":
+        from cogs.self_roles import SelfRolesAdminView, build_admin_embed
+        from modules.self_roles_store import get_config
+
+        cfg = get_config(interaction.guild.id)
+        await interaction.response.edit_message(
+            embed=build_admin_embed(interaction.guild, cfg),
+            view=SelfRolesAdminView.for_guild(interaction.guild, interaction.user.id),
+        )
+        return
+
     if route == "tickets":
         tickets_data = get_data("server/tickets") or {}
         ticket_settings = get_data("server/ticket_settings") or {}
