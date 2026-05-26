@@ -4414,30 +4414,16 @@ async def render_jackpot_spin_gif(
             fill=GOLD,
         )
 
-        if final and 0 <= winner_index < n:
-            wp = players[winner_index]
-            big_av = avatars[winner_index]
-            cx = W // 2
-            ay = STRIP_Y + BOX_H + 28
-            big = big_av.resize((72, 72), Image.LANCZOS)
-            mask = Image.new("L", (72, 72), 0)
-            ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
-            big.putalpha(mask)
-            img.paste(big, (cx - 36, ay), big)
-            uname = _jp_short(str(wp.get("username") or "Winner"), 18)
-            uw = _tw(draw, uname, font_name)
-            draw.text((cx - uw / 2, ay + 78), uname, font=font_name, fill=WHITE)
-            bet = float(wp.get("bet") or 0)
-            pct = player_chance(bet, pool) * 100.0
-            line2 = format_chance(pct)
-            l2w = _tw(draw, line2, font_pct)
-            draw.text((cx - l2w / 2, ay + 98), line2, font=font_pct, fill=MUTED)
+        # Final: show WIN + payout ONLY under the winner box.
+        if final and n > 0:
+            winner_cx = sx + win_slot * STEP + BOX_W // 2
+            res_y = STRIP_Y + BOX_H + 10
+            wl = "WIN"
+            ww = _tw(draw, wl, font_win)
+            draw.text((winner_cx - ww / 2, res_y), wl, font=font_win, fill=GREEN)
             pay = f"+{_fmt(payout)} pts"
             pw = _tw(draw, pay, font_pay)
-            draw.text((cx - pw / 2, ay + 118), pay, font=font_pay, fill=GREEN)
-            wl = "WINNER"
-            ww = _tw(draw, wl, font_win)
-            draw.text((cx - ww / 2, ay - 42), wl, font=font_win, fill=GOLD)
+            draw.text((winner_cx - pw / 2, res_y + 44), pay, font=font_pay, fill=GREEN)
 
         return img
 
