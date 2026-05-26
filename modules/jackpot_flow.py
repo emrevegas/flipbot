@@ -21,7 +21,6 @@ from modules.jackpot_media_v2 import (
 )
 from modules.jackpot_store import (
     COUNTDOWN_BASE_SEC,
-    COUNTDOWN_EXTEND_SEC,
     LOBBY_IDLE_REFRESH_SEC,
     MAX_PLAYERS,
     MIN_PLAYERS,
@@ -42,11 +41,12 @@ _channel_locks: dict[int, asyncio.Lock] = {}
 _room_tasks: dict[int, asyncio.Task] = {}
 JP_FEEDBACK_DELETE_SEC = 8.0
 
-# Ratelimit koruması: UI mesajını çok sık edit etmemek.
+# Ratelimit: lobby edit only when state changed; 10s idle/countdown, 1s in final seconds.
 JP_UI_MIN_REFRESH_WAIT_SEC = 10
-JP_UI_MIN_REFRESH_COUNTDOWN_NORMAL_SEC = 3
+JP_UI_MIN_REFRESH_COUNTDOWN_NORMAL_SEC = 10
 JP_UI_MIN_REFRESH_COUNTDOWN_LAST_SEC = 1
 JP_UI_COUNTDOWN_LAST_SECONDS = 5
+JP_UI_PLAYER_CHANGE_MIN_SEC = 3
 
 
 def _lock(channel_id: int) -> asyncio.Lock:
@@ -98,6 +98,51 @@ def _start_countdown(round_data: dict) -> dict:
     round_data["status"] = "countdown"
     round_data["countdown_ends"] = int(time.time()) + secs
     return round_data
+
+
+def _pause_countdown_to_waiting(round_data: dict) -> dict:
+    """Not enough players — stop timer (no stacked +15s extensions)."""
+    round_data["status"] = "waiting"
+    round_data["countdown_ends"] = 0
+    round_data["countdown_secs"] = COUNTDOWN_BASE_SEC
+    return round_data
+
+
+def _lobby_ui_snapshot(round_data: dict) -> list:
+    """JSON-serializable lobby state for skip-unchanged edits."""
+    players = round_data.get("players") or []
+    status = round_data.get("status") or "waiting"
+    pool = round(pool_total(players), 2)
+    rem = _countdown_remaining(round_data) if status == "countdown" else None
+    if rem is not None and rem > JP_UI_COUNTDOWN_LAST_SECONDS:
+        rem_key = rem // JP_UI_MIN_REFRESH_COUNTDOWN_NORMAL_SEC
+    elif rem is not None:
+        rem_key = rem
+    else:
+        rem_key = None
+    player_key = [
+        [int(p.get("user_id", 0)), round(float(p.get("bet") or 0), 2)]
+        for p in sorted(players, key=lambda x: int(x.get("user_id", 0)))
+    ]
+    return [status, player_key, pool, rem_key]
+
+
+def _min_refresh_interval(round_data: dict, *, player_change: bool) -> float:
+    status = round_data.get("status")
+    rem = _countdown_remaining(round_data) if status == "countdown" else None
+    if status == "waiting":
+        interval = float(JP_UI_MIN_REFRESH_WAIT_SEC)
+    elif status == "countdown" and rem is not None:
+        interval = (
+            float(JP_UI_MIN_REFRESH_COUNTDOWN_LAST_SEC)
+            if rem <= JP_UI_COUNTDOWN_LAST_SECONDS
+            else float(JP_UI_MIN_REFRESH_COUNTDOWN_NORMAL_SEC)
+        )
+    else:
+        interval = float(JP_UI_MIN_REFRESH_WAIT_SEC)
+    if player_change:
+        interval = max(interval, float(JP_UI_PLAYER_CHANGE_MIN_SEC))
+    return interval
 
 
 async def _delete_message_after(message: discord.Message, seconds: float) -> None:
@@ -160,26 +205,24 @@ async def refresh_lobby_message(
     bot: discord.Client,
     channel: discord.TextChannel,
     round_data: dict,
+    *,
+    player_change: bool = False,
 ) -> discord.Message | None:
     """Edit or create the main jackpot V2 message."""
     players = round_data.get("players") or []
     pool = pool_total(players)
     rem = _countdown_remaining(round_data) if round_data.get("status") == "countdown" else None
 
-    # Throttle: son UI yenilemeden sonra çok kısa süre geçtiyse edit etmiyoruz.
+    snap = _lobby_ui_snapshot(round_data)
+    if snap == round_data.get("ui_snapshot") and not round_data.get("ui_dirty"):
+        return None
+
     now_ts = time.time()
     last_ts = float(round_data.get("ui_last_refresh") or 0)
-    min_interval = 0.0
-    status = round_data.get("status")
-    if status == "waiting":
-        min_interval = JP_UI_MIN_REFRESH_WAIT_SEC
-    elif status == "countdown" and rem is not None:
-        min_interval = (
-            JP_UI_MIN_REFRESH_COUNTDOWN_LAST_SEC
-            if rem <= JP_UI_COUNTDOWN_LAST_SECONDS
-            else JP_UI_MIN_REFRESH_COUNTDOWN_NORMAL_SEC
-        )
+    min_interval = _min_refresh_interval(round_data, player_change=player_change)
     if min_interval > 0 and (now_ts - last_ts) < min_interval:
+        round_data["ui_dirty"] = True
+        set_round(channel.id, round_data)
         return None
 
     lobby_buf = await image_gen.render_jackpot_lobby_png(
@@ -224,6 +267,8 @@ async def refresh_lobby_message(
         return None
 
     round_data["ui_last_refresh"] = now_ts
+    round_data["ui_snapshot"] = snap
+    round_data["ui_dirty"] = False
     set_round(channel.id, round_data)
     return message
 
@@ -234,8 +279,6 @@ def ensure_jackpot_room_loop(bot: discord.Client, channel_id: int) -> None:
         return
 
     async def _runner() -> None:
-        last_idle_refresh = 0.0
-        last_countdown_paint = -1
         try:
             while True:
                 await asyncio.sleep(1)
@@ -253,9 +296,7 @@ def ensure_jackpot_room_loop(bot: discord.Client, channel_id: int) -> None:
                 status = rd.get("status")
 
                 if status == "waiting":
-                    now = time.time()
-                    if now - last_idle_refresh >= LOBBY_IDLE_REFRESH_SEC:
-                        last_idle_refresh = now
+                    if rd.get("ui_dirty"):
                         async with _lock(channel_id):
                             rd = get_round(channel_id)
                             if rd and rd.get("status") == "waiting":
@@ -265,15 +306,10 @@ def ensure_jackpot_room_loop(bot: discord.Client, channel_id: int) -> None:
                 if status == "countdown":
                     rem = _countdown_remaining(rd)
                     if rem > 0:
-                        should_paint = (
-                            rem <= JP_UI_COUNTDOWN_LAST_SECONDS or (rem % 3 == 0)
-                        )
-                        if should_paint and rem != last_countdown_paint:
-                            last_countdown_paint = rem
-                            try:
+                        async with _lock(channel_id):
+                            rd = get_round(channel_id)
+                            if rd and rd.get("status") == "countdown":
                                 await refresh_lobby_message(bot, ch, rd)
-                            except Exception:
-                                pass
                         continue
 
                     async with _lock(channel_id):
@@ -282,17 +318,12 @@ def ensure_jackpot_room_loop(bot: discord.Client, channel_id: int) -> None:
                             continue
                         players = rd.get("players") or []
                         if len(players) < MIN_PLAYERS:
-                            rd["countdown_secs"] = (
-                                int(rd.get("countdown_secs") or COUNTDOWN_BASE_SEC)
-                                + COUNTDOWN_EXTEND_SEC
-                            )
-                            rd = _start_countdown(rd)
+                            rd = _pause_countdown_to_waiting(rd)
+                            rd["ui_dirty"] = True
                             set_round(channel_id, rd)
-                            last_countdown_paint = -1
                             await refresh_lobby_message(bot, ch, rd)
                             continue
                         await _run_spin(bot, ch, rd)
-                    last_countdown_paint = -1
                     continue
 
         except asyncio.CancelledError:
@@ -390,8 +421,9 @@ async def join_jackpot(
             rd = _start_countdown(rd)
             rd["countdown_secs"] = COUNTDOWN_BASE_SEC
 
+        rd["ui_dirty"] = True
         set_round(ctx.channel.id, rd)
-        await refresh_lobby_message(ctx.bot, ctx.channel, rd)
+        await refresh_lobby_message(ctx.bot, ctx.channel, rd, player_change=True)
         ensure_jackpot_room_loop(ctx.bot, ctx.channel.id)
 
     try:
@@ -431,10 +463,10 @@ async def cancel_jackpot(ctx: commands.Context) -> None:
         rd["players"] = players
 
         if not players:
-            rd["status"] = "waiting"
-            rd["countdown_ends"] = 0
+            rd = _pause_countdown_to_waiting(rd)
+            rd["ui_dirty"] = True
             set_round(ctx.channel.id, rd)
-            await refresh_lobby_message(ctx.bot, ctx.channel, rd)
+            await refresh_lobby_message(ctx.bot, ctx.channel, rd, player_change=True)
             try:
                 await ctx.message.delete()
             except Exception:
@@ -443,10 +475,10 @@ async def cancel_jackpot(ctx: commands.Context) -> None:
             return
 
         if len(players) < MIN_PLAYERS:
-            rd["countdown_secs"] = int(rd.get("countdown_secs") or COUNTDOWN_BASE_SEC) + COUNTDOWN_EXTEND_SEC
-            rd = _start_countdown(rd)
+            rd = _pause_countdown_to_waiting(rd)
+        rd["ui_dirty"] = True
         set_round(ctx.channel.id, rd)
-        await refresh_lobby_message(ctx.bot, ctx.channel, rd)
+        await refresh_lobby_message(ctx.bot, ctx.channel, rd, player_change=True)
         ensure_jackpot_room_loop(ctx.bot, ctx.channel.id)
 
     try:
