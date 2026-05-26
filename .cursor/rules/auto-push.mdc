@@ -1,0 +1,15 @@
+---
+description: Push to remote when a task is finished
+alwaysApply: true
+---
+
+# Auto-push when done
+
+When you finish a coherent task (feature, fix, or requested change) in this repo:
+
+1. Commit only files that belong to that task (never unrelated WIP).
+2. Push to `origin` on the current branch without waiting for the user to ask.
+3. Do not push secrets (`.env`, credentials).
+4. Skip push only if the user explicitly said not to push, there is nothing to commit, or push fails (report the error).
+
+Briefly tell the user the commit hash after a successful push.
