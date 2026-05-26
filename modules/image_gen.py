@@ -1531,9 +1531,10 @@ async def render_slots_gif(
     font_hdr = _font(16, bold=True)
     font_name = _font(14, bold=True)
     font_bet = _font(13, bold=True)
-    font_meter_lbl = _font(13, bold=True)
-    font_meter_amt = _font(34, bold=True)
-    font_meter_sub = _font(15, bold=True)
+    font_meter_lbl = _font(12, bold=True)
+    font_meter_amt = _font(26, bold=True)
+    font_meter_pts = _font(14, bold=True)
+    font_meter_sub = _font(13, bold=True)
     font_ln = _font(11, bold=True)
 
     def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
@@ -1641,22 +1642,30 @@ async def render_slots_gif(
             return
 
         if profit:
-            amt = f"+{_fmt(net_change)}"
+            amt_core = f"+{_fmt(net_change)}"
             amt_col = GREEN
         else:
             loss = abs(net_change) if net_change < 0 else bet
-            amt = f"-{_fmt(loss)}"
+            amt_core = f"-{_fmt(loss)}"
             amt_col = RED
 
-        aw = _tw(draw, amt, font_meter_amt)
-        draw.text(((W - aw) / 2, y1 + 18), amt, font=font_meter_amt, fill=amt_col)
+        pts_txt = "pts"
+        aw = _tw(draw, amt_core, font_meter_amt)
+        pw = _tw(draw, pts_txt, font_meter_pts)
+        gap = 7
+        block_w = aw + gap + pw
+        ax = (W - block_w) / 2
+        draw.text((ax, y1 + 12), amt_core, font=font_meter_amt, fill=amt_col)
+        draw.text((ax + aw + gap, y1 + 20), pts_txt, font=font_meter_pts, fill=amt_col)
 
+        draw.line([(x1 + 14, y1 + 50), (x2 - 14, y1 + 50)], fill=(45, 55, 82), width=1)
+
+        bal_y = y1 + 58
         bal_lbl = "Balance"
         bal_val = f"{_fmt(balance)} pts"
-        blw = _tw(draw, bal_lbl, font_meter_lbl)
-        draw.text((x1 + 16, y1 + win_meter_h - 28), bal_lbl, font=font_meter_lbl, fill=MUTED)
+        draw.text((x1 + 16, bal_y), bal_lbl, font=font_meter_lbl, fill=MUTED)
         bvw = _tw(draw, bal_val, font_meter_sub)
-        draw.text((x2 - 16 - bvw, y1 + win_meter_h - 28), bal_val, font=font_meter_sub, fill=WHITE)
+        draw.text((x2 - 16 - bvw, bal_y), bal_val, font=font_meter_sub, fill=WHITE)
 
     def _make_frame(
         revealed_cols: int,
