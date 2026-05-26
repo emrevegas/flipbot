@@ -67,8 +67,17 @@ def is_jackpot_staff(member: discord.abc.User) -> bool:
 
 
 def static_avatar_url(user: discord.abc.User) -> str:
+    """Return avatar URL usable by our image fetcher.
+
+    Some discord.py versions don't expose `discord.AvatarFormat`, so we pass `format="png"`
+    as a plain string and fall back to the original `.url`.
+    """
     av = user.display_avatar
-    return str(av.replace(format=discord.AvatarFormat.png, size=128))
+    try:
+        # `Asset.replace()` exists on discord.py; format may accept a string.
+        return str(av.replace(format="png", size=128))
+    except Exception:
+        return str(av.url)
 
 
 def _countdown_remaining(round_data: dict) -> int:
