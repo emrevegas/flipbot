@@ -893,14 +893,15 @@ class MinesGridView(discord.ui.View):
         await _refund_game(self.user_id, bet, "mines", note="mines timeout refund")
         if self._message_id:
             _mines_msg_to_user.pop(self._message_id, None)
-        if self.message:
+        msg = getattr(self, "message", None)
+        if msg:
             embed = discord.Embed(
                 title="⏱ Mines — Timed Out",
                 description=f"Bet **{utils.fmt_pts(bet)} pts** refunded.",
                 color=0xF39C12,
             )
             try:
-                await self.message.edit(
+                await msg.edit(
                     embed=embed,
                     view=MinesGridView(self._state, self._message_id, self.user_id, game_over=True),
                 )
@@ -2062,9 +2063,18 @@ class Games(commands.Cog):
         embed.set_footer(text="Click cells to reveal. Cash out to collect winnings.")
 
         msg = await ctx.send(embed=embed, view=view)
+        # Ensure MinesGridView.on_timeout can edit this message.
+        try:
+            view.message = msg
+        except Exception:
+            pass
         _mines_msg_to_user[str(msg.id)] = ctx.author.id
         # Re-render with correct message_id so custom_ids are unique per game
         view2 = MinesGridView(state, str(msg.id), ctx.author.id)
+        try:
+            view2.message = msg
+        except Exception:
+            pass
         await msg.edit(view=view2)
 
     # ── Crystals ───────────────────────────────────────────────────────────────
