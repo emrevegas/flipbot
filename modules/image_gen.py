@@ -1497,8 +1497,9 @@ async def render_slots_gif(
     """3×5 slot — columns lock one-by-one; final frame draws winning paylines."""
     from Games.slot import COLS, PAYLINES, ROWS, SYMBOLS
 
-    W, H = 680, 420
+    W, H = 680, 520
     HDR_H = 56
+    WIN_PANEL_H = 100
     INFO_H = 44
     PAD = 16
 
@@ -1510,22 +1511,30 @@ async def render_slots_gif(
     GREEN = (46, 213, 96)
     RED = (231, 76, 60)
     GOLD = (255, 196, 0)
+    WIN_PANEL_BG = (12, 18, 34)
+    WIN_PANEL_FILL = (22, 32, 52)
 
     id_to_sym = {s["id"]: s for s in SYMBOLS}
     pool_ids = [s["id"] for s in SYMBOLS]
 
-    CELL_W, CELL_H = 108, 86
+    CELL_W, CELL_H = 112, 94
     GAP = 10
     grid_w = COLS * CELL_W + (COLS - 1) * GAP
     grid_h = ROWS * CELL_H + (ROWS - 1) * GAP
     grid_x0 = (W - grid_w) // 2
-    grid_y0 = HDR_H + 28
+    grid_y0 = HDR_H + 22
+    win_panel_y0 = grid_y0 + grid_h + 22
+    win_meter_w = min(360, grid_w + 40)
+    win_meter_h = WIN_PANEL_H - 16
+    win_meter_x0 = (W - win_meter_w) // 2
+    win_meter_y0 = win_panel_y0 + 8
 
     font_hdr = _font(16, bold=True)
     font_name = _font(14, bold=True)
     font_bet = _font(13, bold=True)
-    font_side = _font(44, bold=True)
-    font_win = _font(20, bold=True)
+    font_meter_lbl = _font(13, bold=True)
+    font_meter_amt = _font(34, bold=True)
+    font_meter_sub = _font(15, bold=True)
     font_ln = _font(11, bold=True)
 
     def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
@@ -1554,7 +1563,7 @@ async def render_slots_gif(
     async with aiohttp.ClientSession() as session:
         for tok in tokens:
             if tok and tok not in emoji_cache:
-                emoji_cache[tok] = await _load_emoji_rgba(str(tok), 58, session)
+                emoji_cache[tok] = await _load_emoji_rgba(str(tok), 62, session)
 
     def _token_for_id(sid: str) -> str:
         return emoji_map.get(sid, id_to_sym.get(sid, {}).get("emoji", "❓"))
@@ -1614,6 +1623,44 @@ async def render_slots_gif(
                     od.text((px - lw / 2, py - 22), lbl, font=font_ln, fill=(*col, 255))
         img.paste(Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB"))
 
+    def _draw_win_meter(draw: ImageDraw.ImageDraw, *, show_result: bool) -> None:
+        """Casino-style win display — centered below reels, above footer."""
+        x1, y1 = win_meter_x0, win_meter_y0
+        x2, y2 = x1 + win_meter_w, y1 + win_meter_h
+        draw.rounded_rectangle(
+            [x1, y1, x2, y2],
+            radius=14,
+            fill=WIN_PANEL_FILL if show_result else WIN_PANEL_BG,
+            outline=GOLD if show_result and won else (45, 55, 82),
+            width=3 if show_result else 2,
+        )
+        if not show_result:
+            hint = "SPINNING…"
+            hw = _tw(draw, hint, font_meter_lbl)
+            draw.text(((W - hw) / 2, y1 + (win_meter_h - 14) // 2), hint, font=font_meter_lbl, fill=MUTED)
+            return
+
+        lbl = "WIN" if won else "LOSE"
+        lbl_col = GREEN if won else RED
+        lw = _tw(draw, lbl, font_meter_lbl)
+        draw.text(((W - lw) / 2, y1 + 10), lbl, font=font_meter_lbl, fill=lbl_col)
+
+        if won:
+            amt = f"+{_fmt(net_change)}"
+            sub = f"Payout {_fmt(gross_payout)} pts"
+            amt_col = GOLD
+            sub_col = GREEN
+        else:
+            amt = f"-{_fmt(bet)}"
+            sub = "NO WIN"
+            amt_col = RED
+            sub_col = MUTED
+
+        aw = _tw(draw, amt, font_meter_amt)
+        draw.text(((W - aw) / 2, y1 + 30), amt, font=font_meter_amt, fill=amt_col)
+        sw = _tw(draw, sub, font_meter_sub)
+        draw.text(((W - sw) / 2, y1 + win_meter_h - 26), sub, font=font_meter_sub, fill=sub_col)
+
     def _make_frame(
         revealed_cols: int,
         *,
@@ -1653,25 +1700,13 @@ async def render_slots_gif(
                 else:
                     _paste_cell(img, col, row, spin_emoji, dim=0.75)
 
+        draw = ImageDraw.Draw(img)
+        _draw_win_meter(draw, show_result=final)
+
         if final:
             _draw_paylines(img)
-            draw = ImageDraw.Draw(img)
-            res_y = grid_y0 + grid_h + 18
-            label = "WIN" if won else "LOSE"
-            col = GREEN if won else RED
-            lw = _tw(draw, label, font_side)
-            draw.text(((W - lw) / 2, res_y), label, font=font_side, fill=col)
-            if won:
-                line2 = f"+{_fmt(net_change)} pts"
-            else:
-                line2 = f"-{_fmt(bet)} pts"
-            l2w = _tw(draw, line2, font_win)
-            draw.text(((W - l2w) / 2, res_y + 50), line2, font=font_win, fill=col)
-            if won and gross_payout > 0:
-                line3 = f"Payout {_fmt(gross_payout)} pts"
-                l3w = _tw(draw, line3, font_bet)
-                draw.text(((W - l3w) / 2, res_y + 78), line3, font=font_bet, fill=MUTED)
 
+        draw = ImageDraw.Draw(img)
         draw.rectangle([0, H - INFO_H, W, H], fill=(8, 12, 22))
         draw.line([(0, H - INFO_H), (W, H - INFO_H)], fill=(35, 45, 72), width=1)
         uname = (username[:20] + "…") if len(username) > 20 else username
