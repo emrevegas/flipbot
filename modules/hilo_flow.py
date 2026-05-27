@@ -313,13 +313,20 @@ async def _hilo_pick(interaction: discord.Interaction, choice: str) -> None:
 
     await interaction.response.defer()
 
+    import modules.balance_cap as balance_cap
     from modules import flip_balance_cap as bc
     from modules.game_rig import rig_hilo_before_guess
 
-    if await bc.should_rig_outcome(uid, "hilo", bet):
+    user_row = await db.get_user(uid)
+    bal = int(float((user_row or {}).get("balance", 0)))
+    prospective = int(bet * float(state.get("multiplier", 1.0)))
+    if await bc.should_rig_outcome(uid, "hilo", bet, payout=prospective):
         rig_hilo_before_guess(state, choice)
 
     hilo_guess(state, choice)
+
+    if state.get("last_result") == "win":
+        balance_cap.apply_hilo_step_bias(state, uid, "real", bal)
 
     result = state.get("last_result")
     mid = str(interaction.message.id)

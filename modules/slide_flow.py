@@ -26,7 +26,7 @@ async def _run_slide_round(
     from Games.slide import gross_payout, pick_rigged_multiplier, roll_multiplier
     from cogs.games import _payout, _record
 
-    rigged = await bc.should_rig_outcome(user_id, "slide", bet)
+    rigged = await bc.should_rig_outcome(user_id, "slide", bet, gross=bet * 3)
     if rigged:
         result_mult = pick_rigged_multiplier()
     else:

@@ -40,7 +40,7 @@ async def _run_slots_round(
     from Games.slot import get_slot_emojis
     from cogs.games import _payout, _record
 
-    rigged = await bc.should_rig_outcome(user_id, "slots", bet)
+    rigged = await bc.should_rig_outcome(user_id, "slots", bet, gross=bet * 5)
     grid, wins, gross = _spin_until_fair(bet, rigged=rigged)
 
     won = gross > bet

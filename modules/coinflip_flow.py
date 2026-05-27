@@ -112,7 +112,9 @@ async def settle_coinflip_pvp(
     payout = pool * (1 - he)
     wuser = await db.get_user(winner_id)
     cur = float((wuser or {}).get("balance", 0))
-    capped = await bc.apply_balance_cap(winner_id, cur + payout)
+    capped = await bc.apply_balance_cap(
+        winner_id, cur + payout, game_id="coinflip",
+    )
     payout = max(0.0, capped - cur)
     if payout > 0:
         await db.add_balance(winner_id, payout, note="coinflip pvp win")
@@ -319,7 +321,7 @@ async def _run_cf_bot_round(
     if not player_side:
         player_side = random.choice(SIDES)
     hot_e, cold_e = get_coinflip_emojis()
-    rigged = await bc.should_rig_outcome(user_id, "coinflip", bet)
+    rigged = await bc.should_rig_outcome(user_id, "coinflip", bet, gross=bet * 2)
     if rigged:
         result = "COLD" if player_side == "HOT" else "HOT"
     else:

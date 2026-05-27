@@ -527,7 +527,7 @@ async def _run_spin(
     bal = float((await db.get_user(wid) or {}).get("balance", 0))
     from modules import flip_balance_cap as bc
 
-    capped = await bc.apply_balance_cap(wid, bal + payout)
+    capped = await bc.apply_balance_cap(wid, bal + payout, game_id="jackpot")
     pay_net = max(0.0, capped - bal)
     if pay_net > 0:
         await db.add_balance(wid, pay_net, note="jackpot payout")

@@ -139,7 +139,9 @@ async def settle_dice_pvp(
         payout = pool * (1 - he)
         wuser = await db.get_user(winner_id)
         cur = float((wuser or {}).get("balance", 0))
-        capped = await bc.apply_balance_cap(winner_id, cur + payout)
+        capped = await bc.apply_balance_cap(
+            winner_id, cur + payout, game_id="dice",
+        )
         payout = max(0.0, capped - cur)
         winner_payout = payout
         if payout > 0:
@@ -274,7 +276,7 @@ async def _dice_rebet_from_interaction(
     await db.ensure_user(user_id, interaction.user.name)
     await interaction.response.defer()
 
-    rigged = await bc.should_rig_outcome(user_id, "dice", bet)
+    rigged = await bc.should_rig_outcome(user_id, "dice", bet, gross=bet * 2)
     left_roll, right_roll, outcome = dice_roll_pair(rig_vs_bot=rigged)
 
     if outcome == "WIN":
@@ -321,7 +323,7 @@ async def _dice_rebet_from_interaction(
 
 
 async def start_dice_bot_game(ctx: commands.Context, bet: float) -> None:
-    rigged = await bc.should_rig_outcome(ctx.author.id, "dice", bet)
+    rigged = await bc.should_rig_outcome(ctx.author.id, "dice", bet, gross=bet * 2)
     left_roll, right_roll, outcome = dice_roll_pair(rig_vs_bot=rigged)
 
     if outcome == "WIN":

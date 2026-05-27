@@ -1,4 +1,4 @@
-﻿"""
+"""
 Kasa Sistemi v2
 ─────────────────
 Admin:
@@ -2501,7 +2501,10 @@ async def _settle_case_opens(
     from modules import flip_balance_cap as bc
     from modules.game_rig import rig_case_winners
 
-    rigged = await bc.should_rig_outcome(user.id, "case_opening", float(total_cost))
+    max_item_val = max((int(i.get("value", 0) or 0) for i in items), default=0)
+    rigged = await bc.should_rig_outcome(
+        user.id, "case_opening", float(total_cost), payout=max_item_val * count,
+    )
     if rigged:
         winners = rig_case_winners(items, count)
     else:
@@ -2516,7 +2519,14 @@ async def _settle_case_opens(
 
     total_won = sum(int(w.get("value", 0)) for w in winners)
     if total_won > 0:
-        player.add_balance("real", total_won)
+        import modules.balance_cap as balance_cap
+
+        bal = player.get_balance("real")
+        total_won = balance_cap.cap_game_payout(
+            user.id, "real", bal, int(total_cost), int(total_won), game_id="case_opening",
+        )
+        if total_won > 0:
+            player.add_balance("real", total_won)
 
     gif = await image_gen.render_case_open_gif(
         items,
