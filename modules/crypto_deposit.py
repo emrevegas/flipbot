@@ -1410,7 +1410,7 @@ def check_eth_tx_confirmed(tx_hash: str) -> bool:
         return False
 
 
-def _credit_deposit(user_id: int, coins: int) -> str:
+def _credit_deposit(user_id: int, coins: int) -> tuple[str, dict]:
     """Credit coins, record deposit stats, race entry, and apply pending bonus."""
     import uuid
 
@@ -1426,7 +1426,9 @@ def _credit_deposit(user_id: int, coins: int) -> str:
         race_engine.add_entry(str(user_id), coins, "deposit")
     except Exception:
         pass
-    ok, bonus_amt = apply_pending_deposit_bonus(user_id, coins, consume=True)
+    ok, bonus_amt, bonus_id, bonus_name = apply_pending_deposit_bonus(
+        user_id, coins, consume=True
+    )
     if ok and bonus_amt > 0:
         p.add_balance("real", bonus_amt)
 
@@ -1444,7 +1446,12 @@ def _credit_deposit(user_id: int, coins: int) -> str:
         "method_key": "crypto",
     }
     set_user_data(user_id, "deposit_history", history)
-    return deposit_id
+    bonus_meta = {
+        "bonus_id": bonus_id,
+        "bonus_name": bonus_name,
+        "bonus_coins": int(bonus_amt) if ok else 0,
+    }
+    return deposit_id, bonus_meta
 
 
 def check_user_deposits(user_id: int) -> list[dict]:
@@ -1488,13 +1495,14 @@ def check_user_deposits(user_id: int) -> list[dict]:
                 coins      = _usd_to_coins(amount_usd)
 
                 if amount_usd >= min_usd and coins > 0:
-                    dep_id = _credit_deposit(user_id, coins)
+                    dep_id, bonus_meta = _credit_deposit(user_id, coins)
                     credited.append({
                         "chain": "SOL", "symbol": "◎",
                         "amount_crypto": round(diff_sol, 6),
                         "amount_usd":    round(amount_usd, 2),
                         "coins":         coins,
                         "deposit_id":    dep_id,
+                        **bonus_meta,
                     })
                     # Auto-sweep (requires MNEMONIC)
                     if settings.get("auto_sweep", False) and MNEMONIC:
@@ -1526,13 +1534,14 @@ def check_user_deposits(user_id: int) -> list[dict]:
                 coins      = _usd_to_coins(amount_usd)
 
                 if amount_usd >= min_usd and coins > 0:
-                    dep_id = _credit_deposit(user_id, coins)
+                    dep_id, bonus_meta = _credit_deposit(user_id, coins)
                     credited.append({
                         "chain": "LTC", "symbol": "Ł",
                         "amount_crypto": round(diff_ltc, 8),
                         "amount_usd":    round(amount_usd, 2),
                         "coins":         coins,
                         "deposit_id":    dep_id,
+                        **bonus_meta,
                     })
                     # Auto-sweep (requires MNEMONIC)
                     if settings.get("auto_sweep", False) and MNEMONIC:
@@ -1563,13 +1572,14 @@ def check_user_deposits(user_id: int) -> list[dict]:
                 coins      = _usd_to_coins(amount_usd)
 
                 if amount_usd >= min_usd and coins > 0:
-                    dep_id = _credit_deposit(user_id, coins)
+                    dep_id, bonus_meta = _credit_deposit(user_id, coins)
                     credited.append({
                         "chain": "ETH", "symbol": "Ξ",
                         "amount_crypto": round(diff_eth, 8),
                         "amount_usd":    round(amount_usd, 2),
                         "coins":         coins,
                         "deposit_id":    dep_id,
+                        **bonus_meta,
                     })
                     if settings.get("auto_sweep", False) and MNEMONIC:
                         eth_sweep_addr = settings.get("eth_sweep_address", "")

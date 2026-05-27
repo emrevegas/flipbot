@@ -238,7 +238,7 @@ def process_deposit_from_log(
     race_engine.add_entry(user_id, coins, "deposit")
 
     bonus_amt = 0
-    ok_bonus, bonus_amt = apply_pending_deposit_bonus(user_id, coins)
+    ok_bonus, bonus_amt, _, _ = apply_pending_deposit_bonus(user_id, coins)
     if ok_bonus and bonus_amt > 0:
         player.add_balance("real", bonus_amt, by="bonus", reason="Deposit bonus")
 

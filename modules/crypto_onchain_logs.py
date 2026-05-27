@@ -7,6 +7,7 @@ from discord import ui
 
 from modules.crypto_deposit import get_settings as get_crypto_settings
 from modules.ui_v2 import panel_with_controls, send_channel_v2
+from modules.utils import format_balance
 
 ONCHAIN_ACCENT = 0x9B59B6
 
@@ -78,17 +79,33 @@ def _explorer_button(url: str | None) -> ui.Button | None:
     )
 
 
+def _deposit_bonus_line(bonus_name: str | None, bonus_coins: int) -> str:
+    if not bonus_name:
+        return "**Bonus:** No bonus"
+    line = f"**Bonus:** {bonus_name}"
+    if bonus_coins > 0:
+        line += f" (+{format_balance(bonus_coins, 'real')})"
+    return line
+
+
 def build_deposit_feed_layout(
     *,
     display_name: str,
     amount_usd: float,
     amount_crypto: float,
     chain: str,
+    coins_credited: int = 0,
+    bonus_name: str | None = None,
+    bonus_coins: int = 0,
     tx_id: str | None = None,
 ) -> ui.LayoutView:
-    body = (
-        f"**{display_name}** deposited **${amount_usd:.2f}**\n"
-        f"{_crypto_amount_line(amount_crypto, chain, tx_id)}"
+    body = "\n".join(
+        [
+            f"**{display_name}** deposited **${amount_usd:.2f}**",
+            _crypto_amount_line(amount_crypto, chain, tx_id),
+            f"**Credited:** +{format_balance(coins_credited, 'real')}",
+            _deposit_bonus_line(bonus_name, bonus_coins),
+        ]
     )
     ctrl = _explorer_button(explorer_tx_url(chain, tx_id or ""))
     return panel_with_controls(
@@ -157,6 +174,9 @@ async def post_deposit_feed_logs(
             amount_usd=float(dep.get("amount_usd", 0)),
             amount_crypto=float(dep.get("amount_crypto", 0)),
             chain=chain,
+            coins_credited=int(dep.get("coins", 0)),
+            bonus_name=dep.get("bonus_name"),
+            bonus_coins=int(dep.get("bonus_coins", 0)),
             tx_id=dep.get("tx_id"),
         )
         try:

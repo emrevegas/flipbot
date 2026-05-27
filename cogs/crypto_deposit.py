@@ -1319,10 +1319,20 @@ class CryptoDeposit(commands.Cog):
         lines = []
         for dep in credited:
             emoji = _chain_emoji(dep["chain"])
-            lines.append(
+            line = (
                 f"{emoji} **{dep['amount_crypto']} {dep['chain']}** "
                 f"(~${dep['amount_usd']:.2f} USD) → **+{format_balance(dep['coins'], 'real')}** credited!"
             )
+            bonus_name = dep.get("bonus_name")
+            if bonus_name:
+                bonus_part = f"🎁 **{bonus_name}**"
+                bonus_coins = int(dep.get("bonus_coins", 0))
+                if bonus_coins > 0:
+                    bonus_part += f" (+{format_balance(bonus_coins, 'real')})"
+                line += f"\n{bonus_part}"
+            else:
+                line += "\n🎁 No bonus"
+            lines.append(line)
 
         user = member or self.bot.get_user(user_id)
         if user:
