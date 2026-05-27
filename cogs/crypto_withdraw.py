@@ -146,36 +146,26 @@ async def _process_withdrawal(
             ephemeral=True,
         )
 
-    stats = get_user_data(user_id, "stats") or {}
-    multiplier = float(server_data.get("withdraw_min_multiplier", 0) or 0)
-    if multiplier > 0:
-        last_deposit = int(stats.get("last_deposit_amount", 0))
-        if last_deposit > 0:
-            required_wager = int(last_deposit * multiplier)
-            total_wagered = int(stats.get("total_wagered", 0))
-            wagered_at_dep = int(stats.get("wagered_at_last_deposit", 0))
-            wagered_since = max(0, total_wagered - wagered_at_dep)
+    from modules.wager_gate import get_deposit_wager_gate
 
-            active_bonus = bonus_engine.get_active_bonus(str(user_id))
-            if active_bonus:
-                required_wager += int(active_bonus.get("wager_requirement", 0))
-
-            wager_remaining = max(0, required_wager - wagered_since)
-            if wager_remaining > 0:
-                wg_pct = int(wagered_since / required_wager * 100) if required_wager else 0
-                return await interaction.response.send_message(
-                    embed=discord.Embed(
-                        title="🎲 Wager Requirement Not Met",
-                        description=(
-                            f"You must wager **{format_balance(required_wager, 'real')}** before withdrawing.\n\n"
-                            f"Progress: **{format_balance(wagered_since, 'real')}** / "
-                            f"**{format_balance(required_wager, 'real')}** ({wg_pct}%)\n"
-                            f"Still needed: **{format_balance(wager_remaining, 'real')}**"
-                        ),
-                        color=0xF59E0B,
-                    ),
-                    ephemeral=True,
-                )
+    required_wager, wagered_since, wager_remaining = get_deposit_wager_gate(
+        user_id, server_data
+    )
+    if wager_remaining > 0:
+        wg_pct = int(wagered_since / required_wager * 100) if required_wager else 0
+        return await interaction.response.send_message(
+            embed=discord.Embed(
+                title="🎲 Wager Requirement Not Met",
+                description=(
+                    f"You must wager **{format_balance(required_wager, 'real')}** before withdrawing.\n\n"
+                    f"Progress: **{format_balance(wagered_since, 'real')}** / "
+                    f"**{format_balance(required_wager, 'real')}** ({wg_pct}%)\n"
+                    f"Still needed: **{format_balance(wager_remaining, 'real')}**"
+                ),
+                color=0xF59E0B,
+            ),
+            ephemeral=True,
+        )
 
     active_bonus = bonus_engine.get_active_bonus(str(user_id))
     if active_bonus and active_bonus.get("type") == "percentage":

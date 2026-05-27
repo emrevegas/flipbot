@@ -275,7 +275,13 @@ class _CashierDepositView(discord.ui.View):
         if not _is_cashier(interaction):
             return await interaction.response.send_message(embed=utils.error_embed("Cashier only."), ephemeral=True)
         new_bal = await db.add_balance(self.user_id, self.amount, note=f"deposit approved {self.ref_id}", by=str(interaction.user.id))
-        await db.record_deposit(self.user_id, self.amount)
+        from modules.player import Player
+        Player(self.user_id).record_deposit(int(self.amount))
+        try:
+            import modules.race as race_engine
+            race_engine.add_entry(str(self.user_id), int(self.amount), "deposit")
+        except Exception:
+            pass
         await _handle_affiliate_ftd(self.user_id, self.amount)
         await _update_request_status("deposit_requests", self.user_id, "approved", str(interaction.user.id))
         await interaction.response.edit_message(

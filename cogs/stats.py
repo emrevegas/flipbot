@@ -7,6 +7,7 @@ import discord
 from discord.ext import commands
 
 from database import db
+from modules.database import get_user_stats
 from modules import image_gen, utils
 
 
@@ -22,6 +23,7 @@ class Stats(commands.Cog):
 
         user = await db.get_user(target.id)
         user_stats = await db.get_user_stats(target.id)
+        panel = get_user_stats(target.id) or {}
 
         loop = asyncio.get_event_loop()
         img_buf = await loop.run_in_executor(
@@ -29,7 +31,8 @@ class Stats(commands.Cog):
             image_gen.render_stats_card,
             target.display_name,
             user_stats,
-            float(user.get("total_wagered", 0)) if user else 0,
+            float(panel.get("total_wagered", 0) or (user.get("total_wagered", 0) if user else 0)),
+            float(panel.get("total_deposit", 0) or 0),
         )
         await ctx.send(
             content=f"📊 Stats for **{target.display_name}**:",

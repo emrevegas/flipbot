@@ -1761,7 +1761,12 @@ async def render_slots_gif(
 
 # ── Stats Card ─────────────────────────────────────────────────────────────────
 
-def render_stats_card(username: str, stats: dict, wagered: float = 0) -> io.BytesIO:
+def render_stats_card(
+    username: str,
+    stats: dict,
+    wagered: float = 0,
+    total_deposited: float = 0,
+) -> io.BytesIO:
     W, H = 560, 260
     RADIUS = 18
     BG = config.CARD_BG_COLOR
@@ -1807,9 +1812,9 @@ def render_stats_card(username: str, stats: dict, wagered: float = 0) -> io.Byte
 
     row2 = [
         ("TOTAL WAGERED", f"{_fmt(wagered)} pts",                                                WHITE),
+        ("DEPOSITED",     f"{_fmt(total_deposited)} pts",                                        BLUE),
         ("PROFIT/LOSS",   (f"+{_fmt(profit)}" if profit >= 0 else _fmt(profit)) + " pts",       ACCENT if profit >= 0 else RED),
         ("BIGGEST WIN",   f"{_fmt(big_win)} pts",                                                GOLD),
-        ("BIGGEST LOSS",  f"{_fmt(big_loss)} pts",                                               RED),
     ]
     for i, (label, val, color) in enumerate(row2):
         cx = 24 + i * col_w

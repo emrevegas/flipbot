@@ -992,6 +992,18 @@ class FinanceSelect(discord.ui.Select):
                 else:
                     wager_info += "\n✅ Wager requirement met!"
 
+            active_bonus = bonus_engine.get_active_bonus(user_id)
+            if active_bonus and active_bonus.get("type") == "percentage":
+                breq = int(active_bonus.get("wager_requirement", 0))
+                bdone = int(active_bonus.get("wagered_so_far", 0))
+                bpct = int(bdone / breq * 100) if breq else 0
+                wager_info += (
+                    f"\n🎁 **{active_bonus.get('bonus_name', 'Bonus')}**: "
+                    f"**{format_balance(bdone, 'real')}** / **{format_balance(breq, 'real')}** ({bpct}%)"
+                )
+                if bdone < breq:
+                    wager_info += f"\n⚠️ Bonus wager remaining: **{format_balance(breq - bdone, 'real')}**"
+
             from cogs.room_panels_v2 import build_withdraw_method_layout
             from modules.ui_v2 import send_ephemeral
 
@@ -3561,34 +3573,12 @@ def _get_effective_min_withdrawal(user_id: int, server_data: dict) -> tuple[int,
 
 def _get_withdraw_wager_requirement(user_id: int, server_data: dict) -> tuple[int, int, int]:
     """
-    Returns (required_wager, wagered_since_deposit, remaining) based on:
-      - last_deposit * withdraw_min_multiplier  (server setting)
-      - plus bonus wager_requirement if user has an active bonus
-
-    If withdraw_min_multiplier is 0 or not set, returns (0, 0, 0) — no gate.
+    Returns (required_wager, wagered_since_deposit, remaining) for the server
+    deposit-multiplier gate only. Bonus wager is checked separately.
     """
-    multiplier = float(server_data.get("withdraw_min_multiplier", 0) or 0)
-    if multiplier <= 0:
-        return 0, 0, 0
+    from modules.wager_gate import get_deposit_wager_gate
 
-    stats = get_user_data(user_id, "stats") or {}
-    last_deposit = int(stats.get("last_deposit_amount", 0))
-    if last_deposit <= 0:
-        return 0, 0, 0
-
-    required = int(last_deposit * multiplier)
-
-    # Add bonus wager requirement if active
-    active_bonus = bonus_engine.get_active_bonus(str(user_id))
-    if active_bonus:
-        bonus_wager_req = int(active_bonus.get("wager_requirement", 0))
-        required += bonus_wager_req
-
-    total_wagered = int(stats.get("total_wagered", 0))
-    wagered_at_deposit = int(stats.get("wagered_at_last_deposit", 0))
-    wagered_since = max(0, total_wagered - wagered_at_deposit)
-    remaining = max(0, required - wagered_since)
-    return required, wagered_since, remaining
+    return get_deposit_wager_gate(user_id, server_data)
 
 
 async def _send_deposit_log(guild: discord.Guild, action: str, deposit_id: str, deposit_data: dict,

@@ -91,28 +91,11 @@ def mode_player_count(mode: str) -> int:
 
 
 def user_wager_met(user_id: int | str, guild_id: int | str) -> tuple[bool, int, int, int]:
-    """Same gate as withdraw: deposit multiplier + active bonus wager."""
-    import modules.bonus as bonus_engine
+    """Same gate as withdraw: server deposit multiplier only."""
+    from modules.wager_gate import get_deposit_wager_gate
 
     server_data = get_server_data(str(guild_id))
-    multiplier = float(server_data.get("withdraw_min_multiplier", 0) or 0)
-    if multiplier <= 0:
-        return True, 0, 0, 0
-
-    stats = get_user_data(user_id, "stats") or {}
-    last_deposit = int(stats.get("last_deposit_amount", 0))
-    if last_deposit <= 0:
-        return True, 0, 0, 0
-
-    required = int(last_deposit * multiplier)
-    active_bonus = bonus_engine.get_active_bonus(str(user_id))
-    if active_bonus:
-        required += int(active_bonus.get("wager_requirement", 0))
-
-    total_wagered = int(stats.get("total_wagered", 0))
-    wagered_at_deposit = int(stats.get("wagered_at_last_deposit", 0))
-    wagered_since = max(0, total_wagered - wagered_at_deposit)
-    remaining = max(0, required - wagered_since)
+    required, wagered_since, remaining = get_deposit_wager_gate(user_id, server_data)
     return remaining <= 0, required, wagered_since, remaining
 
 

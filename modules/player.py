@@ -50,6 +50,22 @@ def _flip_set_balance(uid: str, amount: float) -> None:
         conn.close()
 
 
+def _flip_add_deposited(uid: str, amount: int) -> None:
+    """Keep flipbot.db total_deposited in sync with panel deposit stats."""
+    amount = int(amount)
+    if amount <= 0 or not _FLIP_DB.exists():
+        return
+    conn = sqlite3.connect(str(_FLIP_DB))
+    try:
+        conn.execute(
+            "UPDATE users SET total_deposited = total_deposited + ? WHERE user_id = ?",
+            (amount, str(uid)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class Player:
     def __init__(self, discord_user_id: int):
         """
@@ -326,6 +342,7 @@ class Player:
             stats["wagered_at_last_deposit"] = int(stats.get("total_wagered", 0))
         stats["last_deposit_amount"] = prev_cycle + amount
         self.set_stats(stats)
+        _flip_add_deposited(self.uid, amount)
         try:
             from modules.live_stats_tracker import update_daily_deposit
             update_daily_deposit(str(self.uid), amount)

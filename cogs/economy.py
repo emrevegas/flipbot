@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands
 
 from database import db
+from modules.database import get_user_stats
 from modules import image_gen, flip_utils as utils
 
 
@@ -21,12 +22,16 @@ class Economy(commands.Cog):
         if not user:
             return await ctx.send(embed=utils.error_embed("User not found."))
 
+        panel = get_user_stats(target.id) or {}
+        total_deposited = float(panel.get("total_deposit", 0) or user.get("total_deposited", 0))
+        total_wagered = float(panel.get("total_wagered", 0) or user.get("total_wagered", 0))
+
         buf = await image_gen.render_balance_card(
             username=target.display_name,
             balance=float(user["balance"]),
             avatar_url=str(target.display_avatar.url),
-            total_wagered=float(user["total_wagered"]),
-            total_deposited=float(user["total_deposited"]),
+            total_wagered=total_wagered,
+            total_deposited=total_deposited,
         )
         await ctx.send(file=discord.File(buf, "balance.png"))
 

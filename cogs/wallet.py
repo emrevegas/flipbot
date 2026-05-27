@@ -5,6 +5,8 @@ import discord
 from discord.ext import commands
 
 from database import db
+import modules.bonus as bonus_engine
+from modules.database import get_user_stats
 from modules import flip_utils as utils
 from modules.economy import get_coins_per_usd, get_coin_usd_rate
 
@@ -18,12 +20,14 @@ class Wallet(commands.Cog):
         """Show your wallet card. .wallet"""
         await db.ensure_user(ctx.author.id, ctx.author.name)
         user = await db.get_user(ctx.author.id)
-        active_bonus = await db.get_active_bonus(ctx.author.id)
+        panel = get_user_stats(ctx.author.id) or {}
 
         balance = float(user["balance"])
-        wagered = float(user["total_wagered"])
-        deposited = float(user["total_deposited"])
-        withdrawn = float(user["total_withdrawn"])
+        wagered = float(panel.get("total_wagered", 0) or user.get("total_wagered", 0))
+        deposited = float(panel.get("total_deposit", 0) or user.get("total_deposited", 0))
+        withdrawn = float(panel.get("total_withdraw", 0) or user.get("total_withdrawn", 0))
+
+        active_bonus = bonus_engine.get_active_bonus(ctx.author.id)
 
         embed = discord.Embed(
             title=f"💼 Wallet — {ctx.author.display_name}",
@@ -39,12 +43,12 @@ class Wallet(commands.Cog):
         embed.add_field(name="Total Wagered",   value=f"`{utils.fmt_pts(wagered)} pts`", inline=True)
 
         if active_bonus:
-            wagered_b = float(active_bonus["wagered"])
-            req_b     = float(active_bonus["wager_req"])
+            wagered_b = float(active_bonus.get("wagered_so_far", 0))
+            req_b     = float(active_bonus.get("wager_requirement", 0))
             pct       = min(wagered_b / req_b * 100, 100) if req_b > 0 else 100
             embed.add_field(
                 name="Active Bonus",
-                value=f"{active_bonus['bonus_name']} — **{pct:.1f}%** complete",
+                value=f"{active_bonus.get('bonus_name', 'Bonus')} — **{pct:.1f}%** complete",
                 inline=False,
             )
 
