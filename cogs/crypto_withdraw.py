@@ -93,15 +93,11 @@ def _staff_can_approve(user_id: int) -> bool:
 
 
 def can_treasury_send(user: discord.abc.User) -> bool:
-    """Panel admin, super admin, or Discord administrator."""
+    """Panel / bot admin only (not Discord server Administrator role)."""
     uid = user.id
     if is_super_admin(uid):
         return True
-    if not check_permission(uid, "admin"):
-        return True
-    if isinstance(user, discord.Member) and user.guild_permissions.administrator:
-        return True
-    return False
+    return not check_permission(uid, "admin")
 
 
 def _parse_usd_amount(usd_raw: str) -> float:
