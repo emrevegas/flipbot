@@ -11,6 +11,28 @@ INGAME_MIN_DL = 5.0
 INGAME_MIN_DL_UNITS = int(INGAME_MIN_DL * 100)  # log amounts use 0.01 DL units
 
 
+def parse_decimal_input(raw: str) -> float:
+    """Parse admin/user decimal input (supports ``0.70`` and ``0,70``)."""
+    s = (raw or "").strip().replace(" ", "")
+    if not s:
+        raise ValueError("empty")
+    if "," in s and "." in s:
+        # 1.234,56 → 1234.56
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".")
+    return float(s)
+
+
+def format_dl_coin_rate(rate: float) -> str:
+    """Format coins-per-DL for UI (e.g. 0.7, 10, 100)."""
+    rate = float(rate)
+    if abs(rate - round(rate)) < 1e-9:
+        return str(int(round(rate)))
+    text = f"{rate:.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def dl_amount_from_units(amount_units: int) -> float:
     """Convert log amount (0.01 DL units) to DL (e.g. 1000 -> 10.0)."""
     return amount_units / 100.0
@@ -125,7 +147,10 @@ def dl_units_to_coins(amount_units: int, dl_to_coin_rate: float) -> int:
     rate = float(dl_to_coin_rate or 0)
     if rate <= 0 or dl_amount <= 0:
         return 0
-    return max(1, int(round(dl_amount * rate)))
+    coins = int(round(dl_amount * rate))
+    if coins < 1 and dl_amount * rate >= 0.5:
+        return 1
+    return max(0, coins)
 
 
 def _already_processed(message_id: int) -> bool:

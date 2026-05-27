@@ -2903,10 +2903,13 @@ class GrowIDDepositModal(discord.ui.Modal):
 
         world = str(self.ingame_cfg.get("world", "")).strip()
         bot_name = str(self.ingame_cfg.get("bot_name", "")).strip()
+        from modules.ingame_deposit import format_dl_coin_rate
+
         rate = float(self.ingame_cfg.get("dl_to_coin_rate", 0) or 0)
+        rate_display = format_dl_coin_rate(rate)
 
         instructions_view = build_ingame_instructions_view(
-            self.lang, world, bot_name, growid, rate
+            self.lang, world, bot_name, growid, rate_display
         )
 
         if self.skip_bonus:
@@ -4166,7 +4169,7 @@ def build_ingame_instructions_view(
     world: str,
     bot_name: str,
     growid: str,
-    rate: float,
+    rate: float | str,
 ) -> discord.ui.LayoutView:
     from modules.ui_v2 import ACCENT_SUCCESS, build_detail_panel
 

@@ -5967,7 +5967,9 @@ def _format_ingame_config_description(cfg: dict, configured: bool) -> str:
     world = cfg.get("world") or "—"
     bot = cfg.get("bot_name") or "—"
     ch = cfg.get("webhook_channel_id")
-    rate = cfg.get("dl_to_coin_rate", 0)
+    from modules.ingame_deposit import format_dl_coin_rate
+
+    rate = format_dl_coin_rate(float(cfg.get("dl_to_coin_rate", 0) or 0))
     status = "✅ Ready" if configured else "⚠️ Incomplete"
     ch_txt = f"<#{ch}>" if ch else "—"
     return (
@@ -6014,7 +6016,7 @@ class IngameDepositConfigModal(discord.ui.Modal, title="🎮 In-Game Deposit Set
     bot_input = discord.ui.TextInput(label="Bot name", placeholder="e.g. VegasBot", max_length=32)
     rate_input = discord.ui.TextInput(
         label="Bot coins per 1 DL",
-        placeholder="e.g. 100",
+        placeholder="e.g. 0.70 or 100",
         max_length=12,
     )
 
@@ -6027,16 +6029,26 @@ class IngameDepositConfigModal(discord.ui.Modal, title="🎮 In-Game Deposit Set
         if cfg.get("bot_name"):
             self.bot_input.default = str(cfg["bot_name"])
         if cfg.get("dl_to_coin_rate"):
-            self.rate_input.default = str(cfg["dl_to_coin_rate"])
+            from modules.ingame_deposit import format_dl_coin_rate
+
+            self.rate_input.default = format_dl_coin_rate(cfg["dl_to_coin_rate"])
 
     async def on_submit(self, interaction: discord.Interaction):
-        from modules.ingame_deposit import INGAME_METHOD_KEY, ensure_ingame_payment_method, is_ingame_configured
+        from modules.ingame_deposit import (
+            INGAME_METHOD_KEY,
+            ensure_ingame_payment_method,
+            is_ingame_configured,
+            parse_decimal_input,
+        )
         try:
-            rate = float(self.rate_input.value.strip().replace(",", ""))
+            rate = parse_decimal_input(self.rate_input.value)
             if rate <= 0:
                 raise ValueError()
         except (ValueError, TypeError):
-            return await interaction.response.send_message("❌ Invalid DL→coin rate.", ephemeral=True)
+            return await interaction.response.send_message(
+                "❌ Invalid DL→coin rate. Use e.g. `0.70` or `0,70` for 0.7 coins per 1 DL.",
+                ephemeral=True,
+            )
 
         methods = get_data("server/payment_methods") or {}
         ensure_ingame_payment_method()
