@@ -11,7 +11,15 @@ from discord.ext import commands, tasks
 
 import modules.bonus as bonus_engine
 import modules.crypto_deposit as engine
-from modules.database import check_permission, get_data, get_server_data, get_user_data, replace_data, set_user_data
+from modules.database import (
+    check_permission,
+    get_data,
+    get_server_data,
+    get_user_data,
+    is_super_admin,
+    replace_data,
+    set_user_data,
+)
 from modules.player import Player
 from modules.utils import format_balance
 from modules.translator import t
@@ -82,6 +90,81 @@ def _build_approval_embed(w: dict) -> discord.Embed:
 
 def _staff_can_approve(user_id: int) -> bool:
     return not check_permission(user_id, "admin") or not check_permission(user_id, "cashier")
+
+
+def can_treasury_send(user: discord.abc.User) -> bool:
+    """Panel admin, super admin, or Discord administrator."""
+    uid = user.id
+    if is_super_admin(uid):
+        return True
+    if not check_permission(uid, "admin"):
+        return True
+    if isinstance(user, discord.Member) and user.guild_permissions.administrator:
+        return True
+    return False
+
+
+def _parse_usd_amount(usd_raw: str) -> float:
+    return float(str(usd_raw).strip().replace(",", "."))
+
+
+def _usd_to_crypto(chain: str, usd: float) -> tuple[float, str | None]:
+    """Return (amount_crypto, error_message)."""
+    rates = engine.get_rates()
+    rate_key = _CHAIN_RATE.get(chain)
+    price = rates.get(rate_key, 0) if rate_key else 0
+    if price <= 0:
+        return 0.0, "Could not fetch exchange rate."
+    decimals = _CHAIN_DECIMALS.get(chain, 6)
+    return round(usd / price, decimals), None
+
+
+async def send_treasury_payout(
+    chain: str,
+    address: str,
+    usd_raw: str,
+) -> tuple[str | None, float, float, str | None]:
+    """
+    Send from treasury. Returns (tx_id, amount_crypto, usd, error).
+    """
+    try:
+        usd = _parse_usd_amount(usd_raw)
+        if usd <= 0:
+            raise ValueError("amount")
+    except ValueError:
+        return None, 0.0, 0.0, "Enter a valid positive USD amount."
+
+    amount_crypto, conv_err = _usd_to_crypto(chain, usd)
+    if conv_err:
+        return None, 0.0, usd, conv_err
+
+    loop = asyncio.get_event_loop()
+    tx_id = None
+    err: str | None = None
+    try:
+        if chain == "SOL":
+            lamports = int(amount_crypto * 1e9)
+            tx_id = await loop.run_in_executor(
+                None, engine.send_sol_from_treasury, address, lamports,
+            )
+        elif chain == "LTC":
+            satoshis = int(amount_crypto * 1e8)
+            tx_id = await loop.run_in_executor(
+                None, engine.send_ltc_from_treasury, address, satoshis,
+            )
+        elif chain == "ETH":
+            wei = int(amount_crypto * 1e18)
+            tx_id = await loop.run_in_executor(
+                None, engine.send_eth_from_treasury, address, wei,
+            )
+        else:
+            err = f"Unsupported chain: {chain}"
+    except Exception as e:
+        err = str(e)
+
+    if err or not tx_id:
+        return None, amount_crypto, usd, err or "No transaction ID returned."
+    return tx_id, amount_crypto, usd, None
 
 
 async def _process_withdrawal(
@@ -539,6 +622,19 @@ class CryptoWithdraw(commands.Cog):
     async def _before_confirm(self):
         await self.bot.wait_until_ready()
 
+    def _validate_treasury_ready(self) -> tuple[bool, str, bool]:
+        if not engine.TREASURY_MNEMONIC:
+            return False, "Treasury wallet is not configured (`TREASURY_MNEMONIC`).", True
+        s = engine.get_settings()
+        enabled = any([
+            s.get("sol_enabled", True),
+            s.get("ltc_enabled", True),
+            s.get("eth_enabled", True),
+        ])
+        if not enabled:
+            return False, "No crypto chains are enabled.", False
+        return True, "", False
+
     def _validate_crypto_ready(self) -> tuple[bool, str, bool]:
         s = engine.get_settings()
         if not s.get("enabled", False):
@@ -577,6 +673,32 @@ class CryptoWithdraw(commands.Cog):
 
         layout = build_withdraw_coin_layout(ctx.author.id)
         await send_channel_v2(ctx.channel, layout)
+
+    async def start_treasury_send(self, ctx: commands.Context) -> None:
+        from cogs.crypto_treasury_send_v2 import (
+            build_treasury_sent_coin_layout,
+            build_treasury_sent_disabled,
+        )
+        from modules.ui_v2 import send_channel_v2
+
+        if not can_treasury_send(ctx.author):
+            layout = build_treasury_sent_disabled(
+                "No permission",
+                "Only admins can use `.sent`.",
+            )
+            return await send_channel_v2(ctx.channel, layout)
+
+        ok, msg, _warning = self._validate_treasury_ready()
+        if not ok:
+            layout = build_treasury_sent_disabled("Unavailable", msg)
+            return await send_channel_v2(ctx.channel, layout)
+
+        await send_channel_v2(ctx.channel, build_treasury_sent_coin_layout(ctx.author.id))
+
+    @commands.command(name="sent", aliases=["sendcrypto", "treasurysend"])
+    async def sent_cmd(self, ctx: commands.Context):
+        """Admin: send crypto from treasury (.sent). Coin → address → USD amount."""
+        await self.start_treasury_send(ctx)
 
 
 async def setup(bot: discord.Client):
