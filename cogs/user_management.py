@@ -1128,20 +1128,16 @@ class UserPanelSelect(discord.ui.Select):
             embed.set_thumbnail(url=member.display_avatar.url)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        from cogs.room_panels_v2 import build_player_stats_layout
-        from modules.ui_v2 import send_ephemeral
-
-        layout = build_player_stats_layout(
+        embed = PlayerStatsView.build_overview_embed(member, stats, player, lang=lang)
+        view = AdminPlayerStatsView(
             self.target_user_id,
+            self.admin_id,
             stats,
             player,
             member,
             lang=lang,
-            tab="overview",
-            viewer_id=self.admin_id,
-            admin_viewer_id=self.admin_id,
         )
-        await send_ephemeral(interaction, layout)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     async def show_level_system(self, interaction: discord.Interaction):
         from modules.levels import MAX_LEVEL, progress_info, chest_rewards_for_level, chest_coins_for_level

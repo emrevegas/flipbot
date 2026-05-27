@@ -545,14 +545,9 @@ class EntertainmentSelect(discord.ui.Select):
             )
             return
 
-        from cogs.room_panels_v2 import build_player_stats_layout
-
-        layout = build_player_stats_layout(
-            user_id, stats, player, interaction.user, lang=lang, tab="overview"
-        )
-        from modules.ui_v2 import send_ephemeral
-
-        await send_ephemeral(interaction, layout)
+        embed = PlayerStatsView.build_overview_embed(interaction.user, stats, player, lang=lang)
+        view = PlayerStatsView(user_id, stats, player, interaction.user, lang=lang)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
