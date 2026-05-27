@@ -406,6 +406,13 @@ class WithdrawApprovalView(discord.ui.View):
         self._disable_all()
         await interaction.edit_original_response(embed=embed, view=self)
 
+        from modules.crypto_onchain_logs import post_payout_feed_log
+
+        member = interaction.guild.get_member(int(w["user_id"])) if interaction.guild else None
+        if member is None:
+            member = interaction.client.get_user(int(w["user_id"]))
+        await post_payout_feed_log(interaction.client, w, member=member)
+
         emoji = _chain_emoji(chain)
         user = interaction.client.get_user(int(w["user_id"]))
         if user:

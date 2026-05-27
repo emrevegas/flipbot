@@ -292,6 +292,11 @@ class _CheckNowButton(discord.ui.Button):
             return
 
         if credited:
+            cog = interaction.client.get_cog("CryptoDeposit")
+            if cog:
+                member = interaction.user if isinstance(interaction.user, discord.Member) else None
+                await cog._notify_user(self.user_id, credited, member=member)
+
             lines = []
             for dep in credited:
                 lines.append(
@@ -1122,6 +1127,11 @@ class CryptoDepositView(discord.ui.View):
             return
 
         if credited:
+            cog = interaction.client.get_cog("CryptoDeposit")
+            if cog:
+                member = interaction.user if isinstance(interaction.user, discord.Member) else None
+                await cog._notify_user(self.user_id, credited, member=member)
+
             lines = []
             for dep in credited:
                 lines.append(
@@ -1219,7 +1229,8 @@ class CryptoDeposit(commands.Cog):
                 try:
                     credited = engine.check_user_deposits(int(uid))
                     if credited:
-                        await self._notify_user(int(uid), credited)
+                        member = self.bot.get_user(int(uid))
+                        await self._notify_user(int(uid), credited, member=member)
                 except Exception as e:
                     print(f"[CryptoDeposit] Error checking {uid}: {e}")
         except Exception as e:
@@ -1269,9 +1280,15 @@ class CryptoDeposit(commands.Cog):
     async def _before_monitor(self):
         await self.bot.wait_until_ready()
 
-    async def _notify_user(self, user_id: int, credited: list[dict]):
-        """DM the user and log to deposit log channel."""
-        settings = engine.get_settings()
+    async def _notify_user(
+        self,
+        user_id: int,
+        credited: list[dict],
+        *,
+        member: discord.Member | discord.User | None = None,
+    ):
+        """DM the user and post public feed logs."""
+        from modules.crypto_onchain_logs import post_deposit_feed_logs
 
         lines = []
         for dep in credited:
@@ -1281,8 +1298,7 @@ class CryptoDeposit(commands.Cog):
                 f"(~${dep['amount_usd']:.2f} USD) → **+{format_balance(dep['coins'], 'real')}** credited!"
             )
 
-        # DM user
-        user = self.bot.get_user(user_id)
+        user = member or self.bot.get_user(user_id)
         if user:
             try:
                 await user.send(embed=discord.Embed(
@@ -1293,28 +1309,7 @@ class CryptoDeposit(commands.Cog):
             except discord.Forbidden:
                 pass
 
-        # Post to deposit log channel
-        log_ch_id = settings.get("deposit_log_channel_id")
-        if not log_ch_id:
-            return
-        channel = self.bot.get_channel(int(log_ch_id))
-        if not channel:
-            return
-        for dep in credited:
-            emoji = _chain_emoji(dep["chain"])
-            embed = discord.Embed(
-                title=f"💰  Deposit Confirmed — {emoji} {dep['chain']}",
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow(),
-            )
-            embed.add_field(name="👤  User",    value=f"<@{user_id}>  (`{user_id}`)", inline=True)
-            embed.add_field(name="💵  Amount",  value=f"`{dep['amount_crypto']} {dep['chain']}`  (~${dep['amount_usd']:.2f})", inline=True)
-            embed.add_field(name="🎰  Credited",value=f"`{format_balance(dep['coins'], 'real')}`", inline=True)
-            embed.set_footer(text="Vegas Casino  ·  Crypto Deposit")
-            try:
-                await channel.send(embed=embed)
-            except Exception:
-                pass
+        await post_deposit_feed_logs(self.bot, user_id, credited, member=user)
 
     async def _post_sweep_logs(self):
         """Post queued sweep log entries to the configured log channel."""
