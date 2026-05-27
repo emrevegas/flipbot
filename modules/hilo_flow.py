@@ -442,8 +442,8 @@ async def hilo_cashout_user(
     mult = float(state.get("multiplier", 1.0))
     user = await db.get_user(uid)
     bal = int(float((user or {}).get("balance", 0)))
-    payout = balance_cap.cap_hilo_cashout_payout(uid, "real", bal, int(bet), mult)
-    if payout <= 0:
+    payout = int(bet * mult)
+    if balance_cap.should_force_cap_loss(uid, "real", bal, payout):
         state["phase"] = "done"
         state["last_result"] = "lose"
         await db.clear_game_session(uid)

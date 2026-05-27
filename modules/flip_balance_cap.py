@@ -1,4 +1,4 @@
-"""Async balance-cap helpers for legacy games (db balance). Uses modules.balance_cap."""
+"""Balance-cap rig checks for legacy games (db balance). No payout trimming."""
 
 from __future__ import annotations
 
@@ -29,9 +29,19 @@ def _net_from_gross(gross: float, house_edge: float) -> int:
 
 
 async def get_balance_ceiling(user_id: int | str) -> float | None:
-    """Effective cap from panel (global / per-user / welcome / promo / bonus)."""
     ceiling = cap.get_balance_ceiling(user_id, "real")
     return float(ceiling) if ceiling is not None else None
+
+
+async def max_win_exceeds_cap(
+    user_id: int | str,
+    balance_after_bet: int,
+    max_net_win: int,
+) -> bool:
+    """True if crediting max_net_win would pass the user's balance cap."""
+    return cap.should_force_cap_loss(
+        user_id, "real", int(balance_after_bet), int(max_net_win),
+    )
 
 
 async def should_rig_outcome(
@@ -42,8 +52,14 @@ async def should_rig_outcome(
     pvp: bool = False,
     payout: float | None = None,
     gross: float | None = None,
+    force_cap_rig: bool = False,
 ) -> bool:
-    """True if the round should be a natural loss before showing the outcome."""
+    """
+    True => force a natural loss before showing the outcome.
+    Cap overflow => 100% rig; else server rigged_chance roll.
+    """
+    if force_cap_rig:
+        return True
     if pvp or game_id in NO_RIG_GAMES:
         return False
 
@@ -59,22 +75,3 @@ async def should_rig_outcome(
         p = 0
 
     return cap.should_rig_outcome(user_id, "real", bal, b, p, game_id=game_id)
-
-
-async def apply_balance_cap(
-    user_id: int | str,
-    new_balance: float,
-    *,
-    game_id: str = "",
-) -> float:
-    """Target balance after a win; returns allowed balance (0 net win if capped)."""
-    current = await _balance(user_id)
-    target = float(new_balance)
-    add = int(max(0, round(target - current)))
-    if add <= 0:
-        return target
-
-    allowed_add = cap.cap_game_payout(
-        user_id, "real", current, 0, add, game_id=game_id or "unknown",
-    )
-    return float(current + allowed_add)

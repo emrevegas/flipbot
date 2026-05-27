@@ -2519,14 +2519,7 @@ async def _settle_case_opens(
 
     total_won = sum(int(w.get("value", 0)) for w in winners)
     if total_won > 0:
-        import modules.balance_cap as balance_cap
-
-        bal = player.get_balance("real")
-        total_won = balance_cap.cap_game_payout(
-            user.id, "real", bal, int(total_cost), int(total_won), game_id="case_opening",
-        )
-        if total_won > 0:
-            player.add_balance("real", total_won)
+        player.add_balance("real", total_won)
 
     gif = await image_gen.render_case_open_gif(
         items,

@@ -524,11 +524,7 @@ async def _run_spin(
 
     await asyncio.sleep((image_gen.JACKPOT_SPIN_MS + image_gen.JACKPOT_RESULT_HOLD_MS) / 1000.0 + 0.5)
 
-    bal = float((await db.get_user(wid) or {}).get("balance", 0))
-    from modules import flip_balance_cap as bc
-
-    capped = await bc.apply_balance_cap(wid, bal + payout, game_id="jackpot")
-    pay_net = max(0.0, capped - bal)
+    pay_net = float(payout)
     if pay_net > 0:
         await db.add_balance(wid, pay_net, note="jackpot payout")
 

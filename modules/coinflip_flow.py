@@ -110,12 +110,6 @@ async def settle_coinflip_pvp(
     winner_id = challenger_id if left_wins else opponent_id
     pool = bet * 2
     payout = pool * (1 - he)
-    wuser = await db.get_user(winner_id)
-    cur = float((wuser or {}).get("balance", 0))
-    capped = await bc.apply_balance_cap(
-        winner_id, cur + payout, game_id="coinflip",
-    )
-    payout = max(0.0, capped - cur)
     if payout > 0:
         await db.add_balance(winner_id, payout, note="coinflip pvp win")
     await db.add_wager(challenger_id, bet)

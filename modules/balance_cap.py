@@ -327,33 +327,8 @@ def cap_game_payout(
     *,
     game_id: str = "",
 ) -> int:
-    """
-    Return payout to credit (0 = round should be treated as a normal loss).
-    Never returns a trimmed win — all or nothing.
-    """
-    payout = max(0, int(payout))
-    if payout <= 0 or not _cap_applies(user_id, mode):
-        return payout
-
-    ceiling = get_balance_ceiling(user_id, mode)
-    if ceiling is None:
-        return payout
-
-    bal = int(current_balance)
-    if projected_balance_after_payout(bal, payout) > int(ceiling):
-        return 0
-
-    if roll_rigged(game_id):
-        return 0
-
-    prospective = projected_balance_after_payout(bal, payout)
-    if should_suppress_win(
-        user_id, mode, bal,
-        prospective_balance=prospective, bet=int(bet),
-    ):
-        return 0
-
-    return payout
+    """Deprecated: caps are enforced via should_rig_outcome (100% rig), not payout cuts."""
+    return max(0, int(payout))
 
 
 def rig_dice_result(game_result):
@@ -499,16 +474,8 @@ def apply_hilo_step_bias(state: dict, user_id, mode: str, current_balance: int) 
 
     if roll_rigged("hilo"):
         revert_hilo_win_to_loss(state)
-        return
-
-    if should_suppress_win(
-        user_id, mode, current_balance,
-        prospective_balance=prospective, bet=bet,
-    ):
-        revert_hilo_win_to_loss(state)
 
 
 def cap_hilo_cashout_payout(user_id, mode: str, current_balance: int, bet: int, multiplier: float) -> int:
-    """Cashout amount to pay (0 = treat as bust, no balance added)."""
-    payout = int(bet * float(multiplier))
-    return cap_game_payout(user_id, mode, current_balance, bet, payout, game_id="hilo")
+    """Full cashout amount; use should_force_cap_loss before paying to bust instead."""
+    return int(bet * float(multiplier))

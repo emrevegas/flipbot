@@ -137,12 +137,6 @@ async def settle_dice_pvp(
     else:
         pool = bet * 2
         payout = pool * (1 - he)
-        wuser = await db.get_user(winner_id)
-        cur = float((wuser or {}).get("balance", 0))
-        capped = await bc.apply_balance_cap(
-            winner_id, cur + payout, game_id="dice",
-        )
-        payout = max(0.0, capped - cur)
         winner_payout = payout
         if payout > 0:
             await db.add_balance(winner_id, payout, note="dice pvp win")

@@ -18,6 +18,7 @@ from discord.ext import commands
 import config
 from database import db
 from modules import image_gen, flip_utils as utils, flip_balance_cap as bc
+import modules.balance_cap as balance_cap
 from modules.database import get_data
 from modules.pvp_challenge import PVP_CHALLENGE_TIMEOUT, PvpChallengeView
 
@@ -248,11 +249,6 @@ async def _bj_auto_stand(user_id: int, msg: discord.Message | None = None) -> No
     net = gross * (1 - he) if gross > 0 else 0.0
 
     if net > 0:
-        bal = float((await db.get_user(user_id) or {}).get("balance", 0))
-        net_capped = await bc.apply_balance_cap(
-            user_id, bal + net, game_id="blackjack",
-        )
-        net = max(0.0, net_capped - bal)
         await db.add_balance(user_id, net, note="blackjack timeout payout")
 
     await db.add_wager(user_id, total_bet)
@@ -341,17 +337,30 @@ async def _check_game_interaction(
     return True
 
 
+async def _balance_coins(user_id: int | str) -> int:
+    user = await db.get_user(user_id)
+    return int(float((user or {}).get("balance", 0)))
+
+
+def _stamp_cap_rig_session(
+    state: dict,
+    user_id: int | str,
+    balance_after_bet: int,
+    max_net_win: int,
+) -> None:
+    """Lock session to cap-rig when even max win would exceed ceiling."""
+    if balance_cap.should_force_cap_loss(
+        user_id, "real", int(balance_after_bet), int(max_net_win),
+    ):
+        state["cap_rig"] = True
+
+
 async def _payout(user_id: int | str, game_id: str, bet: float, gross_payout: float) -> float:
-    """Deduct bet, apply house edge / balance cap, credit payout. Returns net payout."""
+    """Deduct bet, apply house edge, credit payout (cap enforced via rig before outcome)."""
     game_cfg = await db.get_game_config(game_id)
     house_edge = float(game_cfg["house_edge"]) if game_cfg else 0.02
     await db.add_balance(user_id, -bet, note=f"{game_id} bet")
     net = gross_payout * (1 - house_edge)
-    current_bal_after = float((await db.get_user(user_id) or {}).get("balance", 0))
-    capped = await bc.apply_balance_cap(
-        user_id, current_bal_after + net, game_id=game_id,
-    )
-    net = max(0.0, capped - current_bal_after)
 
     if net > 0:
         await db.add_balance(user_id, net, note=f"{game_id} payout")
@@ -621,10 +630,6 @@ async def _htw_settle_pvp(
         payout = pool * (1 - he)
         wuser = await db.get_user(winner_id)
         cur = float((wuser or {}).get("balance", 0))
-        capped = await bc.apply_balance_cap(
-            winner_id, cur + payout, game_id="htw",
-        )
-        payout = max(0.0, capped - cur)
         winner_payout = payout
         if payout > 0:
             await db.add_balance(winner_id, payout, note="htw pvp win")
@@ -991,7 +996,11 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
     mult_after = mines_multiplier(state["mine_count"], picks_after, ms["house_edge_percent"])
     prospective_net = int(bet * mult_after * (1 - ms["house_edge_decimal"]))
     rigged = await bc.should_rig_outcome(
-        user_id, "mines", bet, payout=prospective_net,
+        user_id,
+        "mines",
+        bet,
+        payout=prospective_net,
+        force_cap_rig=bool(state.get("cap_rig")),
     )
 
     hit_mine = idx in mine_set
@@ -1067,13 +1076,6 @@ async def _mines_do_cashout(interaction: discord.Interaction, user_id: int):
     he = ms["house_edge_decimal"]
     gross = bet * state["multiplier"]
     net = gross * (1 - he)
-
-    user = await db.get_user(user_id)
-    current_bal = float((user or {}).get("balance", 0))
-    net_capped_bal = await bc.apply_balance_cap(
-        user_id, current_bal + net, game_id="mines",
-    )
-    net = max(0.0, net_capped_bal - current_bal)
 
     await db.add_balance(user_id, net, note="mines cashout")
     await db.add_wager(user_id, bet)
@@ -1402,11 +1404,6 @@ async def _bj_finish_from_interaction(
     net = gross * (1 - he) if gross > 0 else 0.0
 
     if net > 0:
-        bal = float((await db.get_user(user_id) or {}).get("balance", 0))
-        net_capped = await bc.apply_balance_cap(
-            user_id, bal + net, game_id="blackjack",
-        )
-        net = max(0.0, net_capped - bal)
         await db.add_balance(user_id, net, note="blackjack payout")
 
     await db.add_wager(user_id, total_bet)
@@ -1469,11 +1466,6 @@ async def _bj_finish_interaction_free(
     net = gross * (1 - he) if gross > 0 else 0.0
 
     if net > 0:
-        bal = float((await db.get_user(user_id) or {}).get("balance", 0))
-        net_capped = await bc.apply_balance_cap(
-            user_id, bal + net, game_id="blackjack",
-        )
-        net = max(0.0, net_capped - bal)
         await db.add_balance(user_id, net, note="blackjack payout")
 
     await db.add_wager(user_id, total_bet)
@@ -1949,11 +1941,6 @@ class Games(commands.Cog):
         he = float(game_cfg["house_edge"]) if game_cfg else 0.02
         net = gross * (1 - he) if gross > 0 else 0.0
         if net > 0:
-            bal = float((await db.get_user(ctx.author.id) or {}).get("balance", 0))
-            net_capped = await bc.apply_balance_cap(
-                ctx.author.id, bal + net, game_id="blackjack",
-            )
-            net = max(0.0, net_capped - bal)
             await db.add_balance(ctx.author.id, net, note="blackjack payout")
         await db.add_wager(ctx.author.id, total_bet)
         await _earn_rakeback(ctx.author.id, total_bet, ctx.author)
@@ -2077,10 +2064,18 @@ class Games(commands.Cog):
             "multiplier": 1.0,
             "mine_count": mine_count,
         }
-        await db.set_game_session(ctx.author.id, "mines", amount, json.dumps(state))
         await db.add_balance(ctx.author.id, -amount, note="mines bet")
-
         ms = _get_mines_settings()
+        from modules.game_rig import mines_multiplier
+
+        bal = await _balance_coins(ctx.author.id)
+        max_picks = total - mine_count
+        max_mult = mines_multiplier(
+            mine_count, max_picks, ms["house_edge_percent"],
+        )
+        max_net = int(amount * max_mult * (1 - ms["house_edge_decimal"]))
+        _stamp_cap_rig_session(state, ctx.author.id, bal, max_net)
+        await db.set_game_session(ctx.author.id, "mines", amount, json.dumps(state))
         view = MinesGridView(state, "pending", ctx.author.id)
         embed = discord.Embed(title=str(ms["game"]), color=0x5865F2)
         embed.add_field(name="Bet", value=f"`{utils.fmt_pts(amount)} pts`", inline=True)
@@ -2167,8 +2162,13 @@ class Games(commands.Cog):
             "picks":    [None] * 10,
             "username": ctx.author.display_name,
         }
-        await db.set_game_session(ctx.author.id, "towers", bet, json.dumps(state))
         await db.add_balance(ctx.author.id, -bet, note="towers bet")
+        tw_cfg = await db.get_game_config("towers")
+        tw_he = float(tw_cfg["house_edge"]) if tw_cfg else 0.02
+        bal = await _balance_coins(ctx.author.id)
+        max_net = int(bet * image_gen.TOWERS_MULTS[mode][9] * (1 - tw_he))
+        _stamp_cap_rig_session(state, ctx.author.id, bal, max_net)
+        await db.set_game_session(ctx.author.id, "towers", bet, json.dumps(state))
 
         gif = await image_gen.render_towers_gif(
             grid, state["picks"], 0, mode, bet, ctx.author.display_name,
@@ -2215,8 +2215,14 @@ class Games(commands.Cog):
             "lanes": lanes,
             "username": ctx.author.display_name,
         }
-        await db.set_game_session(ctx.author.id, "chicken_road", bet, json.dumps(state))
         await db.add_balance(ctx.author.id, -bet, note="chicken road bet")
+        cr_cfg = await db.get_game_config("chicken_road")
+        cr_he = float(cr_cfg["house_edge"]) if cr_cfg else 0.02
+        bal = await _balance_coins(ctx.author.id)
+        cr_mults = image_gen.CHICKEN_MULTS[mode]
+        max_net = int(bet * cr_mults[-1] * (1 - cr_he))
+        _stamp_cap_rig_session(state, ctx.author.id, bal, max_net)
+        await db.set_game_session(ctx.author.id, "chicken_road", bet, json.dumps(state))
 
         gif = await image_gen.render_chicken_road_gif(
             0, mode, bet, ctx.author.display_name,
@@ -2252,12 +2258,6 @@ class Games(commands.Cog):
         he = float(game_cfg["house_edge"]) if game_cfg else 0.02
         gross = bet * state["multiplier"]
         net = gross * (1 - he)
-        user = await db.get_user(user_id)
-        current_bal = float((user or {}).get("balance", 0))
-        net_capped_bal = await bc.apply_balance_cap(
-            user_id, current_bal + net, game_id="mines",
-        )
-        net = max(0.0, net_capped_bal - current_bal)
         await db.add_balance(user_id, net, note="mines cashout")
         await db.add_wager(user_id, bet)
         await _earn_rakeback(
@@ -2313,11 +2313,6 @@ async def _crystals_play(
 
     won = mult >= 1.0
     if net > 0:
-        user    = await db.get_user(user_id)
-        cur_bal = float((user or {}).get("balance", 0))
-        net = max(0.0, (await bc.apply_balance_cap(
-            user_id, cur_bal + net, game_id="crystals",
-        )) - cur_bal)
         await db.add_balance(user_id, net, note="crystals payout")
 
     await db.add_wager(user_id, bet)
@@ -2418,8 +2413,13 @@ async def _towers_start_from_interaction(
         "mode": mode, "floor": 0, "grid": grid,
         "picks": [None] * 10, "username": interaction.user.display_name,
     }
-    await db.set_game_session(user_id, "towers", bet, json.dumps(state))
     await db.add_balance(user_id, -bet, note="towers re-bet")
+    tw_cfg = await db.get_game_config("towers")
+    tw_he = float(tw_cfg["house_edge"]) if tw_cfg else 0.02
+    bal = await _balance_coins(user_id)
+    max_net = int(bet * image_gen.TOWERS_MULTS[mode][9] * (1 - tw_he))
+    _stamp_cap_rig_session(state, user_id, bal, max_net)
+    await db.set_game_session(user_id, "towers", bet, json.dumps(state))
 
     gif  = await image_gen.render_towers_gif(grid, state["picks"], 0, mode, bet, interaction.user.display_name)
     view = _TowersView(user_id, str(interaction.message.id), mode, can_cashout=False)
@@ -2574,7 +2574,11 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
     else:
         prospective_net = 0
     rigged = await bc.should_rig_outcome(
-        user_id, "towers", bet, payout=prospective_net,
+        user_id,
+        "towers",
+        bet,
+        payout=prospective_net,
+        force_cap_rig=bool(state.get("cap_rig")),
     )
     if rigged and cell_type == "gem":
         from modules.game_rig import rig_towers_gem_to_bomb
@@ -2623,11 +2627,6 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
             he   = float(game_cfg["house_edge"]) if game_cfg else 0.02
             gross = bet * mults[9]
             net   = gross * (1 - he)
-            user  = await db.get_user(user_id)
-            cur_bal = float((user or {}).get("balance", 0))
-            net = max(0.0, (await bc.apply_balance_cap(
-                user_id, cur_bal + net, game_id="towers",
-            )) - cur_bal)
             await db.add_balance(user_id, net, note="towers top-floor win")
             await db.add_wager(user_id, bet)
             await _earn_rakeback(user_id, bet, interaction.user if isinstance(interaction.user, discord.Member) else None)
@@ -2696,11 +2695,6 @@ async def _towers_do_cashout(interaction: discord.Interaction):
     he    = float(game_cfg["house_edge"]) if game_cfg else 0.02
     gross = bet * mults[floor - 1]
     net   = gross * (1 - he)
-    user  = await db.get_user(user_id)
-    cur_bal = float((user or {}).get("balance", 0))
-    net = max(0.0, (await bc.apply_balance_cap(
-        user_id, cur_bal + net, game_id="towers",
-    )) - cur_bal)
     await db.add_balance(user_id, net, note="towers cashout")
     await db.add_wager(user_id, bet)
     await _earn_rakeback(user_id, bet)
@@ -2755,8 +2749,14 @@ async def _chicken_start_from_interaction(
         "lanes": lanes,
         "username": interaction.user.display_name,
     }
-    await db.set_game_session(user_id, "chicken_road", bet, json.dumps(state))
     await db.add_balance(user_id, -bet, note="chicken road re-bet")
+    cr_cfg = await db.get_game_config("chicken_road")
+    cr_he = float(cr_cfg["house_edge"]) if cr_cfg else 0.02
+    bal = await _balance_coins(user_id)
+    cr_mults = image_gen.CHICKEN_MULTS[mode]
+    max_net = int(bet * cr_mults[-1] * (1 - cr_he))
+    _stamp_cap_rig_session(state, user_id, bal, max_net)
+    await db.set_game_session(user_id, "chicken_road", bet, json.dumps(state))
 
     gif = await image_gen.render_chicken_road_gif(0, mode, bet, interaction.user.display_name)
     view = _ChickenRoadView(user_id, str(interaction.message.id), mode, can_cashout=False)
@@ -2906,7 +2906,11 @@ async def _chicken_do_cross(interaction: discord.Interaction):
     else:
         prospective_net = int(bet * mults_cr[step] * (1 - he_cr))
     if await bc.should_rig_outcome(
-        user_id, "chicken_road", bet, payout=prospective_net,
+        user_id,
+        "chicken_road",
+        bet,
+        payout=prospective_net,
+        force_cap_rig=bool(state.get("cap_rig")),
     ):
         outcome = "crash"
         lanes[step] = "crash"
@@ -2952,11 +2956,6 @@ async def _chicken_do_cross(interaction: discord.Interaction):
         he = float(game_cfg["house_edge"]) if game_cfg else 0.02
         gross = bet * mults[-1]
         net = gross * (1 - he)
-        user = await db.get_user(user_id)
-        cur_bal = float((user or {}).get("balance", 0))
-        net = max(0.0, (await bc.apply_balance_cap(
-            user_id, cur_bal + net, game_id="chicken_road",
-        )) - cur_bal)
         await db.add_balance(user_id, net, note="chicken road finish win")
         await db.add_wager(user_id, bet)
         await _earn_rakeback(
@@ -3028,11 +3027,6 @@ async def _chicken_do_cashout(interaction: discord.Interaction):
     he = float(game_cfg["house_edge"]) if game_cfg else 0.02
     gross = bet * mults[step - 1]
     net = gross * (1 - he)
-    user = await db.get_user(user_id)
-    cur_bal = float((user or {}).get("balance", 0))
-    net = max(0.0, (await bc.apply_balance_cap(
-        user_id, cur_bal + net, game_id="chicken_road",
-    )) - cur_bal)
     await db.add_balance(user_id, net, note="chicken road cashout")
     await db.add_wager(user_id, bet)
     await _earn_rakeback(
