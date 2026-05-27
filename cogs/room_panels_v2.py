@@ -90,10 +90,14 @@ def build_rakeback_layout(
     can_withdraw: bool,
     lang: str,
 ) -> ui.LayoutView:
+    from modules.rakeback_engine import format_rakeback_pct
+
     if best_tier and best_tier.get("role_id"):
-        tier_txt = f"<@&{best_tier['role_id']}> — **{best_tier['percentage']}%** per bet"
+        pct = format_rakeback_pct(best_tier.get("percentage", 0))
+        tier_txt = f"<@&{best_tier['role_id']}> — **{pct}** per bet"
     elif best_tier and float(best_tier.get("percentage", 0)) > 0:
-        tier_txt = f"**{best_tier.get('role_name', 'Tier')}** — **{best_tier['percentage']}%** per bet"
+        pct = format_rakeback_pct(best_tier.get("percentage", 0))
+        tier_txt = f"**{best_tier.get('role_name', 'Tier')}** — **{pct}** per bet"
     else:
         tier_txt = t("rakeback.no_tier", lang=lang)
 

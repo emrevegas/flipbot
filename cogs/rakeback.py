@@ -57,10 +57,10 @@ def _build_rakeback_layout(
     min_claim: float,
     lang: str,
 ) -> ui.LayoutView:
-    pct = int(float(tier.get("rate", 0)) * 100)
-    tier_line = f"**{tier.get('name', 'None')}** — {pct}% rakeback"
+    pct = rakeback_engine.tier_pct_label(tier)
+    tier_line = f"**{tier.get('name', 'None')}** — {pct} rakeback"
     if tier.get("role_id"):
-        tier_line = f"<@&{tier['role_id']}> — {pct}%"
+        tier_line = f"<@&{tier['role_id']}> — {pct}"
 
     body = (
         f"**{t('rakeback.accumulated_field', lang=lang)}**\n"
@@ -122,6 +122,7 @@ class Rakeback(commands.Cog):
             total_wagered=total_wagered,
             tier_name=tier["name"],
             tier_rate=float(tier["rate"]),
+            tier_percentage=float(tier.get("percentage", float(tier["rate"]) * 100)),
             next_tier_name=nxt["name"] if nxt else None,
             next_tier_min=nxt["min_wagered"] if nxt else None,
         )
@@ -180,10 +181,10 @@ class Rakeback(commands.Cog):
                 and float(tier.get("rate", 0)) == float(current.get("rate", 0))
             )
             marker = "▶ " if active else "  "
-            pct = int(float(tier.get("rate", 0)) * 100)
+            pct = rakeback_engine.tier_pct_label(tier)
             role_part = f"<@&{tier['role_id']}> " if tier.get("role_id") else ""
             lines.append(
-                f"{marker}{role_part}**{tier['name']}** — `{pct}%` — "
+                f"{marker}{role_part}**{tier['name']}** — `{pct}` — "
                 f"min wager: `{utils.fmt_pts(tier['min_wagered'])}`"
                 + (" ← you" if active else "")
             )
@@ -196,7 +197,7 @@ class Rakeback(commands.Cog):
         embed.add_field(name="Your Wager", value=f"`{utils.fmt_pts(total_wagered)}`", inline=True)
         embed.add_field(
             name="Your Tier",
-            value=f"**{current['name']}** ({int(float(current['rate']) * 100)}%)",
+            value=f"**{current['name']}** ({rakeback_engine.tier_pct_label(current)})",
             inline=True,
         )
         embed.set_footer(text=f"Min claim: {utils.fmt_pts(rakeback_engine.get_min_withdrawal())}")

@@ -380,6 +380,7 @@ async def render_rakeback_card(
     total_wagered: float,
     tier_name: str,
     tier_rate: float,
+    tier_percentage: float | None = None,
     next_tier_name: str | None = None,
     next_tier_min: float | None = None,
 ) -> io.BytesIO:
@@ -400,9 +401,14 @@ async def render_rakeback_card(
     draw.rounded_rectangle([0, 0, 6, H - 1], radius=RADIUS, fill=PURPLE)
 
     # title
+    from modules.rakeback_engine import format_rakeback_pct
+
+    pct_label = format_rakeback_pct(
+        tier_percentage if tier_percentage is not None else tier_rate * 100
+    )
     draw.text((24, 18), "RAKEBACK", font=_font(14, bold=True), fill=PURPLE)
     draw.text((24 + draw.textlength("RAKEBACK", font=_font(14, bold=True)) + 10, 20),
-              f"({int(tier_rate * 100)}% — {tier_name})", font=_font(13), fill=MUTED)
+              f"({pct_label} — {tier_name})", font=_font(13), fill=MUTED)
 
     # big claimable
     draw.text((24, 46), "Available to Claim", font=_font(12), fill=MUTED)

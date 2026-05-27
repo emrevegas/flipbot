@@ -18,6 +18,22 @@ def get_min_withdrawal() -> int:
     return int(get_settings().get("min_withdrawal", 100) or 100)
 
 
+def format_rakeback_pct(pct: float) -> str:
+    """Format rakeback percentage for display (e.g. 2.5%, 10%, 0.75%)."""
+    pct = float(pct)
+    if abs(pct - round(pct)) < 1e-9:
+        return f"{int(round(pct))}%"
+    text = f"{pct:.2f}".rstrip("0").rstrip(".")
+    return f"{text}%"
+
+
+def tier_pct_label(tier: dict) -> str:
+    """Human-readable % from a tier dict (percentage or rate field)."""
+    if tier.get("percentage") is not None:
+        return format_rakeback_pct(tier["percentage"])
+    return format_rakeback_pct(float(tier.get("rate", 0)) * 100)
+
+
 def _tier_list() -> list[dict]:
     tiers = get_settings().get("tiers", [])
     if not isinstance(tiers, list):
