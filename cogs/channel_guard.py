@@ -31,5 +31,12 @@ async def global_command_channel_check(ctx: commands.Context) -> bool:
 
 async def setup(bot: commands.Bot):
     bot.add_check(global_command_channel_check)
-    bot.tree.interaction_check(interaction_channel_check)
+
+    async def tree_interaction_check(
+        self: discord.app_commands.CommandTree,
+        interaction: discord.Interaction,
+    ) -> bool:
+        return await interaction_channel_check(interaction)
+
+    bot.tree.interaction_check = tree_interaction_check.__get__(bot.tree, type(bot.tree))
     await bot.add_cog(ChannelGuardCog(bot))
