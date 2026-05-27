@@ -7,6 +7,14 @@ from modules.database import (
     get_all_registered_user_ids, clear_user_account, delete_all_user_data, can_delete_user_data,
     is_super_admin, get_super_admin_id,
 )
+from modules.staff_permissions import (
+    MODERATOR_PANEL_ACTIONS,
+    can_open_user_panel,
+    get_staff_permissions,
+    is_moderator_only,
+    normalize_permissions,
+)
+from modules import moderation_log
 from modules.player import Player
 from modules.translator import t
 from modules.utils import format_balance, get_user_lang
@@ -195,24 +203,28 @@ class UserManagement(commands.Cog):
     async def user_panel(self, interaction: discord.Interaction, user: discord.User):
         """User management panel - Admin only"""
         
-        # Check permissions
-        admin_id = str(interaction.user.id)
-        if check_permission(admin_id, "admin"):
-            # No admin permission
-            admins = get_data("server/admins") or {}
-            user_permissions = admins.get(admin_id, [])
-            
-            if not user_permissions:
-                return await interaction.response.send_message(
-                    "❌ You don't have permission to use this command!",
-                    ephemeral=True
-                )
-            
-            # User has some permissions but not full admin
-            view = UserPanelView(user.id, interaction.user.id, user_permissions)
+        admin_id = interaction.user.id
+        if not can_open_user_panel(admin_id):
+            return await interaction.response.send_message(
+                "❌ You don't have permission to use this command!",
+                ephemeral=True,
+            )
+
+        if not check_permission(str(admin_id), "admin"):
+            panel_perms = ["admin"]
         else:
-            # Full admin access
-            view = UserPanelView(user.id, interaction.user.id, ["admin"])
+            panel_perms = get_staff_permissions(admin_id)
+
+        view = UserPanelView(user.id, admin_id, panel_perms)
+
+        if is_moderator_only(admin_id) and interaction.guild:
+            await moderation_log.log_moderation(
+                interaction.client,
+                interaction.guild,
+                actor_id=admin_id,
+                action="Opened **user panel**",
+                target_user_id=user.id,
+            )
         
         lang = get_user_lang(interaction.user.id)
         
@@ -392,12 +404,15 @@ class UserPanelView(discord.ui.View):
         self.admin_id = admin_id
         self.permissions = permissions
         
-        # Build options based on permissions
         options = []
-        
-        # Admin or balance permission
-        if "admin" in permissions or "cashier" in permissions:
-            lang = get_user_lang(admin_id)
+        lang = get_user_lang(admin_id)
+        norm = [p.lower() for p in normalize_permissions(permissions)]
+        is_admin = "admin" in norm
+        mod_only = is_moderator_only(admin_id) or (
+            "moderator" in norm and not is_admin
+        )
+
+        if is_admin or "cashier" in norm or mod_only:
             options.append(
                 discord.SelectOption(
                     label=t('user_panel.add_balance', lang),
@@ -414,10 +429,35 @@ class UserPanelView(discord.ui.View):
                     value="remove_balance"
                 )
             )
-        
-        # Admin or history permission
-        if "admin" in permissions or "ticketAdmin" in permissions:
-            lang = get_user_lang(admin_id)
+
+        if mod_only:
+            options.extend([
+                discord.SelectOption(
+                    label=t('user_panel.game_history', lang),
+                    description=t('user_panel.game_history_desc', lang),
+                    emoji="📊",
+                    value="game_history",
+                ),
+                discord.SelectOption(
+                    label=t('user_panel.statistics', lang),
+                    description=t('user_panel.statistics_desc', lang),
+                    emoji="📈",
+                    value="statistics",
+                ),
+                discord.SelectOption(
+                    label="Referral Bilgisi",
+                    description="Kullanıcının referral kodu, kazancı ve komisyonu",
+                    emoji="🔗",
+                    value="referral_info",
+                ),
+                discord.SelectOption(
+                    label=t('user_panel.activity_option', lang),
+                    description=t('user_panel.activity_option_desc', lang),
+                    emoji="📋",
+                    value="activity",
+                ),
+            ])
+        elif is_admin or "ticketadmin" in norm:
             options.append(
                 discord.SelectOption(
                     label=t('user_panel.game_history', lang),
@@ -426,10 +466,6 @@ class UserPanelView(discord.ui.View):
                     value="game_history"
                 )
             )
-        
-        # Admin or registration permission
-        if "admin" in permissions or "ticketAdmin" in permissions:
-            lang = get_user_lang(admin_id)
             options.append(
                 discord.SelectOption(
                     label=t('user_panel.edit_registration', lang),
@@ -438,8 +474,6 @@ class UserPanelView(discord.ui.View):
                     value="edit_registration"
                 )
             )
-        if "admin" in permissions or "ticketAdmin" in permissions:
-            lang = get_user_lang(admin_id)
             options.append(
                 discord.SelectOption(
                     label=t('user_panel.ticket_history', lang),
@@ -456,9 +490,24 @@ class UserPanelView(discord.ui.View):
                     value="statistics"
                 )
             )
-        
-        # Manage Permissions - Only for full admins
-        if "admin" in permissions:
+            options.append(
+                discord.SelectOption(
+                    label="Referral Bilgisi",
+                    description="Kullanıcının referral kodu, kazancı ve komisyonu",
+                    emoji="🔗",
+                    value="referral_info"
+                )
+            )
+            options.append(
+                discord.SelectOption(
+                    label=t('user_panel.activity_option', lang),
+                    description=t('user_panel.activity_option_desc', lang),
+                    emoji="📋",
+                    value="activity"
+                )
+            )
+
+        if is_admin:
             options.append(
                 discord.SelectOption(
                     label="Manage Permissions",
@@ -468,8 +517,7 @@ class UserPanelView(discord.ui.View):
                 )
             )
         
-        # Wager management - admin only
-        if "admin" in permissions:
+        if is_admin:
             options.append(
                 discord.SelectOption(
                     label=t("user_panel.wager_stats", lang),
@@ -487,8 +535,7 @@ class UserPanelView(discord.ui.View):
                 )
             )
 
-        # Manage Staff - admin only (includes cashier stats + permissions)
-        if "admin" in permissions:
+        if is_admin:
             options.append(
                 discord.SelectOption(
                     label="Manage Staff",
@@ -498,8 +545,7 @@ class UserPanelView(discord.ui.View):
                 )
             )
 
-        # Bonus management - admin only
-        if "admin" in permissions:
+        if is_admin:
             lang = get_user_lang(admin_id)
             options.append(
                 discord.SelectOption(
@@ -518,32 +564,18 @@ class UserPanelView(discord.ui.View):
                 )
             )
 
-        # Referral - admin or ticketAdmin
-        if "admin" in permissions or "ticketAdmin" in permissions:
+        if not options:
             options.append(
                 discord.SelectOption(
-                    label="Referral Bilgisi",
-                    description="Kullanıcının referral kodu, kazancı ve komisyonu",
-                    emoji="🔗",
-                    value="referral_info"
+                    label="No actions",
+                    value="noop",
+                    description="No permission for this panel",
                 )
             )
 
-        # Activity / Movements - admin or ticketAdmin
-        if "admin" in permissions or "ticketAdmin" in permissions:
-            lang = get_user_lang(admin_id)
-            options.append(
-                discord.SelectOption(
-                    label=t('user_panel.activity_option', lang),
-                    description=t('user_panel.activity_option_desc', lang),
-                    emoji="📋",
-                    value="activity"
-                )
-            )
-        
         self.add_item(UserPanelSelect(options, self.target_user_id, self.admin_id, self.permissions))
 
-        if "admin" in permissions:
+        if is_admin:
             lang = get_user_lang(admin_id)
             self.add_item(DeleteRegistrationButton(self.target_user_id, self.admin_id, lang))
 
@@ -701,6 +733,27 @@ class UserPanelSelect(discord.ui.Select):
         
         lang = get_user_lang(self.admin_id)
         action = self.values[0]
+
+        if action == "noop":
+            return await interaction.response.send_message(
+                "❌ No actions available for your role.",
+                ephemeral=True,
+            )
+
+        if is_moderator_only(self.admin_id) and action not in MODERATOR_PANEL_ACTIONS:
+            return await interaction.response.send_message(
+                "❌ Moderators can only use balance, game history, statistics, referral, and activity log.",
+                ephemeral=True,
+            )
+
+        if is_moderator_only(self.admin_id) and interaction.guild:
+            await moderation_log.log_moderation(
+                interaction.client,
+                interaction.guild,
+                actor_id=self.admin_id,
+                action=f"User panel: **{action.replace('_', ' ')}**",
+                target_user_id=self.target_user_id,
+            )
         
         if action == "add_balance":
             modal = BalanceModal(self.target_user_id, "add", self.admin_id)
@@ -2093,6 +2146,23 @@ class BalanceModal(discord.ui.Modal):
             color=0x2ecc71
         )
         
+        if is_moderator_only(self.admin_id) and interaction.guild:
+            sign = "+" if self.action == "add" else "−"
+            await moderation_log.log_moderation(
+                interaction.client,
+                interaction.guild,
+                actor_id=self.admin_id,
+                action=f"**{self.action.replace('_', ' ').title()} balance**",
+                target_user_id=self.target_user_id,
+                details=(
+                    f"{sign}{format_balance(amount, 'real')}\n"
+                    f"Before: {format_balance(previous_balance, 'real')}\n"
+                    f"After: {format_balance(new_balance, 'real')}"
+                    + (f"\nReason: {reason}" if reason else "")
+                ),
+                color=0x2ECC71 if self.action == "add" else 0xE74C3C,
+            )
+
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

@@ -108,8 +108,53 @@ class Daily(commands.Cog):
                 "`.set daily <role_id> <pts>` — role tier reward\n"
                 "`.set daily status <keywords>` — custom status requirement\n"
                 "`.set daily tag on|off` — Server Tag required (promo + daily)\n"
-                "`.set daily show` — current settings",
+                "`.set daily show` — current settings\n"
+                "`.set moderation_log #channel` — moderator audit log channel\n"
+                "`.set moderation_log off` — disable audit log",
             )
+        )
+
+    @set_group.command(name="moderation_log", aliases=["modlog", "mod_log"])
+    @panel_admin_only()
+    async def set_moderation_log(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """
+        Set the channel where moderator actions are logged.
+        Usage: `.set moderation_log #channel` or `.set moderation_log off`
+        """
+        from modules.moderation_log import get_moderation_log_channel_id, set_moderation_log_channel
+
+        if ctx.guild is None:
+            return await ctx.send(embed=utils.error_embed("This command only works in a server."))
+
+        raw = (channel or None)
+        if channel is None:
+            parts = (ctx.message.content or "").split(maxsplit=2)
+            tail = parts[2].strip().lower() if len(parts) > 2 else ""
+            if tail in ("off", "none", "disable", "clear"):
+                set_moderation_log_channel(ctx.guild.id, None)
+                return await ctx.send(
+                    embed=utils.success_embed("Moderation log channel disabled.")
+                )
+            if ctx.message.channel_mentions:
+                ch = ctx.message.channel_mentions[0]
+                set_moderation_log_channel(ctx.guild.id, ch.id)
+                return await ctx.send(
+                    embed=utils.success_embed(f"Moderation log channel set to {ch.mention}.")
+                )
+            cur = get_moderation_log_channel_id(ctx.guild.id)
+            cur_txt = f"<#{cur}>" if cur else "*(not set)*"
+            return await ctx.send(
+                embed=utils.info_embed(
+                    "Moderation log",
+                    f"Current channel: {cur_txt}\n\n"
+                    f"Usage: `{ctx.prefix}set moderation_log #channel`\n"
+                    f"Or: `{ctx.prefix}set moderation_log off`",
+                )
+            )
+
+        set_moderation_log_channel(ctx.guild.id, channel.id)
+        await ctx.send(
+            embed=utils.success_embed(f"Moderation log channel set to {channel.mention}.")
         )
 
     @set_group.command(name="daily")
