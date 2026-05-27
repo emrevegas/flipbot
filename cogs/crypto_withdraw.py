@@ -231,7 +231,7 @@ async def _process_withdrawal(
         ephemeral=True,
     )
 
-    log_ch_id = s.get("withdraw_log_channel_id") or s.get("sweep_log_channel_id")
+    log_ch_id = s.get("withdraw_approval_channel_id") or s.get("sweep_log_channel_id")
     if log_ch_id:
         channel = interaction.client.get_channel(int(log_ch_id))
         if channel:

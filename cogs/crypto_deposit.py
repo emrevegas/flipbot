@@ -415,6 +415,7 @@ def _build_admin_embed(section: str = "overview") -> discord.Embed:
 
     if section == "sweep":
         withdraw_log_ch = settings.get("withdraw_log_channel_id", None)
+        withdraw_approval_ch = settings.get("withdraw_approval_channel_id", None)
         try:
             treasury_sol = engine.get_treasury_address("SOL") if engine.TREASURY_MNEMONIC else "*No TREASURY_MNEMONIC*"
             treasury_ltc = engine.get_treasury_address("LTC") if engine.TREASURY_MNEMONIC else "*No TREASURY_MNEMONIC*"
@@ -450,7 +451,22 @@ def _build_admin_embed(section: str = "overview") -> discord.Embed:
         )
         embed.add_field(
             name="📝  Withdraw Log Channel",
-            value=f"<#{withdraw_log_ch}>" if withdraw_log_ch else "*Not set*",
+            value=(
+                f"<#{withdraw_log_ch}>" if withdraw_log_ch else "*Not set* · public payout feed"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="✅  Withdraw Approval Channel",
+            value=(
+                f"<#{withdraw_approval_ch}>"
+                if withdraw_approval_ch
+                else (
+                    f"<#{log_ch}> (sweep log fallback)"
+                    if log_ch
+                    else "*Not set* · staff approve/reject"
+                )
+            ),
             inline=True,
         )
         embed.add_field(
@@ -820,12 +836,22 @@ class CryptoSweepView(discord.ui.View):
             view=_LogChannelPickerView("sweep_log_channel_id"),
         )
 
-    @discord.ui.button(label="📝 Withdraw Log Channel", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="📝 Withdraw Log", style=discord.ButtonStyle.secondary, row=2)
     async def withdraw_log_ch(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_message(
-            "**Set Withdraw Log Channel** 📝\nSelect the channel where withdrawal requests will be sent for approval.",
+            "**Set Withdraw Log Channel** 📝\nPublic on-chain payout feed (Components V2). "
+            "Approve/reject is not posted here.",
             ephemeral=True,
             view=_LogChannelPickerView("withdraw_log_channel_id"),
+        )
+
+    @discord.ui.button(label="✅ Withdraw Approval", style=discord.ButtonStyle.secondary, row=2)
+    async def withdraw_approval_ch(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_message(
+            "**Set Withdraw Approval Channel** ✅\nStaff channel for pending withdrawal "
+            "approve/reject buttons.",
+            ephemeral=True,
+            view=_LogChannelPickerView("withdraw_approval_channel_id"),
         )
 
     @discord.ui.button(label="⬅️ Overview", style=discord.ButtonStyle.secondary, row=2)
