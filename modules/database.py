@@ -86,6 +86,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             total_deposit INTEGER NOT NULL DEFAULT 0,
             last_deposit_amount INTEGER NOT NULL DEFAULT 0,
             wagered_at_last_deposit INTEGER NOT NULL DEFAULT 0,
+            wager_since_deposit INTEGER NOT NULL DEFAULT 0,
             total_withdraw INTEGER NOT NULL DEFAULT 0,
             games_json    TEXT    NOT NULL DEFAULT '{}'
         );
@@ -148,16 +149,14 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE user_stats ADD COLUMN wagered_at_last_deposit INTEGER NOT NULL DEFAULT 0"
         )
+    if "wager_since_deposit" not in cols:
+        conn.execute(
+            "ALTER TABLE user_stats ADD COLUMN wager_since_deposit INTEGER NOT NULL DEFAULT 0"
+        )
     if "total_withdraw" not in cols:
         conn.execute(
             "ALTER TABLE user_stats ADD COLUMN total_withdraw INTEGER NOT NULL DEFAULT 0"
         )
-    conn.execute(
-        """UPDATE user_stats
-           SET last_deposit_amount = total_deposit,
-               wagered_at_last_deposit = 0
-           WHERE total_deposit > 0 AND last_deposit_amount = 0"""
-    )
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────
@@ -339,6 +338,9 @@ def get_user_data(user_id: int, key: str):
             "total_deposit": row["total_deposit"],
             "last_deposit_amount": row["last_deposit_amount"],
             "wagered_at_last_deposit": row["wagered_at_last_deposit"],
+            "wager_since_deposit": row["wager_since_deposit"]
+            if "wager_since_deposit" in row.keys()
+            else 0,
             "total_withdraw": row["total_withdraw"],
             "games":         json.loads(row["games_json"]),
         }
@@ -474,7 +476,8 @@ def set_user_data(user_id: int, key: str, value) -> None:
                        SET total_plays=?, wins=?, losses=?, ties=?,
                            total_wagered=?, total_profit=?, real_plays=?,
                            demo_plays=?, total_deposit=?, last_deposit_amount=?,
-                           wagered_at_last_deposit=?, total_withdraw=?, games_json=?
+                           wagered_at_last_deposit=?, wager_since_deposit=?,
+                           total_withdraw=?, games_json=?
                        WHERE user_id=?""",
                     (
                         int(value.get("total_plays",   0)),
@@ -488,6 +491,7 @@ def set_user_data(user_id: int, key: str, value) -> None:
                         int(value.get("total_deposit", 0)),
                         int(value.get("last_deposit_amount", 0)),
                         int(value.get("wagered_at_last_deposit", 0)),
+                        int(value.get("wager_since_deposit", 0)),
                         int(value.get("total_withdraw", 0)),
                         json.dumps(value.get("games", {}), ensure_ascii=False),
                         uid,

@@ -1264,12 +1264,12 @@ class UserPanelSelect(discord.ui.Select):
 
     async def show_wager_stats(self, interaction: discord.Interaction):
         from modules.database import get_user_stats, set_user_data, get_server_data
-        from modules.wager_gate import get_deposit_wager_gate, get_effective_total_wagered
+        from modules.wager_gate import get_withdraw_wager_status
         lang  = get_user_lang(self.admin_id)
         stats = get_user_stats(self.target_user_id) or {}
         player = Player(self.target_user_id)
 
-        total_wagered = get_effective_total_wagered(self.target_user_id, stats)
+        total_wagered = int(stats.get("total_wagered", 0) or 0)
         total_profit  = stats.get("total_profit", 0)
         total_games   = stats.get("total_games", 0)
         wins          = stats.get("wins", 0)
@@ -1289,12 +1289,16 @@ class UserPanelSelect(discord.ui.Select):
         )
         if interaction.guild:
             server_data = get_server_data(str(interaction.guild.id)) or {}
-            req_w, done_w, rem_w = get_deposit_wager_gate(self.target_user_id, server_data)
+            req_w, done_w, rem_w = get_withdraw_wager_status(self.target_user_id, server_data)
+            last_dep = int(stats.get("last_deposit_amount", 0) or 0)
             if req_w > 0:
                 desc += (
-                    f"🔒 **Withdraw wager (deposit × mult):** "
-                    f"{format_balance(done_w, 'real')} / {format_balance(req_w, 'real')}\n"
-                    f"_(Bonus silmek bunu kaldırmaz.)_\n\n"
+                    f"🔒 **Withdraw wager** (son yatırım × çarpan)\n"
+                    f"Son yatırım: {format_balance(last_dep, 'real')} → "
+                    f"gerekli: {format_balance(req_w, 'real')}\n"
+                    f"İlerleme: **{format_balance(done_w, 'real')}** / "
+                    f"**{format_balance(req_w, 'real')}** "
+                    f"(kalan {format_balance(rem_w, 'real')})\n\n"
                 )
         desc += (
             f"💰 **{t('user_panel.real_balance', lang)}:** {format_balance(real_balance, 'real')}\n"
@@ -1856,7 +1860,7 @@ class _ResetWagerConfirmModal(discord.ui.Modal):
         stats = get_user_stats(self.target_user_id) or {}
         for f in ["total_wagered", "total_profit", "total_games", "wins", "losses", "ties"]:
             stats[f] = 0
-        clear_deposit_wager_cycle(self.target_user_id, stats)
+        clear_deposit_wager_cycle(self.target_user_id)
         try:
             dbc = await db.get_db()
             await dbc.execute(

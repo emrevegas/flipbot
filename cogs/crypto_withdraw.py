@@ -146,21 +146,24 @@ async def _process_withdrawal(
             ephemeral=True,
         )
 
-    from modules.wager_gate import get_deposit_wager_gate
+    from modules.wager_gate import get_withdraw_wager_status
+    from modules.database import get_user_stats
 
-    required_wager, wagered_since, wager_remaining = get_deposit_wager_gate(
+    required_wager, wagered_since, wager_remaining = get_withdraw_wager_status(
         user_id, server_data
     )
     if wager_remaining > 0:
         wg_pct = int(wagered_since / required_wager * 100) if required_wager else 0
+        last_dep = int((get_user_stats(user_id) or {}).get("last_deposit_amount", 0) or 0)
         return await interaction.response.send_message(
             embed=discord.Embed(
                 title="🎲 Wager Requirement Not Met",
                 description=(
-                    f"You must wager **{format_balance(required_wager, 'real')}** before withdrawing.\n\n"
-                    f"Progress: **{format_balance(wagered_since, 'real')}** / "
+                    f"Son yatırımın üzerinden **{format_balance(required_wager, 'real')}** "
+                    f"oynaman gerekiyor (son yatırım: {format_balance(last_dep, 'real')}).\n\n"
+                    f"İlerleme: **{format_balance(wagered_since, 'real')}** / "
                     f"**{format_balance(required_wager, 'real')}** ({wg_pct}%)\n"
-                    f"Still needed: **{format_balance(wager_remaining, 'real')}**"
+                    f"Kalan: **{format_balance(wager_remaining, 'real')}**"
                 ),
                 color=0xF59E0B,
             ),

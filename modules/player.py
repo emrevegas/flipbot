@@ -184,6 +184,10 @@ class Player:
 
         stats["games"][game_name] = game_stats
         self.set_stats(stats)
+        if str(mode).lower() == "real":
+            from modules.wager_gate import record_wager
+
+            record_wager(self.uid, int(bet))
 
     def _write_transaction(self, ttype: str, amount: int, reason: str = "", by: str = "system"):
         """Append a transaction entry to per-user transaction log (capped at 50)."""
@@ -336,12 +340,10 @@ class Player:
         stats = self.stats
         stats.setdefault("total_deposit", 0)
         stats["total_deposit"] += amount
-        # Cumulative wager gate: add to cycle total without resetting wager progress.
-        prev_cycle = int(stats.get("last_deposit_amount", 0) or 0)
-        if prev_cycle <= 0:
-            stats["wagered_at_last_deposit"] = int(stats.get("total_wagered", 0))
-        stats["last_deposit_amount"] = prev_cycle + amount
         self.set_stats(stats)
+        from modules.wager_gate import start_deposit_cycle
+
+        start_deposit_cycle(self.uid, amount)
         _flip_add_deposited(self.uid, amount)
         try:
             from modules.live_stats_tracker import update_daily_deposit
@@ -357,9 +359,10 @@ class Player:
         stats = self.stats
         stats.setdefault("total_withdraw", 0)
         stats["total_withdraw"] += amount
-        stats["last_deposit_amount"] = 0
-        stats["wagered_at_last_deposit"] = 0
         self.set_stats(stats)
+        from modules.wager_gate import clear_deposit_wager_cycle
+
+        clear_deposit_wager_cycle(self.uid)
 
     # ── Level helpers ─────────────────────────────────────────────────────
 

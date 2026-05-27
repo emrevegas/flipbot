@@ -1949,13 +1949,18 @@ class WithdrawAmountModal(discord.ui.Modal, title="🏦 Withdrawal Request"):
         )
         if wager_remaining > 0:
             wg_pct = int(wagered_since / req_wager * 100) if req_wager else 0
+            from modules.database import get_user_stats
+
+            last_dep = int((get_user_stats(self.user_id) or {}).get("last_deposit_amount", 0) or 0)
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="🎲 Wager Requirement Not Met",
                     description=(
-                        f"You must wager **{format_balance(req_wager, 'real')}** before withdrawing.\n\n"
-                        f"Progress: **{format_balance(wagered_since, 'real')}** / **{format_balance(req_wager, 'real')}** ({wg_pct}%)\n"
-                        f"Still needed: **{format_balance(wager_remaining, 'real')}**"
+                        f"Son yatırımın üzerinden **{format_balance(req_wager, 'real')}** "
+                        f"oynaman gerekiyor (son yatırım: {format_balance(last_dep, 'real')}).\n\n"
+                        f"İlerleme: **{format_balance(wagered_since, 'real')}** / "
+                        f"**{format_balance(req_wager, 'real')}** ({wg_pct}%)\n"
+                        f"Kalan: **{format_balance(wager_remaining, 'real')}**"
                     ),
                     color=0xf5a623,
                 ).set_footer(text="Vegas Casino | Withdrawal System"),

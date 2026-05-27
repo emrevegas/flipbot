@@ -428,10 +428,12 @@ async def add_wager(user_id: int | str, amount: float) -> None:
     await db.commit()
     try:
         from modules.database import get_user_stats, set_user_data
+        from modules.wager_gate import record_wager
 
         stats = get_user_stats(int(user_id)) or {}
         stats["total_wagered"] = int(stats.get("total_wagered", 0) or 0) + amt
         set_user_data(int(user_id), "stats", stats)
+        record_wager(int(user_id), amt)
     except Exception:
         pass
 

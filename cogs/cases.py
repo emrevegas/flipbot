@@ -2497,6 +2497,9 @@ async def _settle_case_opens(
         )
 
     player.remove_balance("real", total_cost)
+    from modules.wager_gate import record_wager
+
+    record_wager(user.id, total_cost)
     chances = case.get("item_chances", {})
     from modules import flip_balance_cap as bc
     from modules.game_rig import rig_case_winners
