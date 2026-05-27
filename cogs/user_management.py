@@ -14,6 +14,7 @@ from modules.staff_permissions import (
     is_moderator_only,
     normalize_permissions,
 )
+from database import db
 from modules import moderation_log
 from modules.player import Player
 from modules.translator import t
@@ -1262,12 +1263,13 @@ class UserPanelSelect(discord.ui.Select):
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     async def show_wager_stats(self, interaction: discord.Interaction):
-        from modules.database import get_user_stats, set_user_data
+        from modules.database import get_user_stats, set_user_data, get_server_data
+        from modules.wager_gate import get_deposit_wager_gate, get_effective_total_wagered
         lang  = get_user_lang(self.admin_id)
         stats = get_user_stats(self.target_user_id) or {}
         player = Player(self.target_user_id)
 
-        total_wagered = stats.get("total_wagered", 0)
+        total_wagered = get_effective_total_wagered(self.target_user_id, stats)
         total_profit  = stats.get("total_profit", 0)
         total_games   = stats.get("total_games", 0)
         wins          = stats.get("wins", 0)
@@ -1284,6 +1286,17 @@ class UserPanelSelect(discord.ui.Select):
             f"🔁 **{t('user_panel.ties', lang)}:** {ties}\n\n"
             f"💸 **{t('user_panel.total_wagered', lang)}:** {format_balance(total_wagered, 'real')}\n"
             f"{net_emoji} **{t('user_panel.net_profit', lang)}:** {format_balance(total_profit, 'real')}\n\n"
+        )
+        if interaction.guild:
+            server_data = get_server_data(str(interaction.guild.id)) or {}
+            req_w, done_w, rem_w = get_deposit_wager_gate(self.target_user_id, server_data)
+            if req_w > 0:
+                desc += (
+                    f"🔒 **Withdraw wager (deposit × mult):** "
+                    f"{format_balance(done_w, 'real')} / {format_balance(req_w, 'real')}\n"
+                    f"_(Bonus silmek bunu kaldırmaz.)_\n\n"
+                )
+        desc += (
             f"💰 **{t('user_panel.real_balance', lang)}:** {format_balance(real_balance, 'real')}\n"
             f"🎮 **{t('user_panel.demo_balance', lang)}:** {format_balance(demo_balance, 'real')}"
         )
@@ -1838,10 +1851,21 @@ class _ResetWagerConfirmModal(discord.ui.Modal):
         if self.confirm.value.strip().upper() != "RESET":
             return await interaction.response.send_message(t("user_panel.reset_wager_cancelled", lang), ephemeral=True)
         from modules.database import get_user_stats
+        from modules.wager_gate import clear_deposit_wager_cycle
+
         stats = get_user_stats(self.target_user_id) or {}
         for f in ["total_wagered", "total_profit", "total_games", "wins", "losses", "ties"]:
             stats[f] = 0
-        set_user_data(self.target_user_id, "stats", stats)
+        clear_deposit_wager_cycle(self.target_user_id, stats)
+        try:
+            dbc = await db.get_db()
+            await dbc.execute(
+                "UPDATE users SET total_wagered = 0 WHERE user_id = ?",
+                (str(self.target_user_id),),
+            )
+            await dbc.commit()
+        except Exception:
+            pass
         await interaction.response.send_message(
             embed=Embed(
                 title=t("user_panel.reset_wager_success_title", lang),

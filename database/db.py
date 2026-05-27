@@ -406,9 +406,10 @@ async def set_balance(user_id: int | str, amount: float, *, note: str = "", by: 
 async def add_wager(user_id: int | str, amount: float) -> None:
     db = await get_db()
     uid = str(user_id)
+    amt = int(amount)
     await db.execute(
         "UPDATE users SET total_wagered = total_wagered + ? WHERE user_id = ?",
-        (amount, uid),
+        (amt, uid),
     )
     # Update active race entry if any
     race = await get_active_race()
@@ -416,15 +417,23 @@ async def add_wager(user_id: int | str, amount: float) -> None:
         await db.execute(
             """INSERT INTO race_entries (race_id, user_id, wagered) VALUES (?, ?, ?)
                ON CONFLICT(race_id, user_id) DO UPDATE SET wagered = wagered + ?""",
-            (race["id"], uid, amount, amount),
+            (race["id"], uid, amt, amt),
         )
     # Update active bonus wager
     await db.execute(
         """UPDATE active_bonuses SET wagered = wagered + ?
            WHERE user_id = ? AND completed = 0""",
-        (amount, uid),
+        (amt, uid),
     )
     await db.commit()
+    try:
+        from modules.database import get_user_stats, set_user_data
+
+        stats = get_user_stats(int(user_id)) or {}
+        stats["total_wagered"] = int(stats.get("total_wagered", 0) or 0) + amt
+        set_user_data(int(user_id), "stats", stats)
+    except Exception:
+        pass
 
 
 async def record_deposit(user_id: int | str, amount: float) -> None:
