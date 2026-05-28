@@ -360,6 +360,34 @@ def _ensure_limbo_game_entry(games_data: dict) -> dict:
     return games_data
 
 
+def _ensure_horse_race_game_entry(games_data: dict) -> dict:
+    if not isinstance(games_data, dict):
+        games_data = {}
+    hr = games_data.get("horse_race")
+    if not isinstance(hr, dict):
+        hr = {}
+    hr.setdefault("name", "Horse Race")
+    hr.setdefault("emoji", "🏇")
+    hr.setdefault("enabled", True)
+    hr.setdefault("description", "Pick horses, set bet — 6 lanes, odds up to 20x each race.")
+    hr.setdefault("min_bet", 10)
+    hr.setdefault("max_bet", 10000)
+    hr.setdefault("house_edge", 5.0)
+    hr.setdefault("rigged_chance", 0.0)
+    hr.setdefault("category", "table_games")
+    em = hr.get("emojis")
+    if not isinstance(em, dict):
+        em = {}
+    for i in range(1, 7):
+        em.setdefault(f"horse_{i}", "🐴")
+    em.setdefault("finish", "🏁")
+    hr["emojis"] = em
+    hr.setdefault("created_at", int(time.time()))
+    hr.setdefault("last_modified", int(time.time()))
+    games_data["horse_race"] = hr
+    return games_data
+
+
 def _ensure_slide_game_entry(games_data: dict) -> dict:
     if not isinstance(games_data, dict):
         games_data = {}
@@ -634,6 +662,7 @@ def _ensure_all_game_entries(games_data: dict) -> dict:
     games_data = _ensure_htw_game_entry(games_data)
     games_data = _ensure_limbo_game_entry(games_data)
     games_data = _ensure_slide_game_entry(games_data)
+    games_data = _ensure_horse_race_game_entry(games_data)
     games_data = _ensure_market_predict_game_entry(games_data)
     games_data = _ensure_jackpot_game_entry(games_data)
     games_data = _ensure_slot_game_entry(games_data)
@@ -4644,6 +4673,109 @@ class _CoinflipHotColdSetupButton(discord.ui.Button):
         await interaction.response.send_modal(CoinflipHotColdModal(cf))
 
 
+class _HorseRaceEmojiSetupButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🏇 Horse Emojis", style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        games_data = _ensure_horse_race_game_entry(get_data("server/games") or {})
+        hr = games_data.get("horse_race", {})
+        em = hr.get("emojis") if isinstance(hr.get("emojis"), dict) else {}
+        await interaction.response.send_modal(HorseRaceEmojisModal(em))
+
+
+class _HorseRaceRiggedButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🎲 Horse Race Rigged %", style=discord.ButtonStyle.danger, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        games_data = _ensure_horse_race_game_entry(get_data("server/games") or {})
+        await interaction.response.send_modal(HorseRaceRiggedModal(games_data.get("horse_race", {})))
+
+
+class HorseRaceEmojisModal(discord.ui.Modal, title="Horse Race — Emojis"):
+    def __init__(self, em: dict):
+        super().__init__(timeout=300)
+        lines = [str(em.get(f"horse_{i}", "🐴")) for i in range(1, 7)]
+        self.horses_in = discord.ui.TextInput(
+            label="Horses 1–6 (one emoji per line)",
+            style=discord.TextStyle.paragraph,
+            default="\n".join(lines),
+            max_length=500,
+            required=False,
+        )
+        self.finish_in = discord.ui.TextInput(
+            label="Finish line emoji",
+            default=str(em.get("finish", "🏁")),
+            max_length=80,
+            required=False,
+        )
+        self.add_item(self.horses_in)
+        self.add_item(self.finish_in)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from modules.horse_race_flow import save_horse_race_emojis
+
+        raw_lines = (self.horses_in.value or "").strip().splitlines()
+        horses = [(ln.strip() or "🐴") for ln in raw_lines[:6]]
+        while len(horses) < 6:
+            horses.append("🐴")
+        finish = (self.finish_in.value or "🏁").strip() or "🏁"
+        save_horse_race_emojis(horses=horses, finish=finish)
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Horse Race emojis updated",
+                description=f"Horses 1–6 + finish **{finish}** saved.",
+                color=discord.Color.green(),
+            ),
+            ephemeral=True,
+        )
+
+
+class HorseRaceRiggedModal(discord.ui.Modal):
+    def __init__(self, current_info: dict):
+        super().__init__(title="Horse Race — Rigged Chance", timeout=300)
+        if not isinstance(current_info, dict):
+            current_info = {}
+        self.rigged_chance_input = discord.ui.TextInput(
+            label="Rigged Chance (%) — unpicked horse wins",
+            placeholder="0.0",
+            default=str(current_info.get("rigged_chance", 0.0)),
+            required=True,
+            max_length=8,
+        )
+        self.add_item(self.rigged_chance_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            rigged = float(self.rigged_chance_input.value.replace(",", "."))
+            if rigged < 0 or rigged > 100:
+                raise ValueError
+        except (TypeError, ValueError):
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="❌ Invalid Input",
+                    description="Rigged chance must be 0–100.",
+                    color=discord.Color.red(),
+                ),
+                ephemeral=True,
+            )
+        games_data = _ensure_horse_race_game_entry(get_data("server/games") or {})
+        hr = games_data.get("horse_race", {})
+        hr["rigged_chance"] = round(rigged, 4)
+        hr["last_modified"] = int(time.time())
+        games_data["horse_race"] = hr
+        set_data("server/games", games_data)
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Horse Race rigged chance updated",
+                description=f"**{rigged}%**",
+                color=discord.Color.green(),
+            ),
+            ephemeral=True,
+        )
+
+
 class CoinflipHotColdModal(discord.ui.Modal, title="Coin Flip — Hot & Cold Emojis"):
     def __init__(self, current_info: dict):
         super().__init__(timeout=300)
@@ -4956,6 +5088,9 @@ class GameDetailView(discord.ui.View):
         elif game_id == "coinflip":
             self.add_item(_CoinflipHotColdSetupButton())
             self.add_item(_CoinflipRiggedButton())
+        elif game_id == "horse_race":
+            self.add_item(_HorseRaceEmojiSetupButton())
+            self.add_item(_HorseRaceRiggedButton())
         elif game_id == "case_battle":
             self.add_item(_CaseBattleLogChannelButton())
         elif game_id == "jackpot":
