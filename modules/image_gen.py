@@ -4371,8 +4371,10 @@ async def _load_emoji_rgba(
     emoji: str,
     size: int,
     session: aiohttp.ClientSession | None = None,
+    *,
+    transparent_bg: bool = False,
 ) -> Image.Image:
-    key = f"{emoji}:{size}"
+    key = f"{emoji}:{size}:{'t' if transparent_bg else 'b'}"
     if key in _emoji_img_cache:
         return _emoji_img_cache[key].copy()
 
@@ -4383,7 +4385,9 @@ async def _load_emoji_rgba(
     elif kind == "unicode" and payload:
         url = _twemoji_url(payload)
 
-    img = Image.new("RGBA", (size, size), (32, 36, 52, 255))
+    bg = (0, 0, 0, 0) if transparent_bg else (32, 36, 52, 255)
+    pad = 2 if transparent_bg else 8
+    img = Image.new("RGBA", (size, size), bg)
     if url:
         own = session is None
         if own:
@@ -4393,7 +4397,7 @@ async def _load_emoji_rgba(
                 if resp.status == 200:
                     raw = await resp.read()
                     em = Image.open(io.BytesIO(raw)).convert("RGBA")
-                    em = em.resize((size - 8, size - 8), Image.LANCZOS)
+                    em = em.resize((size - pad, size - pad), Image.LANCZOS)
                     ox = (size - em.width) // 2
                     oy = (size - em.height) // 2
                     img.paste(em, (ox, oy), em)
@@ -5103,7 +5107,7 @@ async def render_horse_race_bets_png(
         em_imgs: list[Image.Image] = []
         for i in range(HORSE_RACE_NUM):
             raw = horse_emojis[i] if i < len(horse_emojis) else "🐴"
-            em_imgs.append(await _load_emoji_rgba(raw, 52, session))
+            em_imgs.append(await _load_emoji_rgba(raw, 68, session, transparent_bg=True))
 
     img = Image.new("RGB", (W, H), BG)
     draw = ImageDraw.Draw(img)
@@ -5220,9 +5224,9 @@ async def render_horse_race_gif(
     """Six-lane animated race; winner_index finishes first."""
     import random as _rnd
 
-    W, H = 760, 340
+    W, H = 760, 388
     HDR = 48
-    LANE_H = 44
+    LANE_H = 52
     START_X = 72
     FINISH_X = W - 88
     NUM = HORSE_RACE_NUM
@@ -5242,8 +5246,8 @@ async def render_horse_race_gif(
         em_imgs = []
         for i in range(NUM):
             raw = horse_emojis[i] if i < len(horse_emojis) else "🐴"
-            em_imgs.append(await _load_emoji_rgba(raw, 36, session))
-        finish_img = await _load_emoji_rgba(finish_emoji or "🏁", 40, session)
+            em_imgs.append(await _load_emoji_rgba(raw, 50, session, transparent_bg=True))
+        finish_img = await _load_emoji_rgba(finish_emoji or "🏁", 44, session, transparent_bg=True)
 
     lane_speed = [_rnd.uniform(0.82, 0.96) for _ in range(NUM)]
     lane_speed[winner_index] = 1.0
