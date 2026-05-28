@@ -7,6 +7,7 @@ import random
 NUM_HORSES = 6
 MAX_ODDS = 20.0
 MIN_ODDS = 1.10
+DEFAULT_HORSE_UNICODE = "🐴"
 FAVORITE_MAX = 1.35
 LONGSHOT_MIN = 10.0
 MID_MIN = 2.0
@@ -114,3 +115,13 @@ def gross_payout(bet: float, winner: int, odds: tuple[float, ...]) -> float:
     if winner < 0 or winner >= NUM_HORSES:
         return 0.0
     return bet * odds[winner]
+
+
+def pick_lane_emojis(pool: list[str], n: int = NUM_HORSES) -> list[str]:
+    """Random `n` emojis from pool for one race (sample or with replacement)."""
+    cleaned = [str(e).strip() for e in pool if str(e).strip()]
+    if not cleaned:
+        return [DEFAULT_HORSE_UNICODE] * n
+    if len(cleaned) >= n:
+        return random.sample(cleaned, n)
+    return [random.choice(cleaned) for _ in range(n)]

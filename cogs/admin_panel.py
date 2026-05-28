@@ -381,8 +381,8 @@ def _ensure_horse_race_game_entry(games_data: dict) -> dict:
     em = hr.get("emojis")
     if not isinstance(em, dict):
         em = {}
-    for i in range(1, 7):
-        em.setdefault(f"horse_{i}", "🐴")
+    if not isinstance(em.get("pool"), list):
+        em["pool"] = []
     em.setdefault("finish", "🏁")
     hr["emojis"] = em
     hr.setdefault("favorite_min", 1.10)
@@ -3709,6 +3709,43 @@ class _BotGuildSelect(discord.ui.Select):
             embed.set_footer(text="Vegas Casino | Slot Setup")
             await interaction.response.edit_message(embed=embed, view=SlotEmojiSetupView(guild_emojis))
 
+        elif self.game_type == "horse_race":
+            from Games.horse_race import NUM_HORSES
+            from modules.horse_race_flow import filter_guild_horse_emojis, save_horse_race_emoji_pool
+
+            horse_emojis = filter_guild_horse_emojis(guild_emojis)
+            if len(horse_emojis) < NUM_HORSES:
+                return await interaction.response.edit_message(
+                    embed=discord.Embed(
+                        title="❌ Yeterli at emojisi yok",
+                        description=(
+                            f"**{guild.name}** içinde adı `*_horse` ile biten "
+                            f"**en az {NUM_HORSES}** özel emoji gerekli.\n"
+                            f"Bulunan: **{len(horse_emojis)}**"
+                        ),
+                        color=discord.Color.red(),
+                    ),
+                    view=None,
+                )
+            pool = [str(e) for e in horse_emojis]
+            save_horse_race_emoji_pool(pool=pool, guild_id=guild.id)
+            preview = " ".join(pool[:12])
+            if len(pool) > 12:
+                preview += f" … (+{len(pool) - 12})"
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="✅ Horse Race emoji havuzu kaydedildi",
+                    description=(
+                        f"**Sunucu:** {guild.name}\n"
+                        f"**Havuz:** {len(pool)} adet `*_horse` emoji\n"
+                        f"Her yarışta rastgele **6** tanesi kullanılır.\n\n"
+                        f"{preview}"
+                    ),
+                    color=discord.Color.green(),
+                ),
+                view=None,
+            )
+
 class _BotGuildPickView(discord.ui.View):
     """Ephemeral view shown before emoji setup wizards to pick source guild."""
 
@@ -4676,69 +4713,26 @@ class _HorseRaceEmojiSetupButton(discord.ui.Button):
         super().__init__(label="🏇 Horse Emojis", style=discord.ButtonStyle.primary, row=1)
 
     async def callback(self, interaction: discord.Interaction):
+        guilds = list(interaction.client.guilds)
+        if not guilds:
+            return await interaction.response.send_message(
+                "❌ Kullanılabilir sunucu bulunamadı.", ephemeral=True,
+            )
         games_data = _ensure_horse_race_game_entry(get_data("server/games") or {})
         set_data("server/games", games_data)
-        hr = games_data.get("horse_race", {})
-        await interaction.response.send_modal(HorseRaceEmojiModal(hr))
-
-
-class HorseRaceEmojiModal(discord.ui.Modal, title="Horse Race — Lane Emojis"):
-    def __init__(self, current_info: dict):
-        super().__init__(timeout=300)
-        if not isinstance(current_info, dict):
-            current_info = {}
-        em = current_info.get("emojis") if isinstance(current_info.get("emojis"), dict) else {}
-
-        def _def(key: str, fallback: str) -> str:
-            return str(em.get(key) or fallback)
-
-        self.block_a = discord.ui.TextInput(
-            label="Horses 1–3 (one emoji per line)",
-            style=discord.TextStyle.paragraph,
-            placeholder="🐴\n🐎\n🦄",
-            default="\n".join(_def(f"horse_{i}", "🐴") for i in range(1, 4)),
-            max_length=240,
-            required=True,
-        )
-        self.block_b = discord.ui.TextInput(
-            label="Horses 4–6 (one emoji per line)",
-            style=discord.TextStyle.paragraph,
-            placeholder="🐴\n🐎\n🦄",
-            default="\n".join(_def(f"horse_{i}", "🐴") for i in range(4, 7)),
-            max_length=240,
-            required=True,
-        )
-        self.finish_in = discord.ui.TextInput(
-            label="Finish line emoji",
-            placeholder="🏁",
-            default=_def("finish", "🏁"),
-            max_length=80,
-            required=True,
-        )
-        self.add_item(self.block_a)
-        self.add_item(self.block_b)
-        self.add_item(self.finish_in)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        from modules.horse_race_flow import save_horse_race_emojis
-
-        def _lines(raw: str) -> list[str]:
-            return [ln.strip() for ln in (raw or "").splitlines() if ln.strip()]
-
-        a = _lines(self.block_a.value)
-        b = _lines(self.block_b.value)
-        horses = (a + ["🐴"] * 3)[:3] + (b + ["🐴"] * 3)[:3]
-        while len(horses) < 6:
-            horses.append("🐴")
-        finish = (self.finish_in.value or "🏁").strip() or "🏁"
-        save_horse_race_emojis(horses=horses[:6], finish=finish)
-        preview = " · ".join(horses[:6])
-        await interaction.response.send_message(
-            embed=discord.Embed(
-                title="✅ Horse Race emojis updated",
-                description=f"**Lanes:** {preview}\n**Finish:** {finish}",
-                color=discord.Color.green(),
+        embed = discord.Embed(
+            title="🏇 Horse Race — Sunucu Seç",
+            description=(
+                "Emoji havuzunun alınacağı sunucuyu seçin.\n"
+                "Sunucudaki adı **`*_horse`** ile biten tüm emojiler kaydedilir; "
+                "her yarışta rastgele **6** tanesi kullanılır."
             ),
+            color=discord.Colour.gold(),
+        )
+        embed.set_footer(text="Vegas Casino | Horse Race Setup")
+        await interaction.response.send_message(
+            embed=embed,
+            view=_BotGuildPickView(guilds, "horse_race"),
             ephemeral=True,
         )
 
