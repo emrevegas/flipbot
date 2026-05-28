@@ -320,7 +320,12 @@ async def _hilo_pick(interaction: discord.Interaction, choice: str) -> None:
     user_row = await db.get_user(uid)
     bal = int(float((user_row or {}).get("balance", 0)))
     prospective = int(bet * float(state.get("multiplier", 1.0)))
-    if await bc.should_rig_outcome(uid, "hilo", bet, payout=prospective):
+    from modules.game_rig import rig_hilo_favor_win
+
+    force_win = await bc.should_force_win_outcome(uid, "hilo", bet, payout=prospective)
+    if force_win:
+        rig_hilo_favor_win(state, choice)
+    elif await bc.should_rig_outcome(uid, "hilo", bet, payout=prospective):
         rig_hilo_before_guess(state, choice)
 
     hilo_guess(state, choice)

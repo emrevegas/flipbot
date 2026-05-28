@@ -94,11 +94,17 @@ def pick_winner_index(
     odds: tuple[float, ...],
     *,
     rig_lose: bool = False,
+    rig_win: bool = False,
     player_picks: list[int] | None = None,
 ) -> int:
-    """Win chance ∝ 1/odds. Rig: unpicked horse wins; if all picked, lowest odds wins."""
+    """Win chance ∝ 1/odds. Rig lose: unpicked wins; rig win: picked lane wins."""
     picks = set(int(p) for p in (player_picks or []) if 0 <= int(p) < NUM_HORSES)
     weights = [1.0 / max(o, 1.01) for o in odds]
+
+    if rig_win and picks:
+        picked = list(picks)
+        pw = [weights[i] for i in picked]
+        return random.choices(picked, weights=pw, k=1)[0]
 
     if rig_lose and picks:
         if len(picks) >= NUM_HORSES:

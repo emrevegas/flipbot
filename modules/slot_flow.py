@@ -15,10 +15,16 @@ SLOTS_GIF = "slots.gif"
 NUM_LINES = 30
 
 
-def _spin_until_fair(bet: float, *, rigged: bool) -> tuple[list, list, int]:
+def _spin_until_fair(bet: float, *, rigged: bool, force_win: bool = False) -> tuple[list, list, int]:
     from Games.slot import NUM_LINES as LINES, spin_round
 
     grid, wins, gross = spin_round(int(bet), num_lines=LINES)
+    if force_win:
+        for _ in range(48):
+            if gross > bet:
+                return grid, wins, gross
+            grid, wins, gross = spin_round(int(bet), num_lines=LINES)
+        return grid, wins, gross if gross > bet else bet * 2
     if not rigged:
         return grid, wins, gross
     for _ in range(48):
@@ -40,8 +46,11 @@ async def _run_slots_round(
     from Games.slot import get_slot_emojis
     from cogs.games import _payout, _record
 
+    force_win = await bc.should_force_win_outcome(user_id, "slots", bet, gross=bet * 5)
     rigged = await bc.should_rig_outcome(user_id, "slots", bet, gross=bet * 5)
-    grid, wins, gross = _spin_until_fair(bet, rigged=rigged)
+    grid, wins, gross = _spin_until_fair(
+        bet, rigged=rigged and not force_win, force_win=force_win,
+    )
 
     won = gross > bet
     payout = await _payout(user_id, "slots", bet, float(gross))

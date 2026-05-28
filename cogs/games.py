@@ -432,8 +432,12 @@ def _htw_spin_pair(
     bet: float,
     *,
     rig_vs_bot: bool = False,
+    favor_player: bool = False,
 ) -> tuple[int, int, str]:
     """Return (left_spin, right_spin, outcome for left: WIN|LOSE|PUSH)."""
+    if favor_player:
+        from modules.game_rig import htw_spin_favored
+        return htw_spin_favored()
     if rig_vs_bot:
         from modules.game_rig import htw_spin_rigged
         return htw_spin_rigged()
@@ -503,8 +507,11 @@ async def _htw_rebet_from_interaction(
     await db.ensure_user(user_id, interaction.user.name)
     await interaction.response.defer()
 
+    force_win = await bc.should_force_win_outcome(user_id, "htw", bet, gross=bet * 2)
     rigged = await bc.should_rig_outcome(user_id, "htw", bet, gross=bet * 2)
-    left_n, right_n, outcome = _htw_spin_pair(user_id, bet, rig_vs_bot=rigged)
+    left_n, right_n, outcome = _htw_spin_pair(
+        user_id, bet, rig_vs_bot=rigged and not force_win, favor_player=force_win,
+    )
 
     if outcome == "WIN":
         gross = bet * 2
@@ -556,8 +563,11 @@ async def _htw_play_vs_bot(ctx: commands.Context, bet: float) -> None:
     if not await _check_game(ctx, "htw", bet):
         return
 
+    force_win = await bc.should_force_win_outcome(ctx.author.id, "htw", bet, gross=bet * 2)
     rigged = await bc.should_rig_outcome(ctx.author.id, "htw", bet, gross=bet * 2)
-    left_n, right_n, outcome = _htw_spin_pair(ctx.author.id, bet, rig_vs_bot=rigged)
+    left_n, right_n, outcome = _htw_spin_pair(
+        ctx.author.id, bet, rig_vs_bot=rigged and not force_win, favor_player=force_win,
+    )
 
     if outcome == "WIN":
         gross = bet * 2
@@ -1009,6 +1019,12 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
 
     mult_after = mines_multiplier(state["mine_count"], picks_after, ms["house_edge_percent"])
     prospective_net = int(bet * mult_after * (1 - ms["house_edge_decimal"]))
+    force_win = await bc.should_force_win_outcome(
+        user_id,
+        "mines",
+        bet,
+        payout=prospective_net,
+    )
     rigged = await bc.should_rig_outcome(
         user_id,
         "mines",
@@ -1018,7 +1034,12 @@ async def _mines_do_pick(interaction: discord.Interaction, user_id: int, r: int,
     )
 
     hit_mine = idx in mine_set
-    if rigged and not hit_mine:
+    if force_win and hit_mine:
+        from modules.game_rig import rig_mines_bomb_to_safe
+        rig_mines_bomb_to_safe(state, idx)
+        mine_set = set(state["mines"])
+        hit_mine = idx in mine_set
+    elif rigged and not hit_mine:
         from modules.game_rig import rig_mines_safe_to_bomb
         hit_mine = rig_mines_safe_to_bomb(state, idx)
         mine_set = set(state["mines"])
@@ -1138,7 +1159,8 @@ async def _bj_start_from_interaction(interaction: discord.Interaction, user_id: 
         return
 
     user = await db.get_user(user_id)
-    if await bc.should_rig_outcome(user_id, "blackjack", bet, gross=bet * 2.5):
+    force_win_bj = await bc.should_force_win_outcome(user_id, "blackjack", bet, gross=bet * 2.5)
+    if await bc.should_rig_outcome(user_id, "blackjack", bet, gross=bet * 2.5) and not force_win_bj:
         from modules.game_rig import build_rigged_blackjack_state
         state = build_rigged_blackjack_state(bet, interaction.user.display_name)
     else:
@@ -1652,10 +1674,15 @@ class Games(commands.Cog):
         if target < 1.01 or target > 1000:
             return await ctx.send(embed=_err("Target must be between 1.01 and 1000."))
 
+        force_win = await bc.should_force_win_outcome(
+            ctx.author.id, "limbo", amount, gross=amount * target,
+        )
         rigged = await bc.should_rig_outcome(
             ctx.author.id, "limbo", amount, gross=amount * target,
         )
-        if rigged:
+        if force_win:
+            crash = round(random.uniform(target, target + 50.0), 2)
+        elif rigged:
             crash = round(random.uniform(1.00, max(1.01, target - 0.01)), 2)
         else:
             crash = LimboGame.roll_result_value()
@@ -1724,10 +1751,15 @@ class Games(commands.Cog):
         else:
             return await ctx.send(embed=_err("Pick `up/u` or `down/d`."))
 
+        force_win = await bc.should_force_win_outcome(
+            ctx.author.id, "market_predict", bet, gross=bet * 2,
+        )
         rigged = await bc.should_rig_outcome(
             ctx.author.id, "market_predict", bet, gross=bet * 2,
         )
-        if rigged:
+        if force_win:
+            result_side = player_side
+        elif rigged:
             result_side = "DOWN" if player_side == "UP" else "UP"
         else:
             result_side = random.choice(["UP", "DOWN"])
@@ -1771,10 +1803,15 @@ class Games(commands.Cog):
             await db.ensure_user(user_id, interaction.user.name)
             await interaction.response.defer()
 
+            force_win2 = await bc.should_force_win_outcome(
+                user_id, "market_predict", bet, gross=bet * 2,
+            )
             rigged2 = await bc.should_rig_outcome(
                 user_id, "market_predict", bet, gross=bet * 2,
             )
-            if rigged2:
+            if force_win2:
+                result_side2 = player_side
+            elif rigged2:
                 result_side2 = "DOWN" if player_side == "UP" else "UP"
             else:
                 result_side2 = random.choice(["UP", "DOWN"])
@@ -1851,7 +1888,12 @@ class Games(commands.Cog):
         if not await _check_game(ctx, "blackjack", amount):
             return
 
-        if await bc.should_rig_outcome(ctx.author.id, "blackjack", amount, gross=amount * 2.5):
+        force_win_bj = await bc.should_force_win_outcome(
+            ctx.author.id, "blackjack", amount, gross=amount * 2.5,
+        )
+        if await bc.should_rig_outcome(
+            ctx.author.id, "blackjack", amount, gross=amount * 2.5,
+        ) and not force_win_bj:
             from modules.game_rig import build_rigged_blackjack_state
             state = build_rigged_blackjack_state(amount, ctx.author.display_name)
         else:
@@ -2596,6 +2638,12 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
         prospective_net = int(prospective_gross * (1 - he_tw))
     else:
         prospective_net = 0
+    force_win = await bc.should_force_win_outcome(
+        user_id,
+        "towers",
+        bet,
+        payout=prospective_net,
+    )
     rigged = await bc.should_rig_outcome(
         user_id,
         "towers",
@@ -2603,7 +2651,12 @@ async def _towers_do_pick(interaction: discord.Interaction, col: int):
         payout=prospective_net,
         force_cap_rig=bool(state.get("cap_rig")),
     )
-    if rigged and cell_type == "gem":
+    if force_win and cell_type == "bomb":
+        from modules.game_rig import rig_towers_bomb_to_gem
+        rig_towers_bomb_to_gem(state, floor, col)
+        grid = state["grid"]
+        cell_type = grid[floor][col]
+    elif rigged and cell_type == "gem":
         from modules.game_rig import rig_towers_gem_to_bomb
         rig_towers_gem_to_bomb(state, floor, col)
         grid = state["grid"]
@@ -2928,15 +2981,22 @@ async def _chicken_do_cross(interaction: discord.Interaction):
         prospective_net = int(bet * mults_cr[-1] * (1 - he_cr))
     else:
         prospective_net = int(bet * mults_cr[step] * (1 - he_cr))
+    force_win = await bc.should_force_win_outcome(
+        user_id, "chicken_road", bet, payout=prospective_net,
+    )
     if await bc.should_rig_outcome(
         user_id,
         "chicken_road",
         bet,
         payout=prospective_net,
         force_cap_rig=bool(state.get("cap_rig")),
-    ):
+    ) and not force_win:
         outcome = "crash"
         lanes[step] = "crash"
+        state["lanes"] = lanes
+    elif force_win and outcome == "crash":
+        outcome = "safe"
+        lanes[step] = "safe"
         state["lanes"] = lanes
 
     if outcome == "crash":

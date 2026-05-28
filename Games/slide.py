@@ -49,6 +49,18 @@ def pick_rigged_multiplier() -> float:
     return 1.0
 
 
+def pick_favored_multiplier() -> float:
+    """High outcome when rigged_chance < 0 (guaranteed player win)."""
+    r = random.random()
+    if r < 0.55:
+        return 3.0
+    if r < 0.85:
+        return 5.0
+    if r < 0.97:
+        return 10.0
+    return 25.0
+
+
 def random_strip_cell() -> float:
     return roll_multiplier()
 

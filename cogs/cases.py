@@ -2505,10 +2505,17 @@ async def _settle_case_opens(
     from modules.game_rig import rig_case_winners
 
     max_item_val = max((int(i.get("value", 0) or 0) for i in items), default=0)
+    from modules.game_rig import rig_case_best_winners
+
+    force_win = await bc.should_force_win_outcome(
+        user.id, "case_opening", float(total_cost), payout=max_item_val * count,
+    )
     rigged = await bc.should_rig_outcome(
         user.id, "case_opening", float(total_cost), payout=max_item_val * count,
     )
-    if rigged:
+    if force_win:
+        winners = rig_case_best_winners(items, count)
+    elif rigged:
         winners = rig_case_winners(items, count)
     else:
         winners = [_open_case_item(items, chances) for _ in range(count)]

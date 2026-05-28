@@ -31,8 +31,11 @@ async def parse_dice_args(ctx: commands.Context) -> tuple[discord.Member | None,
     return opponent, bet
 
 
-def dice_roll_pair(*, rig_vs_bot: bool = False) -> tuple[int, int, str]:
+def dice_roll_pair(*, rig_vs_bot: bool = False, favor_player: bool = False) -> tuple[int, int, str]:
     """(left_roll, right_roll, left outcome: WIN|LOSE|PUSH)."""
+    if favor_player:
+        from modules.game_rig import dice_roll_favored
+        return dice_roll_favored()
     if rig_vs_bot:
         from modules.game_rig import dice_roll_rigged
         return dice_roll_rigged()
@@ -270,8 +273,11 @@ async def _dice_rebet_from_interaction(
     await db.ensure_user(user_id, interaction.user.name)
     await interaction.response.defer()
 
+    force_win = await bc.should_force_win_outcome(user_id, "dice", bet, gross=bet * 2)
     rigged = await bc.should_rig_outcome(user_id, "dice", bet, gross=bet * 2)
-    left_roll, right_roll, outcome = dice_roll_pair(rig_vs_bot=rigged)
+    left_roll, right_roll, outcome = dice_roll_pair(
+        rig_vs_bot=rigged and not force_win, favor_player=force_win,
+    )
 
     if outcome == "WIN":
         gross, won = bet * 2, True
@@ -317,8 +323,11 @@ async def _dice_rebet_from_interaction(
 
 
 async def start_dice_bot_game(ctx: commands.Context, bet: float) -> None:
+    force_win = await bc.should_force_win_outcome(ctx.author.id, "dice", bet, gross=bet * 2)
     rigged = await bc.should_rig_outcome(ctx.author.id, "dice", bet, gross=bet * 2)
-    left_roll, right_roll, outcome = dice_roll_pair(rig_vs_bot=rigged)
+    left_roll, right_roll, outcome = dice_roll_pair(
+        rig_vs_bot=rigged and not force_win, favor_player=force_win,
+    )
 
     if outcome == "WIN":
         gross, won = bet * 2, True

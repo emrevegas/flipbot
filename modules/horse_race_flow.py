@@ -501,11 +501,17 @@ class HorseRaceSetupView(ui.LayoutView):
         prospective = max(
             gross_payout(stakes[i], i, odds) for i in staked
         )
+        force_win = await bc.should_force_win_outcome(
+            self.user_id, GAME_ID, total, gross=prospective,
+        )
         rigged = await bc.should_rig_outcome(
             self.user_id, GAME_ID, total, gross=prospective,
         )
         winner = pick_winner_index(
-            odds, rig_lose=rigged, player_picks=staked,
+            odds,
+            rig_lose=rigged and not force_win,
+            rig_win=force_win,
+            player_picks=staked,
         )
         lane_bet = stakes[winner]
         won = lane_bet > 0

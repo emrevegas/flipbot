@@ -2159,7 +2159,7 @@ class MinesRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(
@@ -2206,7 +2206,7 @@ class CrystalsRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(
@@ -4076,7 +4076,7 @@ class TowersRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(
@@ -4463,7 +4463,7 @@ class LiveBlackjackRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message("Invalid % (0–100).", ephemeral=True)
@@ -4507,7 +4507,7 @@ class BlackjackRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(
@@ -4608,7 +4608,7 @@ class RouletteRiggedModal(discord.ui.Modal):
         if not isinstance(current_info, dict):
             current_info = {}
         self.rigged_chance_input = discord.ui.TextInput(
-            label="Rigged Chance (%) — force house win",
+            label="Rigged Chance (%) — + house loss / − guaranteed win",
             placeholder="0.0",
             default=str(current_info.get("rigged_chance", 0.0)),
             required=True,
@@ -4620,7 +4620,7 @@ class RouletteRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(
@@ -4667,7 +4667,7 @@ class DiceRiggedModal(discord.ui.Modal):
         if not isinstance(current_info, dict):
             current_info = {}
         self.rigged_chance_input = discord.ui.TextInput(
-            label="Rigged Chance (%) — force house win",
+            label="Rigged Chance (%) — + house loss / − guaranteed win",
             placeholder="0.0",
             default=str(current_info.get("rigged_chance", 0.0)),
             required=True,
@@ -4679,7 +4679,7 @@ class DiceRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(
@@ -4764,7 +4764,7 @@ class HorseRaceRiggedModal(discord.ui.Modal, title="Horse Race — Rigged Chance
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(
@@ -4858,7 +4858,7 @@ class CoinflipRiggedModal(discord.ui.Modal):
         if not isinstance(current_info, dict):
             current_info = {}
         self.rigged_chance_input = discord.ui.TextInput(
-            label="Rigged Chance (%) — force house win",
+            label="Rigged Chance (%) — + house loss / − guaranteed win",
             placeholder="0.0",
             default=str(current_info.get("rigged_chance", 0.0)),
             required=True,
@@ -4870,7 +4870,7 @@ class CoinflipRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(
@@ -5279,7 +5279,7 @@ class LimboRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(
@@ -5336,7 +5336,7 @@ class MarketPredictRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(
@@ -5399,7 +5399,7 @@ class SlideRiggedModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             rigged = float(self.rigged_chance_input.value.replace(",", "."))
-            if rigged < 0 or rigged > 100:
+            if rigged < -100 or rigged > 100:
                 raise ValueError
         except (TypeError, ValueError):
             return await interaction.response.send_message(

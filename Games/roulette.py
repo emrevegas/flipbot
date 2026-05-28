@@ -116,15 +116,19 @@ class RouletteGame(BaseGame):
         # Bahsi düş, sonucu hesapla, bakiyeyi güncelle (animasyon öncesi)
         is_free_round, bet = self.deduct_bet(player, mode, bet)
         game_result = self.play_round(bet, floats=pf_fl)
-        if not is_free_round and game_result.result == "win":
+        if not is_free_round:
             try:
                 import modules.balance_cap as balance_cap
                 balance = player.get_balance(mode)
                 payout = int(bet * float(game_result.multiplier))
-                if balance_cap.should_rig_outcome(
+                if game_result.result == "win" and balance_cap.should_rig_outcome(
                     player.uid, mode, balance, bet, payout, game_id="roulette",
                 ):
                     game_result = balance_cap.rig_roulette_result(game_result)
+                elif game_result.result != "win" and balance_cap.should_force_win_outcome(
+                    player.uid, mode, balance, bet, payout, game_id="roulette",
+                ):
+                    game_result = balance_cap.favor_roulette_result(game_result)
             except Exception:
                 pass
         ps = game_result.meta["player_spin"]

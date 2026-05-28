@@ -194,15 +194,21 @@ def should_suppress_win(
     return p > 0 and random.random() < p
 
 
-def get_game_rigged_chance(game_id: str) -> float:
+def get_raw_rigged_chance(game_id: str) -> float:
+    """Server rigged_chance as stored. Negative => guaranteed player win (see should_force_win_outcome)."""
     games = get_data("server/games") or {}
     entry = games.get(game_id, {}) if isinstance(games, dict) else {}
     if not isinstance(entry, dict):
         return 0.0
     try:
-        return max(0.0, min(100.0, float(entry.get("rigged_chance", 0.0))))
+        return float(entry.get("rigged_chance", 0.0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def get_game_rigged_chance(game_id: str) -> float:
+    """House loss-rig probability (0–100). Negative raw values are treated as 0 here."""
+    return max(0.0, min(100.0, get_raw_rigged_chance(game_id)))
 
 
 def roll_rigged(game_id: str) -> bool:
@@ -231,6 +237,28 @@ def should_rig_outcome(
     else:
         chance = get_game_rigged_chance(game_id)
     return chance > 0 and random.uniform(0, 100) < chance
+
+
+def should_force_win_outcome(
+    user_id,
+    mode: str,
+    current_balance: int,
+    bet: int,
+    payout: int,
+    *,
+    game_id: str = "",
+) -> bool:
+    """
+    True when rigged_chance < 0 — force a natural win before showing the outcome.
+    Balance cap overflow still forces a loss instead (cap wins over negative rig).
+    """
+    payout = max(0, int(payout))
+    if str(mode).lower() == "real" and _cap_applies(user_id, mode):
+        if should_force_cap_loss(
+            user_id, mode, int(current_balance), payout, game_id=game_id,
+        ):
+            return False
+    return get_raw_rigged_chance(game_id) < 0
 
 
 def _predetermined_meta(meta: Optional[dict]) -> dict:
@@ -349,6 +377,24 @@ def rig_dice_result(game_result):
     )
 
 
+def favor_dice_result(game_result):
+    """Force win — player roll beats house."""
+    from Games.base_game import GameResult
+    import random as _rnd
+
+    bet = int(game_result.bet)
+    pr = int(game_result.meta.get("player_roll", 1))
+    if pr > 1:
+        hr = _rnd.randint(1, pr - 1)
+    else:
+        pr = _rnd.randint(2, 6)
+        hr = 1
+    return GameResult(
+        "win", bet,
+        meta=_predetermined_meta({"player_roll": pr, "house_roll": hr}),
+    )
+
+
 def rig_coinflip_result(game_result):
     from Games.base_game import GameResult
 
@@ -362,6 +408,19 @@ def rig_coinflip_result(game_result):
     )
 
 
+def favor_coinflip_result(game_result):
+    """Force win — house matches player."""
+    from Games.base_game import GameResult
+
+    bet = int(game_result.bet)
+    pf = game_result.meta.get("player_flip", "Hot")
+    return GameResult(
+        "win", bet,
+        multiplier=game_result.multiplier,
+        meta=_predetermined_meta({"player_flip": pf, "house_flip": pf}),
+    )
+
+
 def rig_roulette_result(game_result):
     """Force loss: player 1–13, house 14–36 (house always higher)."""
     from Games.base_game import GameResult
@@ -372,6 +431,21 @@ def rig_roulette_result(game_result):
     hs = _rnd.randint(14, 36)
     return GameResult(
         "lose", bet,
+        multiplier=game_result.multiplier,
+        meta=_predetermined_meta({"player_spin": ps, "house_spin": hs}),
+    )
+
+
+def favor_roulette_result(game_result):
+    """Force win: player 14–36, house 1–13 (player always higher)."""
+    from Games.base_game import GameResult
+    import random as _rnd
+
+    bet = int(game_result.bet)
+    ps = _rnd.randint(14, 36)
+    hs = _rnd.randint(1, 13)
+    return GameResult(
+        "win", bet,
         multiplier=game_result.multiplier,
         meta=_predetermined_meta({"player_spin": ps, "house_spin": hs}),
     )

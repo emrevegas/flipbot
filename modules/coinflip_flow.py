@@ -342,10 +342,15 @@ async def _prog_flip_outcome(
 ) -> tuple[str, bool]:
     """Return (result_side, won) for one progressive flip."""
     prospective = progressive_gross(bet, streak_before + 1)
+    force_win = await bc.should_force_win_outcome(
+        user_id, "coinflip", bet, gross=prospective,
+    )
     rigged = await bc.should_rig_outcome(
         user_id, "coinflip", bet, gross=prospective,
     )
-    if rigged:
+    if force_win:
+        result = player_side
+    elif rigged:
         result = "COLD" if player_side == "HOT" else "HOT"
     else:
         result = random.choice(SIDES)

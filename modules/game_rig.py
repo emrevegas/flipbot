@@ -47,14 +47,8 @@ PROMODOS_ACTIVE_PER_GAME = {
 
 
 def get_rigged_chance(game_id: str) -> float:
-    games = get_data(GAMES_KEY) or {}
-    entry = games.get(game_id, {}) if isinstance(games, dict) else {}
-    if not isinstance(entry, dict):
-        return 0.0
-    try:
-        return max(0.0, min(100.0, float(entry.get("rigged_chance", 0.0))))
-    except (TypeError, ValueError):
-        return 0.0
+    from modules.balance_cap import get_game_rigged_chance
+    return get_game_rigged_chance(game_id)
 
 
 def roll_rigged(game_id: str) -> bool:
@@ -303,3 +297,84 @@ def dice_roll_rigged() -> tuple[int, int, str]:
     left_roll = random.randint(1, 5)
     right_roll = random.randint(left_roll + 1, 6)
     return left_roll, right_roll, "LOSE"
+
+
+def dice_roll_favored() -> tuple[int, int, str]:
+    """Player roll beats house."""
+    right_roll = random.randint(1, 5)
+    left_roll = random.randint(right_roll + 1, 6)
+    return left_roll, right_roll, "WIN"
+
+
+def htw_spin_favored() -> tuple[int, int, str]:
+    """Player spin strictly higher than house."""
+    right_spin = random.randint(0, 35)
+    left_spin = random.randint(right_spin + 1, 36)
+    return left_spin, right_spin, "WIN"
+
+
+def rig_hilo_favor_win(state: dict, choice: str) -> None:
+    """Swap next deck card so the visible reveal is a win."""
+    deck = state.get("deck") or []
+    idx = int(state.get("card_idx", 0))
+    if idx + 1 >= len(deck):
+        return
+    current = deck[idx]
+    winning_idxs = [
+        i for i in range(idx + 1, len(deck))
+        if _hilo_would_win(current, deck[i], choice)
+    ]
+    if not winning_idxs:
+        return
+    swap_i = random.choice(winning_idxs)
+    nxt = idx + 1
+    deck[nxt], deck[swap_i] = deck[swap_i], deck[nxt]
+    state["deck"] = deck
+
+
+def rig_mines_bomb_to_safe(state: dict, picked_idx: int) -> bool:
+    """User hit a mine; move that mine onto an unrevealed safe cell."""
+    mines = [int(x) for x in state.get("mines") or []]
+    if picked_idx not in mines:
+        return False
+    revealed = set(int(x) for x in state.get("revealed") or [])
+    grid_cells = 25
+    safe = [
+        i for i in range(grid_cells)
+        if i not in mines and i not in revealed and i != picked_idx
+    ]
+    if not safe:
+        mines = [m for m in mines if m != picked_idx]
+        state["mines"] = mines
+        return True
+    donor = random.choice(safe)
+    mines = [donor if m == picked_idx else m for m in mines]
+    state["mines"] = mines
+    return True
+
+
+def rig_towers_bomb_to_gem(state: dict, floor: int, col: int) -> None:
+    """Turn chosen bomb into gem; move bomb to another column on same floor."""
+    grid = state.get("grid") or []
+    if floor < 0 or floor >= len(grid):
+        return
+    row = list(grid[floor])
+    if col < 0 or col >= len(row) or row[col] != "bomb":
+        return
+    gem_cols = [i for i, c in enumerate(row) if c == "gem" and i != col]
+    if not gem_cols:
+        row[col] = "gem"
+    else:
+        gc = random.choice(gem_cols)
+        row[col], row[gc] = "gem", "bomb"
+    grid[floor] = row
+    state["grid"] = grid
+
+
+def rig_case_best_winners(items: list[dict], count: int) -> list[dict]:
+    """High-value pulls only."""
+    if not items or count < 1:
+        return []
+    ranked = sorted(items, key=lambda x: int(x.get("value", 0) or 0), reverse=True)
+    pool = ranked[: max(1, (len(ranked) + 2) // 3)]
+    return [dict(random.choice(pool)) for _ in range(count)]

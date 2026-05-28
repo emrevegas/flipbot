@@ -75,3 +75,33 @@ async def should_rig_outcome(
         p = 0
 
     return cap.should_rig_outcome(user_id, "real", bal, b, p, game_id=game_id)
+
+
+async def should_force_win_outcome(
+    user_id: int | str,
+    game_id: str,
+    bet: float,
+    *,
+    pvp: bool = False,
+    payout: float | None = None,
+    gross: float | None = None,
+) -> bool:
+    """
+    True => force a natural win before showing the outcome.
+    When rigged_chance < 0. Cap overflow still forces loss instead.
+    """
+    if pvp or game_id in NO_RIG_GAMES:
+        return False
+
+    bal = await _balance(user_id)
+    b = int(bet)
+
+    if payout is not None:
+        p = int(payout)
+    elif gross is not None:
+        he = await _house_edge(game_id)
+        p = _net_from_gross(gross, he)
+    else:
+        p = 0
+
+    return cap.should_force_win_outcome(user_id, "real", bal, b, p, game_id=game_id)

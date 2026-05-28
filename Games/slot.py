@@ -362,11 +362,11 @@ class SlotGame(BaseGame):
         is_free_round, bet = self.deduct_bet(player, mode, bet)
         grid, wins, total_payout, game_result = self.spin_and_evaluate(bet, pf_fl, num_lines)
 
-        if not is_free_round and game_result.result == "win":
+        if not is_free_round:
             try:
                 import modules.balance_cap as balance_cap
                 balance = player.get_balance(mode)
-                if balance_cap.should_rig_outcome(
+                if game_result.result == "win" and balance_cap.should_rig_outcome(
                     player.uid, mode, balance, bet, total_payout, game_id="slot",
                 ):
                     wins = []
@@ -382,6 +382,28 @@ class SlotGame(BaseGame):
                             "predetermined": True,
                         },
                         amount=0,
+                    )
+                elif game_result.result != "win" and balance_cap.should_force_win_outcome(
+                    player.uid, mode, balance, bet, total_payout, game_id="slot",
+                ):
+                    from Games.slot import spin_round
+                    for _ in range(48):
+                        grid, wins, total_payout = spin_round(bet, num_lines=num_lines)
+                        if total_payout > bet:
+                            break
+                    if total_payout <= bet:
+                        total_payout = bet * 2
+                    game_result = GameResult(
+                        "win", bet,
+                        meta={
+                            "grid": grid,
+                            "wins": wins,
+                            "total_payout": total_payout,
+                            "winning_lines": len(wins),
+                            "num_lines": num_lines,
+                            "predetermined": True,
+                        },
+                        amount=total_payout,
                     )
             except Exception:
                 pass
