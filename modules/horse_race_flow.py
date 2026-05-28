@@ -42,7 +42,24 @@ def get_horse_race_settings() -> dict:
         "house_edge_percent": float(hr.get("house_edge", 5.0) or 5.0),
         "min_bet": float(hr.get("min_bet", 10)),
         "max_bet": float(hr.get("max_bet", 10000)),
+        "favorite_min": float(hr.get("favorite_min", 1.10)),
+        "favorite_max": float(hr.get("favorite_max", 1.35)),
+        "longshot_min": float(hr.get("longshot_min", 10.0)),
+        "longshot_max": float(hr.get("longshot_max", 20.0)),
+        "mid_min": float(hr.get("mid_min", 2.0)),
+        "mid_max": float(hr.get("mid_max", 8.5)),
     }
+
+
+def _roll_odds(settings: dict) -> tuple[float, ...]:
+    return roll_race_odds(
+        favorite_min=settings.get("favorite_min", 1.10),
+        favorite_max=settings.get("favorite_max", 1.35),
+        longshot_min=settings.get("longshot_min", 10.0),
+        longshot_max=settings.get("longshot_max", 20.0),
+        mid_min=settings.get("mid_min", 2.0),
+        mid_max=settings.get("mid_max", 8.5),
+    )
 
 
 def save_horse_race_emojis(
@@ -114,7 +131,8 @@ def _status_text(bet: float | None, picks: list[int], odds: tuple[float, ...]) -
         f"## 🏇 Horse Race\n"
         f"**Bet:** {bet_s}\n"
         f"**Your horses:** {lanes}\n\n"
-        f"Odds refresh each race (up to **20x**). Tap horses (gray → green), pick bet, **Start Race**."
+        f"Each race: **one favorite** (~1.10x), **one longshot** (10–20x), four mid lanes. "
+        f"Tap horses (gray → green), pick bet, **Start Race**."
     )
 
 
@@ -254,7 +272,7 @@ class HorseRacePlayAgainButton(ui.Button):
         min_b = float(cfg["min_bet"]) if cfg else settings["min_bet"]
         max_b = float(cfg["max_bet"]) if cfg else settings["max_bet"]
         tiers = bet_tiers(min_b, max_b, 25)
-        odds = roll_race_odds()
+        odds = _roll_odds(settings)
         win_pcts = win_chances(odds)
         files = await _build_attachments(settings, odds, win_pcts, [], None)
         view = HorseRaceSetupView(
@@ -281,7 +299,7 @@ class HorseRaceSetupView(ui.LayoutView):
         self.user_id = user_id
         self.settings = settings
         self.tiers = tiers
-        self.odds = odds or roll_race_odds()
+        self.odds = odds or _roll_odds(settings)
         self.win_pcts = win_pcts or win_chances(self.odds)
         self.bet = bet
         self.picks = list(picks or [])
@@ -452,7 +470,7 @@ async def start_horse_race(ctx: commands.Context) -> None:
     min_b = float(cfg["min_bet"])
     max_b = float(cfg["max_bet"])
     tiers = bet_tiers(min_b, max_b, 25)
-    odds = roll_race_odds()
+    odds = _roll_odds(settings)
     win_pcts = win_chances(odds)
 
     await db.ensure_user(ctx.author.id, ctx.author.name)

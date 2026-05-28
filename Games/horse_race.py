@@ -1,4 +1,4 @@
-"""Horse race — 6 lanes, per-round odds (max 20x), weighted winner."""
+"""Horse race — 6 lanes, per-round odds (one favorite ~1.10x, one longshot up to 20x)."""
 
 from __future__ import annotations
 
@@ -6,18 +6,49 @@ import random
 
 NUM_HORSES = 6
 MAX_ODDS = 20.0
-MIN_ODDS = 1.5
+MIN_ODDS = 1.10
+FAVORITE_MAX = 1.35
+LONGSHOT_MIN = 10.0
+MID_MIN = 2.0
+MID_MAX = 8.5
 
 
 def roll_race_odds(
     *,
-    min_mult: float = MIN_ODDS,
-    max_mult: float = MAX_ODDS,
+    favorite_min: float = MIN_ODDS,
+    favorite_max: float = FAVORITE_MAX,
+    longshot_min: float = LONGSHOT_MIN,
+    longshot_max: float = MAX_ODDS,
+    mid_min: float = MID_MIN,
+    mid_max: float = MID_MAX,
 ) -> tuple[float, ...]:
-    """Fresh multipliers each race (1.5x–20x)."""
-    lo = max(1.1, float(min_mult))
-    hi = max(lo, float(max_mult))
-    return tuple(round(random.uniform(lo, hi), 2) for _ in range(NUM_HORSES))
+    """
+    Each race: exactly one low favorite (~1.10x), one high longshot (10x–20x),
+    four medium lanes between them — never all horses at 10x+.
+    """
+    fav_lo = max(1.05, float(favorite_min))
+    fav_hi = max(fav_lo, float(favorite_max))
+    ls_lo = max(fav_hi + 0.5, float(longshot_min))
+    ls_hi = max(ls_lo, float(longshot_max))
+    m_lo = max(fav_hi + 0.15, float(mid_min))
+    m_hi = min(ls_lo - 0.25, max(m_lo, float(mid_max)))
+
+    indices = list(range(NUM_HORSES))
+    random.shuffle(indices)
+    fav_idx = indices[0]
+    long_idx = indices[1]
+    mid_indices = indices[2:]
+
+    odds: list[float] = [0.0] * NUM_HORSES
+    odds[fav_idx] = round(random.uniform(fav_lo, fav_hi), 2)
+    odds[long_idx] = round(random.uniform(ls_lo, ls_hi), 2)
+
+    # Spread mids so they don't cluster at the top of the range
+    mid_vals = sorted(random.uniform(m_lo, m_hi) for _ in mid_indices)
+    for lane, val in zip(mid_indices, mid_vals):
+        odds[lane] = round(val, 2)
+
+    return tuple(odds)
 
 
 def normalize_odds(raw: list | tuple | None) -> tuple[float, ...]:
@@ -26,7 +57,7 @@ def normalize_odds(raw: list | tuple | None) -> tuple[float, ...]:
         out = []
         for i in range(NUM_HORSES):
             try:
-                out.append(min(MAX_ODDS, max(1.1, float(raw[i]))))
+                out.append(min(MAX_ODDS, max(1.05, float(raw[i]))))
             except (TypeError, ValueError):
                 out.append(3.0 + i * 0.5)
         return tuple(out)

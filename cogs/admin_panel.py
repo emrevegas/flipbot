@@ -385,6 +385,12 @@ def _ensure_horse_race_game_entry(games_data: dict) -> dict:
         em.setdefault(f"horse_{i}", "🐴")
     em.setdefault("finish", "🏁")
     hr["emojis"] = em
+    hr.setdefault("favorite_min", 1.10)
+    hr.setdefault("favorite_max", 1.35)
+    hr.setdefault("longshot_min", 10.0)
+    hr.setdefault("longshot_max", 20.0)
+    hr.setdefault("mid_min", 2.0)
+    hr.setdefault("mid_max", 8.5)
     hr.setdefault("created_at", int(time.time()))
     hr.setdefault("last_modified", int(time.time()))
     games_data["horse_race"] = hr
