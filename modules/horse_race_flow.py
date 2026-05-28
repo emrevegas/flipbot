@@ -166,6 +166,8 @@ def _status_text(
     chip_bet: float | None,
     stakes: list[float],
     odds: tuple[float, ...],
+    *,
+    pool_size: int = 0,
 ) -> str:
     total = sum(stakes)
     chip_s = f"**{utils.fmt_pts(chip_bet)}** pts" if chip_bet else "—"
@@ -181,8 +183,7 @@ def _status_text(
         f"**Bets on horses:**\n{stake_block}\n\n"
         f"Select a chip, tap horses to **add** that amount each time. "
         f"You need balance for the **full total**. Then **Start Race**.\n"
-        f"-# Pool: **{len(settings.get('emoji_pool') or [])}** `*_horse` emojis · "
-        f"6 random per race."
+        f"-# Pool: **{pool_size}** `*_horse` emojis · 6 random per race."
     )
 
 
@@ -190,7 +191,10 @@ def _populate_setup_view(view: "HorseRaceSetupView") -> None:
     accent = discord.Colour(0xC9A227)
 
     head = ui.Container(accent_color=accent)
-    head.add_item(ui.TextDisplay(_status_text(view.chip_bet, view.stakes, view.odds)))
+    head.add_item(ui.TextDisplay(_status_text(
+        view.chip_bet, view.stakes, view.odds,
+        pool_size=len(view.settings.get("emoji_pool") or []),
+    )))
     view.add_item(head)
 
     gal = ui.Container(accent_color=accent)
