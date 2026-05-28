@@ -3533,14 +3533,16 @@ async def render_coinflip_gif(
 
     def _paste_sm_emoji(
         base: Image.Image,
-        cx: int,
-        cy: int,
+        cx: int | float,
+        cy: int | float,
         em: Image.Image | None,
     ) -> Image.Image:
         if em is None:
             return base
         out = base.convert("RGBA")
-        out.paste(em, (cx - em.width // 2, cy - em.height // 2), em)
+        x = int(round(cx - em.width / 2))
+        y = int(round(cy - em.height / 2))
+        out.paste(em, (x, y), em)
         return out.convert("RGB")
 
     def _make_bot_frame(
@@ -3619,7 +3621,7 @@ async def render_coinflip_gif(
             streak_lbl = "STREAK"
             draw.text((20, hist_y - 8), streak_lbl, font=font_hist, fill=MUTED)
             shown = hist_sides[: max(0, hist_reveal)]
-            ex = 20 + _tw(draw, streak_lbl, font_hist) + 8
+            ex = int(20 + _tw(draw, streak_lbl, font_hist) + 8)
             for side in shown[-10:]:
                 em = hot_sm if side == "HOT" else cold_sm
                 if em is None:
