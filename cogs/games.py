@@ -142,7 +142,7 @@ async def _resolve_ctx_bet(
                 "slide": "slide",
                 "horse": "horse_race",
                 "horserace": "horse_race",
-                "hr": "horse_race",
+                "race": "horse_race",
                 "market": "market_predict",
                 "predict": "market_predict",
                 "slots": "slots",
@@ -1696,11 +1696,11 @@ class Games(commands.Cog):
 
         await start_slide(ctx, bet)
 
-    # ── Horse Race ──────────────────────────────────────────────────────────
+    # ── Horse Race ────────────────────────────────────────────────────────────
 
-    @commands.command(name="horse", aliases=["horserace", "hr"])
-    async def horse(self, ctx: commands.Context):
-        """`.horse` — 6 lanes, bet select + horse picks, animated race (V2)."""
+    @commands.command(name="horse", aliases=["horserace", "race"])
+    async def horse_race(self, ctx: commands.Context):
+        """`.horse` — 6 lanes, pick bet + horses, fresh odds (up to 20x), animated race."""
         from modules.horse_race_flow import start_horse_race
 
         await start_horse_race(ctx)

@@ -5068,10 +5068,9 @@ async def render_market_predict_gif(
     return buf
 
 
-# ── Horse Race ─────────────────────────────────────────────────────────────────
+# ── Horse Race ────────────────────────────────────────────────────────────────
 
-HORSE_RACE_SPIN_FRAMES = 32
-HORSE_RACE_HOLD_MS = 4_500
+HORSE_RACE_NUM = 6
 
 
 async def render_horse_race_bets_png(
@@ -5082,60 +5081,87 @@ async def render_horse_race_bets_png(
     odds: tuple[float, ...],
     win_pcts: tuple[float, ...],
 ) -> io.BytesIO:
-    """Cases-style lane cards — odds + win % per horse; green = selected."""
-    from Games.horse_race import NUM_HORSES
-
-    W, H = 900, 400
+    """Six lane cards — odds, win %, selected lanes highlighted (cases-style)."""
+    W, H = 720, 340
+    RADIUS = 14
     BG = config.CARD_BG_COLOR
+    BORDER = config.CARD_BORDER
     GOLD = config.CARD_GOLD
     MUTED = config.CARD_TEXT_MUTED
     WHITE = config.CARD_TEXT_PRIMARY
     GREEN = config.CARD_ACCENT_COLOR
-    GRAY = (72, 80, 100)
+    CYAN = config.CARD_HIGHLIGHT
 
-    font_title = _font(14, bold=True)
-    font_lbl = _font(11, bold=True)
-    font_odds = _font(20, bold=True)
-    font_pct = _font(12, bold=True)
+    font_title = _font(16, bold=True)
+    font_lane = _font(12, bold=True)
+    font_mult = _font(20, bold=True)
+    font_pct = _font(11, bold=True)
     font_bet = _font(13, bold=True)
-
-    sel = set(selected or [])
-    card_w, card_h = 268, 148
-    gap_x, gap_y = 16, 14
-    ox, oy = 18, 52
+    font_tag = _font(9, bold=True)
 
     async with aiohttp.ClientSession() as session:
-        em_imgs = [
-            await _load_emoji_rgba(horse_emojis[i] if i < len(horse_emojis) else "🐴", 52, session)
-            for i in range(NUM_HORSES)
-        ]
+        em_imgs: list[Image.Image] = []
+        for i in range(HORSE_RACE_NUM):
+            raw = horse_emojis[i] if i < len(horse_emojis) else "🐴"
+            em_imgs.append(await _load_emoji_rgba(raw, 52, session))
 
     img = Image.new("RGB", (W, H), BG)
     draw = ImageDraw.Draw(img)
-    _rounded_rect(draw, (0, 0, W - 1, H - 1), 16, BG, GOLD, 2)
-    draw.rectangle([0, 10, 5, H - 10], fill=GOLD)
-    draw.text((18, 14), "HORSE RACE  ·  YOUR PICKS", font=font_title, fill=WHITE)
-    bet_line = f"Bet: {_fmt(bet)} pts" if bet else "Bet: —"
-    draw.text((W - 18 - len(bet_line) * 7, 16), bet_line, font=font_bet, fill=MUTED)
+    _rounded_rect(draw, (0, 0, W - 1, H - 1), RADIUS, BG, GOLD, 2)
+    draw.rectangle([0, 12, 5, H - 12], fill=GOLD)
 
-    for i in range(NUM_HORSES):
-        col, row = i % 3, i // 3
-        x1 = ox + col * (card_w + gap_x)
-        y1 = oy + row * (card_h + gap_y)
+    draw.text((18, 14), "🏇 HORSE RACE — YOUR PICKS", font=font_title, fill=WHITE)
+    if bet and bet > 0:
+        picks = ", ".join(f"#{i + 1}" for i in sorted(selected)) if selected else "—"
+        sub = f"Bet {_fmt(bet)} pts  ·  Lanes: {picks}"
+    else:
+        sub = "Select bet amount and horse(s) below"
+    draw.text((18, 38), sub, font=font_bet, fill=MUTED)
+
+    cols, rows = 3, 2
+    pad_x, pad_y = 16, 58
+    gap_x, gap_y = 12, 12
+    card_w = (W - pad_x * 2 - gap_x * (cols - 1)) // cols
+    card_h = (H - pad_y - 16 - gap_y * (rows - 1)) // rows
+
+    sel = set(int(i) for i in selected if 0 <= int(i) < HORSE_RACE_NUM)
+
+    for idx in range(HORSE_RACE_NUM):
+        row, col = divmod(idx, cols)
+        x1 = pad_x + col * (card_w + gap_x)
+        y1 = pad_y + row * (card_h + gap_y)
         x2, y2 = x1 + card_w, y1 + card_h
-        border = GREEN if i in sel else GRAY
-        fill = (18, 32, 28) if i in sel else (20, 26, 42)
-        draw.rounded_rectangle([x1, y1, x2, y2], radius=14, fill=fill, outline=border, width=3)
+        picked = idx in sel
+        outline = GREEN if picked else BORDER
+        fill = (18, 32, 28) if picked else (20, 26, 42)
+        draw.rounded_rectangle(
+            [x1, y1, x2, y2], radius=12, fill=fill, outline=outline, width=3 if picked else 2,
+        )
+        if picked:
+            draw.text((x1 + 10, y1 + 8), "YOUR BET", font=font_tag, fill=GREEN)
 
-        em = em_imgs[i]
-        if em is not None:
-            img.paste(em, (x1 + (card_w - em.width) // 2, y1 + 12), em)
+        lane_txt = f"LANE {idx + 1}"
+        draw.text((x1 + 10, y1 + (24 if picked else 10)), lane_txt, font=font_lane, fill=MUTED)
 
-        draw.text((x1 + 14, y1 + 72), f"HORSE #{i + 1}", font=font_lbl, fill=MUTED)
-        o = odds[i] if i < len(odds) else 2.0
-        draw.text((x1 + 14, y1 + 90), f"{o:.2f}x", font=font_odds, fill=GOLD if i in sel else WHITE)
-        pct = win_pcts[i] if i < len(win_pcts) else 0.0
-        draw.text((x1 + 14, y1 + 118), f"Win {pct:.1f}%", font=font_pct, fill=GREEN if i in sel else MUTED)
+        em = em_imgs[idx]
+        ecx = x1 + card_w // 2
+        ecy = y1 + card_h // 2 - 4
+        layer = img.convert("RGBA")
+        layer.paste(em, (int(ecx - em.width / 2), int(ecy - em.height / 2)), em)
+        img = layer.convert("RGB")
+        draw = ImageDraw.Draw(img)
+
+        mult = odds[idx] if idx < len(odds) else 2.0
+        pct = win_pcts[idx] if idx < len(win_pcts) else 16.0
+        mtxt = f"{mult:.2f}x"
+        ptxt = f"Win {pct:.1f}%"
+        try:
+            mw = draw.textlength(mtxt, font=font_mult)
+            pw = draw.textlength(ptxt, font=font_pct)
+        except Exception:
+            mw, pw = len(mtxt) * 10, len(ptxt) * 7
+        draw.text((x2 - 12 - int(mw), y2 - 44), mtxt, font=font_mult, fill=GOLD if picked else CYAN)
+        draw.text((x2 - 12 - int(pw), y2 - 22), ptxt, font=font_pct, fill=MUTED)
 
     buf = io.BytesIO()
     img.save(buf, "PNG")
@@ -5144,93 +5170,149 @@ async def render_horse_race_bets_png(
 
 
 async def render_horse_race_waiting_png() -> io.BytesIO:
-    W, H = 900, 160
-    BG = (10, 14, 28)
-    PANEL = (16, 22, 40)
-    MUTED = (110, 120, 145)
-    CYAN = (56, 189, 248)
-    WHITE = (245, 247, 255)
+    """Placeholder before race starts."""
+    W, H = 720, 200
+    BG = config.CARD_BG_COLOR
+    BORDER = config.CARD_BORDER
+    MUTED = config.CARD_TEXT_MUTED
+    WHITE = config.CARD_TEXT_PRIMARY
 
     img = Image.new("RGB", (W, H), BG)
     draw = ImageDraw.Draw(img)
-    draw.rectangle([0, 0, W, 44], fill=PANEL)
-    draw.text((18, 12), "RACE TRACK", font=_font(14, bold=True), fill=CYAN)
-    draw.text((18, 58), "Select horses and press Start Race", font=_font(13), fill=MUTED)
-    for lane in range(6):
-        y = 88 + lane * 10
-        draw.line([(40, y), (W - 40, y)], fill=(40, 48, 68), width=2)
-    draw.text((W // 2 - 60, H - 28), "Waiting for start…", font=_font(12, bold=True), fill=WHITE)
+    _rounded_rect(draw, (0, 0, W - 1, H - 1), 14, BG, BORDER, 2)
+
+    for i in range(0, W, 28):
+        c = (28, 36, 58) if (i // 28) % 2 == 0 else (18, 24, 40)
+        draw.rectangle([i, 40, i + 14, H - 40], fill=c)
+
+    title = "READY TO RACE"
+    try:
+        tw = draw.textlength(title, font=_font(22, bold=True))
+    except Exception:
+        tw = len(title) * 12
+    draw.text(((W - tw) / 2, 52), title, font=_font(22, bold=True), fill=WHITE)
+    sub = "Press Start Race when your picks are set"
+    try:
+        sw = draw.textlength(sub, font=_font(13))
+    except Exception:
+        sw = len(sub) * 8
+    draw.text(((W - sw) / 2, 88), sub, font=_font(13), fill=MUTED)
+    draw.text((W - 80, H - 50), "🏁", font=_font(28))
+
     buf = io.BytesIO()
     img.save(buf, "PNG")
     buf.seek(0)
     return buf
 
 
+def _horse_race_ease(t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return 1.0 - (1.0 - t) ** 2.2
+
+
 async def render_horse_race_gif(
     *,
     horse_emojis: list[str],
     winner_index: int,
-    finish_emoji: str = "🏁",
+    finish_emoji: str,
 ) -> io.BytesIO:
-    from Games.horse_race import NUM_HORSES
+    """Six-lane animated race; winner_index finishes first."""
+    import random as _rnd
 
-    W, H = 900, 280
-    BG = (10, 14, 28)
-    PANEL = (16, 22, 40)
-    GOLD = (255, 196, 0)
+    W, H = 760, 340
+    HDR = 48
+    LANE_H = 44
+    START_X = 72
+    FINISH_X = W - 88
+    NUM = HORSE_RACE_NUM
+    winner_index = max(0, min(NUM - 1, int(winner_index)))
+
+    BG = (8, 12, 24)
+    PANEL = (14, 20, 38)
+    MUTED = (110, 120, 145)
     GREEN = (46, 213, 96)
+    GOLD = (255, 196, 0)
+    CYAN = (56, 189, 248)
 
-    lane_h = 36
-    track_top = 56
-    finish_x = W - 70
-    start_x = 58
+    font_hdr = _font(14, bold=True)
+    font_lane = _font(11, bold=True)
 
     async with aiohttp.ClientSession() as session:
-        horses = [
-            await _load_emoji_rgba(horse_emojis[i] if i < len(horse_emojis) else "🐴", 28, session)
-            for i in range(NUM_HORSES)
-        ]
-        finish_img = await _load_emoji_rgba(finish_emoji, 32, session)
+        em_imgs = []
+        for i in range(NUM):
+            raw = horse_emojis[i] if i < len(horse_emojis) else "🐴"
+            em_imgs.append(await _load_emoji_rgba(raw, 36, session))
+        finish_img = await _load_emoji_rgba(finish_emoji or "🏁", 40, session)
 
-    def _frame(progress: float, *, show_winner: bool) -> Image.Image:
+    lane_speed = [_rnd.uniform(0.82, 0.96) for _ in range(NUM)]
+    lane_speed[winner_index] = 1.0
+
+    def progress_at(t: float, lane: int) -> float:
+        return min(1.0, _horse_race_ease(t) * lane_speed[lane] / lane_speed[winner_index])
+
+    SPIN_FRAMES = 28
+    HOLD = 4
+
+    def make_frame(t: float, *, final: bool) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
         draw = ImageDraw.Draw(img)
-        draw.rectangle([0, 0, W, 44], fill=PANEL)
-        draw.text((18, 12), "HORSE RACE  ·  LIVE", font=_font(14, bold=True), fill=GOLD)
-        draw.line([(finish_x, track_top - 8), (finish_x, track_top + NUM_HORSES * lane_h)], fill=GOLD, width=3)
-        if finish_img:
-            img.paste(finish_img, (finish_x - 8, track_top - 6), finish_img)
+        draw.rectangle([0, 0, W, HDR], fill=PANEL)
+        title = "HORSE RACE  •  LIVE"
+        try:
+            tw = draw.textlength(title, font=font_hdr)
+        except Exception:
+            tw = len(title) * 8
+        draw.text(((W - tw) / 2, 14), title, font=font_hdr, fill=CYAN)
 
-        for i in range(NUM_HORSES):
-            ly = track_top + i * lane_h + 4
-            draw.line([(start_x - 20, ly + 12), (finish_x - 10, ly + 12)], fill=(35, 42, 62), width=2)
-            em = horses[i]
-            if em is None:
-                continue
-            if show_winner and i == winner_index:
-                hx = finish_x - 36
-            else:
-                hx = int(start_x + (finish_x - start_x - 40) * min(1.0, progress * (0.75 + 0.08 * i)))
-            img.paste(em, (hx, ly), em)
-            if show_winner and i == winner_index:
-                draw.text((hx - 4, ly - 14), "WIN", font=_font(11, bold=True), fill=GREEN)
+        draw.line([(FINISH_X, HDR), (FINISH_X, H - 8)], fill=GOLD, width=3)
+        layer = img.convert("RGBA")
+        layer.paste(
+            finish_img,
+            (FINISH_X - finish_img.width // 2, HDR + 4),
+            finish_img,
+        )
+        img = layer.convert("RGB")
+        draw = ImageDraw.Draw(img)
+
+        for lane in range(NUM):
+            y = HDR + 10 + lane * LANE_H
+            p = progress_at(t, lane)
+            x = int(START_X + (FINISH_X - START_X - 40) * p)
+            is_win = final and lane == winner_index
+            draw.rounded_rectangle(
+                [24, y, W - 24, y + LANE_H - 6],
+                radius=8,
+                fill=(32, 42, 64),
+                outline=GREEN if is_win else (48, 56, 80),
+                width=3 if is_win else 1,
+            )
+            draw.text((32, y + 12), f"#{lane + 1}", font=font_lane, fill=MUTED if not is_win else GREEN)
+            em = em_imgs[lane]
+            layer = img.convert("RGBA")
+            layer.paste(em, (x, y + (LANE_H - em.height) // 2 - 3), em)
+            img = layer.convert("RGB")
 
         return img
 
     frames: list[Image.Image] = []
     durations: list[int] = []
-    for fi in range(HORSE_RACE_SPIN_FRAMES):
-        t = fi / max(1, HORSE_RACE_SPIN_FRAMES - 1)
-        frames.append(_frame(t, show_winner=False))
-        durations.append(int(55 + t * 90))
-    for _ in range(5):
-        frames.append(_frame(1.0, show_winner=True))
-        durations.append(HORSE_RACE_HOLD_MS // 5)
+    for i in range(SPIN_FRAMES):
+        t = i / max(1, SPIN_FRAMES - 1)
+        frames.append(make_frame(t, final=False))
+        durations.append(int(60 + t * 90))
+    for _ in range(HOLD):
+        frames.append(make_frame(1.0, final=True))
+        durations.append(1200)
 
     buf = io.BytesIO()
     frames[0].save(
-        buf, format="GIF", save_all=True, append_images=frames[1:],
-        duration=durations, loop=0, disposal=2,
+        buf,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=0,
+        disposal=2,
     )
     buf.seek(0)
     return buf

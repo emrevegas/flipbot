@@ -369,7 +369,10 @@ def _ensure_horse_race_game_entry(games_data: dict) -> dict:
     hr.setdefault("name", "Horse Race")
     hr.setdefault("emoji", "🏇")
     hr.setdefault("enabled", True)
-    hr.setdefault("description", "Pick horses, set bet — 6 lanes, odds up to 20x each race.")
+    hr.setdefault(
+        "description",
+        "Pick bet + horses — fresh odds each race (up to 20x). Animated 6-lane race.",
+    )
     hr.setdefault("min_bet", 10)
     hr.setdefault("max_bet", 10000)
     hr.setdefault("house_edge", 5.0)
@@ -4660,28 +4663,78 @@ class DiceRiggedModal(discord.ui.Modal):
         )
 
 
-# ── Coinflip rigged ───────────────────────────────────────────────────────────
-
-class _CoinflipHotColdSetupButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="🔥 Hot/Cold Setup", style=discord.ButtonStyle.primary, row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        games_data = _ensure_coinflip_game_entry(get_data("server/games") or {})
-        set_data("server/games", games_data)
-        cf = games_data.get("coinflip", {})
-        await interaction.response.send_modal(CoinflipHotColdModal(cf))
-
+# ── Horse race ────────────────────────────────────────────────────────────────
 
 class _HorseRaceEmojiSetupButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="🏇 Horse Emojis", style=discord.ButtonStyle.secondary, row=1)
+        super().__init__(label="🏇 Horse Emojis", style=discord.ButtonStyle.primary, row=1)
 
     async def callback(self, interaction: discord.Interaction):
         games_data = _ensure_horse_race_game_entry(get_data("server/games") or {})
+        set_data("server/games", games_data)
         hr = games_data.get("horse_race", {})
-        em = hr.get("emojis") if isinstance(hr.get("emojis"), dict) else {}
-        await interaction.response.send_modal(HorseRaceEmojisModal(em))
+        await interaction.response.send_modal(HorseRaceEmojiModal(hr))
+
+
+class HorseRaceEmojiModal(discord.ui.Modal, title="Horse Race — Lane Emojis"):
+    def __init__(self, current_info: dict):
+        super().__init__(timeout=300)
+        if not isinstance(current_info, dict):
+            current_info = {}
+        em = current_info.get("emojis") if isinstance(current_info.get("emojis"), dict) else {}
+
+        def _def(key: str, fallback: str) -> str:
+            return str(em.get(key) or fallback)
+
+        self.block_a = discord.ui.TextInput(
+            label="Horses 1–3 (one emoji per line)",
+            style=discord.TextStyle.paragraph,
+            placeholder="🐴\n🐎\n🦄",
+            default="\n".join(_def(f"horse_{i}", "🐴") for i in range(1, 4)),
+            max_length=240,
+            required=True,
+        )
+        self.block_b = discord.ui.TextInput(
+            label="Horses 4–6 (one emoji per line)",
+            style=discord.TextStyle.paragraph,
+            placeholder="🐴\n🐎\n🦄",
+            default="\n".join(_def(f"horse_{i}", "🐴") for i in range(4, 7)),
+            max_length=240,
+            required=True,
+        )
+        self.finish_in = discord.ui.TextInput(
+            label="Finish line emoji",
+            placeholder="🏁",
+            default=_def("finish", "🏁"),
+            max_length=80,
+            required=True,
+        )
+        self.add_item(self.block_a)
+        self.add_item(self.block_b)
+        self.add_item(self.finish_in)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from modules.horse_race_flow import save_horse_race_emojis
+
+        def _lines(raw: str) -> list[str]:
+            return [ln.strip() for ln in (raw or "").splitlines() if ln.strip()]
+
+        a = _lines(self.block_a.value)
+        b = _lines(self.block_b.value)
+        horses = (a + ["🐴"] * 3)[:3] + (b + ["🐴"] * 3)[:3]
+        while len(horses) < 6:
+            horses.append("🐴")
+        finish = (self.finish_in.value or "🏁").strip() or "🏁"
+        save_horse_race_emojis(horses=horses[:6], finish=finish)
+        preview = " · ".join(horses[:6])
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Horse Race emojis updated",
+                description=f"**Lanes:** {preview}\n**Finish:** {finish}",
+                color=discord.Color.green(),
+            ),
+            ephemeral=True,
+        )
 
 
 class _HorseRaceRiggedButton(discord.ui.Button):
@@ -4690,55 +4743,17 @@ class _HorseRaceRiggedButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         games_data = _ensure_horse_race_game_entry(get_data("server/games") or {})
+        set_data("server/games", games_data)
         await interaction.response.send_modal(HorseRaceRiggedModal(games_data.get("horse_race", {})))
 
 
-class HorseRaceEmojisModal(discord.ui.Modal, title="Horse Race — Emojis"):
-    def __init__(self, em: dict):
-        super().__init__(timeout=300)
-        lines = [str(em.get(f"horse_{i}", "🐴")) for i in range(1, 7)]
-        self.horses_in = discord.ui.TextInput(
-            label="Horses 1–6 (one emoji per line)",
-            style=discord.TextStyle.paragraph,
-            default="\n".join(lines),
-            max_length=500,
-            required=False,
-        )
-        self.finish_in = discord.ui.TextInput(
-            label="Finish line emoji",
-            default=str(em.get("finish", "🏁")),
-            max_length=80,
-            required=False,
-        )
-        self.add_item(self.horses_in)
-        self.add_item(self.finish_in)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        from modules.horse_race_flow import save_horse_race_emojis
-
-        raw_lines = (self.horses_in.value or "").strip().splitlines()
-        horses = [(ln.strip() or "🐴") for ln in raw_lines[:6]]
-        while len(horses) < 6:
-            horses.append("🐴")
-        finish = (self.finish_in.value or "🏁").strip() or "🏁"
-        save_horse_race_emojis(horses=horses, finish=finish)
-        await interaction.response.send_message(
-            embed=discord.Embed(
-                title="✅ Horse Race emojis updated",
-                description=f"Horses 1–6 + finish **{finish}** saved.",
-                color=discord.Color.green(),
-            ),
-            ephemeral=True,
-        )
-
-
-class HorseRaceRiggedModal(discord.ui.Modal):
+class HorseRaceRiggedModal(discord.ui.Modal, title="Horse Race — Rigged Chance"):
     def __init__(self, current_info: dict):
-        super().__init__(title="Horse Race — Rigged Chance", timeout=300)
+        super().__init__(timeout=300)
         if not isinstance(current_info, dict):
             current_info = {}
         self.rigged_chance_input = discord.ui.TextInput(
-            label="Rigged Chance (%) — unpicked horse wins",
+            label="Rigged % — unpicked lane wins (all picked = lowest odds)",
             placeholder="0.0",
             default=str(current_info.get("rigged_chance", 0.0)),
             required=True,
@@ -4755,7 +4770,7 @@ class HorseRaceRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be 0–100.",
+                    description="Rigged chance must be between 0 and 100.",
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -4765,15 +4780,28 @@ class HorseRaceRiggedModal(discord.ui.Modal):
         hr["rigged_chance"] = round(rigged, 4)
         hr["last_modified"] = int(time.time())
         games_data["horse_race"] = hr
-        set_data("server/games", games_data)
+        await _persist_games_panel(games_data)
         await interaction.response.send_message(
             embed=discord.Embed(
                 title="✅ Horse Race rigged chance updated",
-                description=f"**{rigged}%**",
+                description=f"**Rigged chance:** {rigged}%",
                 color=discord.Color.green(),
             ),
             ephemeral=True,
         )
+
+
+# ── Coinflip rigged ───────────────────────────────────────────────────────────
+
+class _CoinflipHotColdSetupButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🔥 Hot/Cold Setup", style=discord.ButtonStyle.primary, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        games_data = _ensure_coinflip_game_entry(get_data("server/games") or {})
+        set_data("server/games", games_data)
+        cf = games_data.get("coinflip", {})
+        await interaction.response.send_modal(CoinflipHotColdModal(cf))
 
 
 class CoinflipHotColdModal(discord.ui.Modal, title="Coin Flip — Hot & Cold Emojis"):
