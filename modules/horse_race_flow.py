@@ -22,7 +22,7 @@ from Games.horse_race import (
 from modules import flip_balance_cap as bc
 from modules import flip_utils as utils
 from modules import image_gen
-from modules.database import get_data
+from modules.database import get_data, set_data
 from modules.horse_race_media_v2 import BETS_ATTACHMENT, RACE_ATTACHMENT, WAITING_ATTACHMENT
 
 if TYPE_CHECKING:
