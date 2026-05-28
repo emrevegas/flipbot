@@ -287,6 +287,10 @@ async def _resolve_expired_session(user_id: int | str, sess: dict) -> None:
     """Resolve a timed-out session (refund or BJ auto-stand)."""
     if sess["game"] == "blackjack":
         await _bj_auto_stand(int(user_id))
+    elif sess["game"] == "coinflip_prog":
+        from modules.coinflip_flow import progressive_expire_session
+
+        await progressive_expire_session(int(user_id), sess)
     else:
         await _refund_game(user_id, float(sess["bet"]), sess["game"])
 
@@ -779,6 +783,13 @@ def _purge_session_caches(user_id: int | None = None) -> None:
             for k, v in list(hf._hilo_msg_to_user.items()):
                 if v == uid:
                     hf._hilo_msg_to_user.pop(k, None)
+    except Exception:
+        pass
+
+    try:
+        from modules import coinflip_flow as cf
+
+        _scrub_msg_map(cf._cf_prog_msg_to_user)
     except Exception:
         pass
 
@@ -1503,7 +1514,7 @@ class Games(commands.Cog):
 
     @commands.command(name="coinflip", aliases=["cf", "flip"])
     async def coinflip(self, ctx: commands.Context, *args):
-        """`.cf <bet> [hot/cold]` vs bot  •  `.cf @user <bet> hot|cold` PvP"""
+        """`.cf <bet> hot|cold` progressive (1.92× cash out or continue)  •  `.cf @user <bet> hot|cold` PvP"""
         from modules.coinflip_flow import (
             parse_cf_args,
             parse_side,
@@ -1514,7 +1525,7 @@ class Games(commands.Cog):
         opponent, bet, choice = await parse_cf_args(ctx)
         if bet is None or bet <= 0:
             return await ctx.send(embed=_err(
-                "Usage: `.cf <bet> [hot/cold]`  •  `.cf @user <bet> hot|cold`  •  bet: **all** / **half**"
+                "Usage: `.cf <bet> hot|cold` (progressive)  •  `.cf @user <bet> hot|cold`  •  bet: **all** / **half**"
             ))
 
         await db.ensure_user(ctx.author.id, ctx.author.name)

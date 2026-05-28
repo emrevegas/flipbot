@@ -1,7 +1,8 @@
-"""Hot/Cold coin flip — vs bot, PvP challenge, V2 GIF in same message."""
+"""Hot/Cold coin flip — vs bot (progressive streak), PvP challenge, V2 GIF."""
 
 from __future__ import annotations
 
+import json
 import random
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
 
 COINFLIP_GIF = "coinflip.gif"
 SIDES = ("HOT", "COLD")
+PROG_GAME = "coinflip_prog"
+MAX_PROG_STREAK = 20
+_cf_prog_msg_to_user: dict[str, int] = {}
 
 
 def get_coinflip_emojis() -> tuple[str, str]:
@@ -50,6 +54,34 @@ def parse_side(raw: str) -> str | None:
     if u in ("COLD", "C", "ICE", "TAILS", "TAIL"):
         return "COLD"
     return None
+
+
+def get_progressive_step_mult() -> float:
+    games = get_data("server/games") or {}
+    cf = games.get("coinflip") if isinstance(games.get("coinflip"), dict) else {}
+    try:
+        return float(cf.get("progressive_mult", 1.92))
+    except (TypeError, ValueError):
+        return 1.92
+
+
+def progressive_gross(bet: float, streak: int) -> float:
+    if streak <= 0:
+        return 0.0
+    return bet * (get_progressive_step_mult() ** streak)
+
+
+async def progressive_cashout_net(bet: float, streak: int) -> float:
+    gross = progressive_gross(bet, streak)
+    if gross <= 0:
+        return 0.0
+    game_cfg = await db.get_game_config("coinflip")
+    he = float(game_cfg["house_edge"]) if game_cfg else 0.02
+    return gross * (1 - he)
+
+
+def _side_label(side: str, hot_e: str, cold_e: str) -> str:
+    return f"{hot_e} Hot" if side == "HOT" else f"{cold_e} Cold"
 
 
 async def parse_cf_args(ctx: commands.Context) -> tuple[discord.Member | None, float | None, str | None]:
@@ -301,39 +333,45 @@ class CoinflipChallengeLayout(ui.LayoutView):
             pass
 
 
-async def _run_cf_bot_round(
+async def _prog_flip_outcome(
     user_id: int,
-    display_name: str,
     bet: float,
-    choice: str | None,
+    player_side: str,
     *,
-    user: discord.abc.User | None = None,
-    client: discord.Client | None = None,
-    guild_id: int | None = None,
-):
-    player_side = parse_side(choice) if choice else None
-    if not player_side:
-        player_side = random.choice(SIDES)
-    hot_e, cold_e = get_coinflip_emojis()
-    rigged = await bc.should_rig_outcome(user_id, "coinflip", bet, gross=bet * 2)
+    streak_before: int,
+) -> tuple[str, bool]:
+    """Return (result_side, won) for one progressive flip."""
+    prospective = progressive_gross(bet, streak_before + 1)
+    rigged = await bc.should_rig_outcome(
+        user_id, "coinflip", bet, gross=prospective,
+    )
     if rigged:
         result = "COLD" if player_side == "HOT" else "HOT"
     else:
         result = random.choice(SIDES)
+    return result, result == player_side
 
-    won = result == player_side
-    gross = bet * 2 if won else 0
-    net = await _payout(user_id, "coinflip", bet, gross)
-    await _record(
-        user_id, won, bet, net,
-        game_id="coinflip",
-        user=user,
-        client=client,
-        guild_id=guild_id,
-    )
-    lp, ll = (net, 0.0) if won else (0.0, bet)
 
-    gif = await image_gen.render_coinflip_gif(
+async def _prog_render_gif(
+    display_name: str,
+    bet: float,
+    player_side: str,
+    result: str,
+    *,
+    won: bool,
+    streak: int = 0,
+    history: list[str] | None = None,
+    cashout_net: float = 0.0,
+) -> bytes:
+    hot_e, cold_e = get_coinflip_emojis()
+    step = get_progressive_step_mult()
+    if won and cashout_net > 0:
+        lp, ll = cashout_net, 0.0
+    elif won:
+        lp, ll = 0.0, 0.0
+    else:
+        lp, ll = 0.0, bet
+    return await image_gen.render_coinflip_gif(
         mode="bot",
         left_name=display_name,
         right_name="Flip",
@@ -345,8 +383,352 @@ async def _run_cf_bot_round(
         bet=bet,
         left_payout=lp,
         left_lost=ll,
+        progressive=True,
+        streak=streak,
+        step_mult=step,
+        flip_won=won,
+        history_results=list(history or []),
     )
-    return gif, player_side
+
+
+async def _prog_settle_loss(
+    user_id: int,
+    bet: float,
+    *,
+    user: discord.abc.User | None = None,
+    client: discord.Client | None = None,
+    guild_id: int | None = None,
+) -> None:
+    from cogs.games import _earn_rakeback
+
+    await db.clear_game_session(user_id)
+    await db.add_wager(user_id, bet)
+    await _earn_rakeback(user_id, bet, user if isinstance(user, discord.Member) else None)
+    await _record(
+        user_id, False, bet, 0.0,
+        game_id="coinflip",
+        user=user,
+        client=client,
+        guild_id=guild_id,
+    )
+
+
+async def _prog_cashout(
+    user_id: int,
+    bet: float,
+    streak: int,
+    *,
+    user: discord.abc.User | None = None,
+    client: discord.Client | None = None,
+    guild_id: int | None = None,
+) -> tuple[bool, float]:
+    """Credit progressive cashout. Returns (paid, net)."""
+    from cogs.games import _earn_rakeback
+    import modules.balance_cap as balance_cap
+
+    if streak < 1:
+        return False, 0.0
+
+    user_row = await db.get_user(user_id)
+    bal = int(float((user_row or {}).get("balance", 0)))
+    net = await progressive_cashout_net(bet, streak)
+    payout_int = int(net)
+    if balance_cap.should_force_cap_loss(user_id, "real", bal, payout_int, game_id="coinflip"):
+        await _prog_settle_loss(
+            user_id, bet, user=user, client=client, guild_id=guild_id,
+        )
+        return False, 0.0
+
+    if net > 0:
+        await db.add_balance(user_id, net, note="coinflip prog cashout")
+    await db.add_wager(user_id, bet)
+    await _earn_rakeback(user_id, bet, user if isinstance(user, discord.Member) else None)
+    await _record(
+        user_id, True, bet, net,
+        game_id="coinflip",
+        user=user,
+        client=client,
+        guild_id=guild_id,
+    )
+    await db.clear_game_session(user_id)
+    return True, net
+
+
+async def progressive_expire_session(user_id: int, sess: dict) -> None:
+    """Session timeout from games cog — auto-cashout if streak else refund."""
+    state = json.loads(sess.get("state") or "{}")
+    streak = int(state.get("streak") or 0)
+    bet = float(sess["bet"])
+    if streak > 0:
+        await _prog_cashout(user_id, bet, streak)
+    else:
+        await db.add_balance(user_id, bet, note="coinflip prog timeout refund")
+        await db.clear_game_session(user_id)
+
+
+async def progressive_timeout_cashout(
+    user_id: int,
+    message: discord.Message | None,
+) -> None:
+    from cogs.games import _ensure_session_active
+    from modules.coinflip_progressive_v2 import build_progressive_done_layout
+
+    sess = await _ensure_session_active(user_id, PROG_GAME)
+    if not sess:
+        return
+    state = json.loads(sess["state"])
+    streak = int(state.get("streak") or 0)
+    bet = float(sess["bet"])
+    username = state.get("username") or "Player"
+    hot_e = state.get("hot_emoji") or get_coinflip_emojis()[0]
+    cold_e = state.get("cold_emoji") or get_coinflip_emojis()[1]
+
+    if streak > 0:
+        paid, net = await _prog_cashout(user_id, bet, streak)
+        if message:
+            pick = state.get("last_pick", "HOT")
+            result = state.get("last_result", pick)
+            hist = list(state.get("history") or [])
+            gif = await _prog_render_gif(
+                username, bet, pick, result,
+                won=True, streak=streak, history=hist,
+                cashout_net=net if paid else 0.0,
+            )
+            body = (
+                f"⏱️ Timed out — auto **cash out** "
+                f"**{utils.fmt_pts(net)} pts**." if paid else
+                "⏱️ Timed out — cash out blocked (balance cap)."
+            )
+            try:
+                await message.edit(
+                    content=None,
+                    embed=None,
+                    attachments=[discord.File(gif, COINFLIP_GIF)],
+                    view=build_progressive_done_layout(title="Coin Flip", body=body),
+                )
+            except Exception:
+                pass
+    else:
+        await db.add_balance(user_id, bet, note="coinflip prog timeout refund")
+        await db.clear_game_session(user_id)
+        if message:
+            try:
+                await message.edit(
+                    view=build_progressive_done_layout(
+                        title="Coin Flip — Expired",
+                        body="⏱️ No result in time — bet refunded.",
+                        accent=0xE67E22,
+                    ),
+                )
+            except Exception:
+                pass
+
+    if message:
+        _cf_prog_msg_to_user.pop(str(message.id), None)
+
+
+async def _prog_cashout_interaction(interaction: discord.Interaction) -> None:
+    from cogs.games import _ensure_session_active
+
+    uid = interaction.user.id
+    sess = await _ensure_session_active(uid, PROG_GAME)
+    if not sess:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("No active coin flip."), ephemeral=True,
+        )
+    state = json.loads(sess["state"])
+    streak = int(state.get("streak") or 0)
+    if streak < 1:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("Win a flip before cashing out."), ephemeral=True,
+        )
+
+    bet = float(sess["bet"])
+    await interaction.response.defer()
+    paid, net = await _prog_cashout(
+        uid, bet, streak,
+        user=interaction.user,
+        client=interaction.client,
+        guild_id=interaction.guild.id if interaction.guild else None,
+    )
+    pick = state.get("last_pick", "HOT")
+    result = state.get("last_result", pick)
+    hist = list(state.get("history") or [])
+    gif = await _prog_render_gif(
+        interaction.user.display_name, bet, pick, result,
+        won=paid,
+        streak=streak,
+        history=hist,
+        cashout_net=net if paid else 0.0,
+    )
+    _cf_prog_msg_to_user.pop(str(interaction.message.id), None)
+    if paid:
+        body = f"💰 Cashed out **{utils.fmt_pts(net)} pts** (streak **{streak}**)."
+    else:
+        body = "Cash out failed — balance cap applied."
+    await interaction.message.edit(
+        content=None,
+        embed=None,
+        attachments=[discord.File(gif, COINFLIP_GIF)],
+        view=gif_result_layout(
+            COINFLIP_GIF,
+            user_id=uid,
+            bet=bet,
+            rebet_cb=lambda i, u, b: _cf_rebet_from_interaction(
+                i, u, b, pick,
+            ),
+        ),
+    )
+
+
+async def _prog_continue_interaction(
+    interaction: discord.Interaction,
+    player_side: str,
+) -> None:
+    from cogs.games import _ensure_session_active
+    uid = interaction.user.id
+    if interaction.message and str(interaction.message.id) in _cf_prog_msg_to_user:
+        if _cf_prog_msg_to_user[str(interaction.message.id)] != uid:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Not your game."), ephemeral=True,
+            )
+
+    sess = await _ensure_session_active(uid, PROG_GAME)
+    if not sess:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("No active coin flip."), ephemeral=True,
+        )
+
+    state = json.loads(sess["state"])
+    streak = int(state.get("streak") or 0)
+    if streak >= MAX_PROG_STREAK:
+        return await interaction.response.send_message(
+            embed=utils.error_embed(
+                f"Max streak (**{MAX_PROG_STREAK}**) — cash out first.",
+            ),
+            ephemeral=True,
+        )
+
+    bet = float(sess["bet"])
+    hot_e, cold_e = get_coinflip_emojis()
+    await interaction.response.defer()
+
+    result, won = await _prog_flip_outcome(uid, bet, player_side, streak_before=streak)
+    if not won:
+        await _prog_settle_loss(
+            uid, bet,
+            user=interaction.user,
+            client=interaction.client,
+            guild_id=interaction.guild.id if interaction.guild else None,
+        )
+        hist = list(state.get("history") or [])
+        gif = await _prog_render_gif(
+            interaction.user.display_name, bet, player_side, result,
+            won=False, streak=streak, history=hist,
+        )
+        _cf_prog_msg_to_user.pop(str(interaction.message.id), None)
+        await interaction.message.edit(
+            content=None,
+            embed=None,
+            attachments=[discord.File(gif, COINFLIP_GIF)],
+            view=gif_result_layout(
+                COINFLIP_GIF,
+                user_id=uid,
+                bet=bet,
+                rebet_cb=lambda i, u, b: _cf_rebet_from_interaction(
+                    i, u, b, player_side,
+                ),
+            ),
+        )
+        return
+
+    streak += 1
+    state["streak"] = streak
+    state["last_pick"] = player_side
+    state["last_result"] = result
+    state["username"] = interaction.user.display_name
+    state["hot_emoji"] = hot_e
+    state["cold_emoji"] = cold_e
+    await db.set_game_session(uid, PROG_GAME, bet, json.dumps(state))
+
+    hist = list(state.get("history") or [])
+    if result not in hist:
+        hist.append(result)
+    state["history"] = hist
+    gif = await _prog_render_gif(
+        interaction.user.display_name, bet, player_side, result,
+        won=True, streak=streak, history=hist,
+    )
+    layout = await _prog_build_win_layout(uid, bet, streak, player_side, result)
+    layout.attach_message(interaction.message)
+    await interaction.message.edit(
+        content=None,
+        embed=None,
+        attachments=[discord.File(gif, COINFLIP_GIF)],
+        view=layout,
+    )
+
+
+async def _prog_build_win_layout(
+    user_id: int,
+    bet: float,
+    streak: int,
+    player_side: str,
+    result: str,
+):
+    from modules.coinflip_progressive_v2 import build_progressive_win_layout
+
+    hot_e, cold_e = get_coinflip_emojis()
+    net = await progressive_cashout_net(bet, streak)
+    return build_progressive_win_layout(
+        user_id=user_id,
+        cashout_net=int(net),
+        hot_emoji=hot_e,
+        cold_emoji=cold_e,
+        on_cashout=_prog_cashout_interaction,
+        on_flip=_prog_continue_interaction,
+    )
+
+
+async def _prog_first_flip(
+    user_id: int,
+    display_name: str,
+    bet: float,
+    player_side: str,
+    *,
+    user: discord.abc.User | None = None,
+    client: discord.Client | None = None,
+    guild_id: int | None = None,
+) -> tuple[bytes, bool, str, str]:
+    """First flip after bet deducted. Returns gif, won, pick, result."""
+    result, won = await _prog_flip_outcome(user_id, bet, player_side, streak_before=0)
+    hot_e, cold_e = get_coinflip_emojis()
+
+    if not won:
+        await _prog_settle_loss(
+            user_id, bet, user=user, client=client, guild_id=guild_id,
+        )
+        gif = await _prog_render_gif(
+            display_name, bet, player_side, result,
+            won=False, streak=0, history=[],
+        )
+        return gif, False, player_side, result
+
+    state = {
+        "streak": 1,
+        "username": display_name,
+        "hot_emoji": hot_e,
+        "cold_emoji": cold_e,
+        "last_pick": player_side,
+        "last_result": result,
+        "history": [result],
+    }
+    await db.set_game_session(user_id, PROG_GAME, bet, json.dumps(state))
+    gif = await _prog_render_gif(
+        display_name, bet, player_side, result,
+        won=True, streak=1, history=[result],
+    )
+    return gif, True, player_side, result
 
 
 async def _cf_rebet_from_interaction(
@@ -357,51 +739,102 @@ async def _cf_rebet_from_interaction(
 ) -> None:
     from cogs.games import _check_game_interaction
 
+    player_side = parse_side(choice) if choice else None
+    if not player_side:
+        return await interaction.response.send_message(
+            embed=utils.error_embed("Pick **hot** or **cold** to re-bet."), ephemeral=True,
+        )
     if not await _check_game_interaction(interaction, user_id, "coinflip", bet):
         return
     await db.ensure_user(user_id, interaction.user.name)
     await interaction.response.defer()
-    gif, side = await _run_cf_bot_round(
+    await db.add_balance(user_id, -bet, note="coinflip prog bet")
+    hot_e, cold_e = get_coinflip_emojis()
+    await db.set_game_session(
+        user_id,
+        PROG_GAME,
+        bet,
+        json.dumps({
+            "streak": 0,
+            "username": interaction.user.display_name,
+            "hot_emoji": hot_e,
+            "cold_emoji": cold_e,
+        }),
+    )
+    gif, won, side, result = await _prog_first_flip(
         user_id,
         interaction.user.display_name,
         bet,
-        choice,
+        player_side,
         user=interaction.user,
         client=interaction.client,
         guild_id=interaction.guild.id if interaction.guild else None,
     )
-    await interaction.message.edit(
-        content=None,
-        embed=None,
-        attachments=[discord.File(gif, COINFLIP_GIF)],
-        view=gif_result_layout(
+    if won:
+        view = await _prog_build_win_layout(user_id, bet, 1, side, result)
+    else:
+        view = gif_result_layout(
             COINFLIP_GIF,
             user_id=user_id,
             bet=bet,
             rebet_cb=lambda i, u, b: _cf_rebet_from_interaction(i, u, b, side),
-        ),
+        )
+    msg = await interaction.message.edit(
+        content=None,
+        embed=None,
+        attachments=[discord.File(gif, COINFLIP_GIF)],
+        view=view,
     )
+    if won and isinstance(msg, discord.Message):
+        view.attach_message(msg)
+        _cf_prog_msg_to_user[str(msg.id)] = user_id
 
 
 async def start_cf_bot_game(ctx: commands.Context, bet: float, choice: str | None) -> None:
-    gif, side = await _run_cf_bot_round(
+    player_side = parse_side(choice) if choice else None
+    if not player_side:
+        return await ctx.send(embed=utils.error_embed(
+            "Pick **hot** or **cold**: `.cf <bet> hot` or `.cf <bet> cold`",
+        ))
+
+    await db.add_balance(ctx.author.id, -bet, note="coinflip prog bet")
+    hot_e, cold_e = get_coinflip_emojis()
+    await db.set_game_session(
+        ctx.author.id,
+        PROG_GAME,
+        bet,
+        json.dumps({
+            "streak": 0,
+            "username": ctx.author.display_name,
+            "hot_emoji": hot_e,
+            "cold_emoji": cold_e,
+        }),
+    )
+
+    gif, won, side, result = await _prog_first_flip(
         ctx.author.id,
         ctx.author.display_name,
         bet,
-        choice,
+        player_side,
         user=ctx.author,
         client=ctx.bot,
         guild_id=ctx.guild.id if ctx.guild else None,
     )
-    await ctx.send(
-        file=discord.File(gif, COINFLIP_GIF),
-        view=gif_result_layout(
+
+    if won:
+        view = await _prog_build_win_layout(ctx.author.id, bet, 1, side, result)
+    else:
+        view = gif_result_layout(
             COINFLIP_GIF,
             user_id=ctx.author.id,
             bet=bet,
             rebet_cb=lambda i, u, b: _cf_rebet_from_interaction(i, u, b, side),
-        ),
-    )
+        )
+
+    msg = await ctx.send(file=discord.File(gif, COINFLIP_GIF), view=view)
+    if won:
+        view.attach_message(msg)
+        _cf_prog_msg_to_user[str(msg.id)] = ctx.author.id
 
 
 async def start_cf_pvp(ctx: commands.Context, opponent: discord.Member, bet: float, choice: str) -> None:

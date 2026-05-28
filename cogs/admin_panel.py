@@ -331,6 +331,7 @@ def _ensure_coinflip_game_entry(games_data: dict) -> dict:
     coinflip.setdefault("rigged_chance", 0.0)
     coinflip.setdefault("hot_emoji", "🔥")
     coinflip.setdefault("cold_emoji", "❄️")
+    coinflip.setdefault("progressive_mult", 1.92)
     coinflip.setdefault("category", "table_games")
     coinflip.setdefault("created_at", int(time.time()))
     coinflip.setdefault("last_modified", int(time.time()))

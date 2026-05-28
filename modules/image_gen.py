@@ -3431,9 +3431,14 @@ async def render_coinflip_gif(
     left_lost: float = 0.0,
     right_payout: float = 0.0,
     right_lost: float = 0.0,
+    progressive: bool = False,
+    streak: int = 0,
+    step_mult: float = 1.92,
+    flip_won: bool | None = None,
+    history_results: list[str] | None = None,
 ) -> io.BytesIO:
     """Animated Hot/Cold coin flip. mode: 'bot' (2 columns) or 'pvp' (3 columns)."""
-    W, H = 660, 360
+    W, H = (720, 400) if progressive else (660, 360)
     BG = (10, 14, 28)
     PANEL = (16, 22, 40)
     WHITE = (245, 247, 255)
@@ -3451,16 +3456,31 @@ async def render_coinflip_gif(
     font_amt = _font(18, bold=True)
     font_foot = _font(15, bold=True)
     font_usd = _font(13)
+    font_mult_lg = _font(22, bold=True)
+    font_mult_sm = _font(11, bold=True)
+    font_hist = _font(10, bold=True)
 
     async with aiohttp.ClientSession() as session:
         hot_img = await _load_emoji_rgba(hot_emoji, 68, session)
         cold_img = await _load_emoji_rgba(cold_emoji, 68, session)
+        hot_sm = await _load_emoji_rgba(hot_emoji, 30, session) if progressive else None
+        cold_sm = await _load_emoji_rgba(cold_emoji, 30, session) if progressive else None
 
     left_pick = hot_img if left_side == "HOT" else cold_img
     right_pick = hot_img if right_side == "HOT" else cold_img
     result_img = hot_img if result == "HOT" else cold_img
+    pick_sm = hot_sm if left_side == "HOT" else cold_sm
+    res_sm = hot_sm if result == "HOT" else cold_sm
 
-    left_won = left_payout > 0 and left_lost <= 0
+    hist_sides = list(history_results or [])
+    cur_mult = (step_mult ** streak) if streak > 0 else 1.0
+    nxt_mult = step_mult ** (streak + 1) if streak >= 0 else step_mult
+
+    left_won = (
+        bool(flip_won)
+        if progressive and flip_won is not None
+        else (left_payout > 0 and left_lost <= 0)
+    )
     right_won = right_payout > 0 and right_lost <= 0
 
     def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
@@ -3479,9 +3499,10 @@ async def render_coinflip_gif(
         left_cx = W // 5
         center_cx = W // 2
         right_cx = 4 * W // 5
-        card_cy = 158
-        col_hdr_y = 72
+        card_cy = 172 if progressive else 158
+        col_hdr_y = 78 if progressive else 72
         center_card_w, center_card_h = 120, 110
+        hist_y = H - 58 if progressive else H
     else:
         left_cx = W // 4
         center_cx = W // 2
@@ -3510,17 +3531,50 @@ async def render_coinflip_gif(
         draw.text((cx - w1 / 2, y), wl, font=font_lbl, fill=wcol)
         draw.text((cx - w2 / 2, y + h1 + gap), pline, font=font_amt, fill=pcol)
 
-    def _make_bot_frame(*, spin_hot: bool, final: bool) -> Image.Image:
+    def _paste_sm_emoji(
+        base: Image.Image,
+        cx: int,
+        cy: int,
+        em: Image.Image | None,
+    ) -> Image.Image:
+        if em is None:
+            return base
+        out = base.convert("RGBA")
+        out.paste(em, (cx - em.width // 2, cy - em.height // 2), em)
+        return out.convert("RGB")
+
+    def _make_bot_frame(
+        *,
+        spin_hot: bool,
+        final: bool,
+        hist_reveal: int = 0,
+    ) -> Image.Image:
         img = Image.new("RGB", (W, H), BG)
         draw = ImageDraw.Draw(img)
         draw.rectangle([0, 0, W, 44], fill=PANEL)
-        title = "HOT & COLD  •  COIN FLIP"
+        title = (
+            "PROGRESSIVE  •  HOT & COLD"
+            if progressive
+            else "HOT & COLD  •  COIN FLIP"
+        )
         tw = _tw(draw, title, font_hdr)
         draw.text(((W - tw) / 2, 12), title, font=font_hdr, fill=CYAN)
 
         for label, cx in (("Choice", left_cx), ("Outcome", right_cx)):
             lw = _tw(draw, label, font_cap)
             draw.text((cx - lw / 2, col_hdr_y), label, font=font_cap, fill=MUTED)
+
+        if progressive and pick_sm is not None and res_sm is not None:
+            row_y = col_hdr_y + 20
+            last_lbl = "LAST"
+            draw.text((center_cx - 100, row_y), last_lbl, font=font_hist, fill=MUTED)
+            arrow = "→"
+            aw = _tw(draw, arrow, font_hist)
+            ax = center_cx - aw // 2
+            draw.text((ax, row_y + 2), arrow, font=font_hist, fill=WHITE)
+            img = _paste_sm_emoji(img, center_cx - aw // 2 - pick_sm.width // 2 - 14, row_y + 14, pick_sm)
+            if final:
+                img = _paste_sm_emoji(img, center_cx + aw // 2 + res_sm.width // 2 + 14, row_y + 14, res_sm)
 
         spin_img = hot_img if spin_hot else cold_img
         left_border = (GREEN if left_won else RED) if final else (58, 66, 88)
@@ -3542,7 +3596,6 @@ async def render_coinflip_gif(
                 card_w=center_card_w, card_h=center_card_h,
                 border=(72, 80, 100),
             )
-            # Outcome slot (revealed on final frame)
             img, _ = _coinflip_paste_card(
                 img, right_cx, card_cy, cold_img,
                 card_w=CARD_W, card_h=CARD_H, border=(42, 48, 64),
@@ -3551,10 +3604,36 @@ async def render_coinflip_gif(
 
         draw = ImageDraw.Draw(img)
 
+        if progressive:
+            box_x1, box_y1 = W - 200, 52
+            box_x2, box_y2 = W - 14, 118
+            draw.rounded_rectangle(
+                [box_x1, box_y1, box_x2, box_y2], radius=10,
+                fill=(22, 30, 52), outline=(58, 66, 88),
+            )
+            draw.text((box_x1 + 12, box_y1 + 8), "CURRENT", font=font_mult_sm, fill=MUTED)
+            draw.text((box_x1 + 12, box_y1 + 24), f"{cur_mult:.2f}x", font=font_mult_lg, fill=GOLD)
+            draw.text((box_x1 + 12, box_y1 + 54), "NEXT", font=font_mult_sm, fill=MUTED)
+            draw.text((box_x1 + 12, box_y1 + 68), f"{nxt_mult:.2f}x", font=font_mult_lg, fill=CYAN)
+
+            streak_lbl = "STREAK"
+            draw.text((20, hist_y - 8), streak_lbl, font=font_hist, fill=MUTED)
+            shown = hist_sides[: max(0, hist_reveal)]
+            ex = 20 + _tw(draw, streak_lbl, font_hist) + 8
+            for side in shown[-10:]:
+                em = hot_sm if side == "HOT" else cold_sm
+                if em is None:
+                    continue
+                img = _paste_sm_emoji(img, ex + em.width // 2, hist_y + 10, em)
+                ex += em.width + 6
+
         if final:
             wl = "WIN" if left_won else "LOSE"
             wcol = GREEN if left_won else RED
-            if left_won:
+            if progressive and left_won and left_payout <= 0:
+                pline = f"Streak {streak}  •  {cur_mult:.2f}x"
+                pcol = GOLD
+            elif left_won:
                 pline = f"+{_fmt(left_payout)} pts"
                 pcol = GREEN
             else:
@@ -3682,6 +3761,8 @@ async def render_coinflip_gif(
     durations: list[int] = []
     import random as _rnd
 
+    prev_hist = max(0, len(hist_sides) - 1) if progressive else 0
+
     for i in range(COINFLIP_SPIN_FRAMES):
         t = i / max(1, COINFLIP_SPIN_FRAMES - 1)
         eased = _coinflip_ease_out(t)
@@ -3691,11 +3772,29 @@ async def render_coinflip_gif(
             spin_hot = (result == "HOT") if _rnd.random() < eased else (i % 2 == 0)
         else:
             spin_hot = i % 2 == 0
-        frames.append(make_frame(spin_hot=spin_hot, final=False))
+        if mode == "bot" and progressive:
+            frames.append(_make_bot_frame(
+                spin_hot=spin_hot, final=False, hist_reveal=prev_hist,
+            ))
+        else:
+            frames.append(make_frame(spin_hot=spin_hot, final=False))
         durations.append(int(75 + eased * 145))
-    for _ in range(4):
-        frames.append(make_frame(spin_hot=(result == "HOT"), final=True))
-        durations.append(COINFLIP_HOLD_MS // 4)
+
+    hold_n = 4
+    for fi in range(hold_n):
+        if mode == "bot" and progressive:
+            target = len(hist_sides)
+            if target > prev_hist:
+                hr = prev_hist + round((target - prev_hist) * (fi + 1) / hold_n)
+                hr = min(target, max(prev_hist + 1, hr))
+            else:
+                hr = target
+            frames.append(_make_bot_frame(
+                spin_hot=(result == "HOT"), final=True, hist_reveal=hr,
+            ))
+        else:
+            frames.append(make_frame(spin_hot=(result == "HOT"), final=True))
+        durations.append(COINFLIP_HOLD_MS // hold_n)
 
     buf = io.BytesIO()
     frames[0].save(
