@@ -5076,12 +5076,12 @@ HORSE_RACE_NUM = 6
 async def render_horse_race_bets_png(
     *,
     horse_emojis: list[str],
-    selected: list[int],
-    bet: float | None,
+    stakes: list[float],
     odds: tuple[float, ...],
     win_pcts: tuple[float, ...],
+    chip_bet: float | None = None,
 ) -> io.BytesIO:
-    """Six lane cards — odds, win %, selected lanes highlighted (cases-style)."""
+    """Six lane cards — odds, win %, stake per lane (cases-style)."""
     W, H = 720, 340
     RADIUS = 14
     BG = config.CARD_BG_COLOR
@@ -5110,12 +5110,13 @@ async def render_horse_race_bets_png(
     _rounded_rect(draw, (0, 0, W - 1, H - 1), RADIUS, BG, GOLD, 2)
     draw.rectangle([0, 12, 5, H - 12], fill=GOLD)
 
+    total_stake = sum(float(s) for s in stakes[:HORSE_RACE_NUM])
     draw.text((18, 14), "🏇 HORSE RACE — YOUR PICKS", font=font_title, fill=WHITE)
-    if bet and bet > 0:
-        picks = ", ".join(f"#{i + 1}" for i in sorted(selected)) if selected else "—"
-        sub = f"Bet {_fmt(bet)} pts  ·  Lanes: {picks}"
+    chip_s = f"{_fmt(chip_bet)}" if chip_bet and chip_bet > 0 else "—"
+    if total_stake > 0:
+        sub = f"Total staked {_fmt(total_stake)} pts  ·  Chip +{chip_s} per tap"
     else:
-        sub = "Select bet amount and horse(s) below"
+        sub = f"Select chip in menu, then tap horses (+{chip_s} each tap)"
     draw.text((18, 38), sub, font=font_bet, fill=MUTED)
 
     cols, rows = 3, 2
@@ -5124,21 +5125,21 @@ async def render_horse_race_bets_png(
     card_w = (W - pad_x * 2 - gap_x * (cols - 1)) // cols
     card_h = (H - pad_y - 16 - gap_y * (rows - 1)) // rows
 
-    sel = set(int(i) for i in selected if 0 <= int(i) < HORSE_RACE_NUM)
-
     for idx in range(HORSE_RACE_NUM):
         row, col = divmod(idx, cols)
         x1 = pad_x + col * (card_w + gap_x)
         y1 = pad_y + row * (card_h + gap_y)
         x2, y2 = x1 + card_w, y1 + card_h
-        picked = idx in sel
+        lane_stake = float(stakes[idx]) if idx < len(stakes) else 0.0
+        picked = lane_stake > 0
         outline = GREEN if picked else BORDER
         fill = (18, 32, 28) if picked else (20, 26, 42)
         draw.rounded_rectangle(
             [x1, y1, x2, y2], radius=12, fill=fill, outline=outline, width=3 if picked else 2,
         )
         if picked:
-            draw.text((x1 + 10, y1 + 8), "YOUR BET", font=font_tag, fill=GREEN)
+            bet_lbl = f"BET {_fmt(lane_stake)}"
+            draw.text((x1 + 10, y1 + 8), bet_lbl, font=font_tag, fill=GREEN)
 
         lane_txt = f"LANE {idx + 1}"
         draw.text((x1 + 10, y1 + (24 if picked else 10)), lane_txt, font=font_lane, fill=MUTED)

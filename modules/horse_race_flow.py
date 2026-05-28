@@ -1,4 +1,4 @@
-"""Horse race — V2 layout, bet select, toggle horse buttons, race GIF."""
+"""Horse race — V2 layout, chip select, per-horse cumulative stakes, race GIF."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from Games.horse_race import (
     bet_tiers,
     gross_payout,
     pick_winner_index,
-    roll_race_odds,
     win_chances,
 )
 from modules import flip_balance_cap as bc
@@ -52,6 +51,8 @@ def get_horse_race_settings() -> dict:
 
 
 def _roll_odds(settings: dict) -> tuple[float, ...]:
+    from Games.horse_race import roll_race_odds
+
     return roll_race_odds(
         favorite_min=settings.get("favorite_min", 1.10),
         favorite_max=settings.get("favorite_max", 1.35),
@@ -60,6 +61,10 @@ def _roll_odds(settings: dict) -> tuple[float, ...]:
         mid_min=settings.get("mid_min", 2.0),
         mid_max=settings.get("mid_max", 8.5),
     )
+
+
+def _empty_stakes() -> list[float]:
+    return [0.0] * NUM_HORSES
 
 
 def save_horse_race_emojis(
@@ -98,17 +103,17 @@ async def _build_attachments(
     settings: dict,
     odds: tuple[float, ...],
     win_pcts: tuple[float, ...],
-    selected: list[int],
-    bet: float | None,
+    stakes: list[float],
+    chip_bet: float | None,
     *,
     race_gif: io.BytesIO | None = None,
 ) -> list[discord.File]:
     bets_buf = await image_gen.render_horse_race_bets_png(
         horse_emojis=settings["horse_emojis"],
-        selected=selected,
-        bet=bet,
+        stakes=stakes,
         odds=odds,
         win_pcts=win_pcts,
+        chip_bet=chip_bet,
     )
     files = [discord.File(io.BytesIO(bets_buf.getvalue()), filename=BETS_ATTACHMENT)]
     if race_gif is not None:
@@ -119,29 +124,33 @@ async def _build_attachments(
     return files
 
 
-def _status_text(bet: float | None, picks: list[int], odds: tuple[float, ...]) -> str:
-    bet_s = f"**{utils.fmt_pts(bet)}** pts" if bet else "—"
-    if picks:
-        lanes = ", ".join(
-            f"**#{i + 1}** ({odds[i]:.2f}x)" for i in sorted(picks)
-        )
-    else:
-        lanes = "—"
+def _status_text(
+    chip_bet: float | None,
+    stakes: list[float],
+    odds: tuple[float, ...],
+) -> str:
+    total = sum(stakes)
+    chip_s = f"**{utils.fmt_pts(chip_bet)}** pts" if chip_bet else "—"
+    lines = []
+    for i, amt in enumerate(stakes):
+        if amt > 0:
+            lines.append(f"**#{i + 1}** — **{utils.fmt_pts(amt)}** pts ({odds[i]:.2f}x)")
+    stake_block = "\n".join(lines) if lines else "—"
     return (
         f"## 🏇 Horse Race\n"
-        f"**Bet:** {bet_s}\n"
-        f"**Your horses:** {lanes}\n\n"
-        f"Each race: **one favorite** (~1.10x), **one longshot** (10–20x), four mid lanes. "
-        f"Tap horses (gray → green), pick bet, **Start Race**."
+        f"**Chip (per tap):** {chip_s}\n"
+        f"**Total staked:** **{utils.fmt_pts(total)}** pts\n"
+        f"**Bets on horses:**\n{stake_block}\n\n"
+        f"Select a chip, tap horses to **add** that amount each time. "
+        f"You need balance for the **full total**. Then **Start Race**."
     )
 
 
 def _populate_setup_view(view: "HorseRaceSetupView") -> None:
-    """Build V2 sections — separators between gallery / bet / horses / start."""
     accent = discord.Colour(0xC9A227)
 
     head = ui.Container(accent_color=accent)
-    head.add_item(ui.TextDisplay(_status_text(view.bet, view.picks, view.odds)))
+    head.add_item(ui.TextDisplay(_status_text(view.chip_bet, view.stakes, view.odds)))
     view.add_item(head)
 
     gal = ui.Container(accent_color=accent)
@@ -160,7 +169,7 @@ def _populate_setup_view(view: "HorseRaceSetupView") -> None:
 
     bet_c = ui.Container(accent_color=accent)
     bet_c.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
-    bet_c.add_item(ui.TextDisplay("### Bet amount"))
+    bet_c.add_item(ui.TextDisplay("### Chip amount (added per horse tap)"))
     row_bet = ui.ActionRow()
     row_bet.add_item(HorseRaceBetSelect(view.tiers, view.user_id))
     bet_c.add_item(row_bet)
@@ -168,7 +177,7 @@ def _populate_setup_view(view: "HorseRaceSetupView") -> None:
 
     horse_c = ui.Container(accent_color=accent)
     horse_c.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
-    horse_c.add_item(ui.TextDisplay("### Pick horse(s)"))
+    horse_c.add_item(ui.TextDisplay("### Tap horse to add chip"))
     row1 = ui.ActionRow()
     row2 = ui.ActionRow()
     for i in range(NUM_HORSES):
@@ -176,7 +185,7 @@ def _populate_setup_view(view: "HorseRaceSetupView") -> None:
             index=i,
             emoji_raw=view.settings["horse_emojis"][i],
             odds=view.odds[i],
-            selected=i in view.picks,
+            stake=view.stakes[i],
         )
         (row1 if i < 3 else row2).add_item(btn)
     horse_c.add_item(row1)
@@ -187,6 +196,7 @@ def _populate_setup_view(view: "HorseRaceSetupView") -> None:
     go_c.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
     row_go = ui.ActionRow()
     row_go.add_item(HorseRaceStartButton())
+    row_go.add_item(HorseRaceClearBetsButton())
     go_c.add_item(row_go)
     view.add_item(go_c)
 
@@ -194,11 +204,15 @@ def _populate_setup_view(view: "HorseRaceSetupView") -> None:
 class HorseRaceBetSelect(ui.Select):
     def __init__(self, tiers: list[int], owner_id: int):
         opts = [
-            discord.SelectOption(label=f"{t:,} pts", value=str(t))
+            discord.SelectOption(
+                label=f"{t:,} pts per tap",
+                value=str(t),
+                description="Added to a horse each time you tap it",
+            )
             for t in tiers[:25]
         ]
         super().__init__(
-            placeholder="Select bet amount…",
+            placeholder="Select chip amount…",
             options=opts,
             min_values=1,
             max_values=1,
@@ -211,15 +225,27 @@ class HorseRaceBetSelect(ui.Select):
             return await interaction.response.send_message(
                 embed=utils.error_embed("Not your race."), ephemeral=True,
             )
-        view.bet = float(self.values[0])
-        await view.refresh(interaction)
+        view.chip_bet = float(self.values[0])
+        await view.refresh(
+            interaction,
+            ephemeral_confirm=(
+                f"Chip set to **{utils.fmt_pts(view.chip_bet)}** pts — "
+                "each horse tap adds this amount."
+            ),
+        )
 
 
 class HorsePickButton(ui.Button):
-    def __init__(self, *, index: int, emoji_raw: str, odds: float, selected: bool):
+    def __init__(self, *, index: int, emoji_raw: str, odds: float, stake: float):
+        if stake > 0:
+            label = f"#{index + 1} · {utils.fmt_pts(stake)}"
+            style = discord.ButtonStyle.success
+        else:
+            label = f"#{index + 1} · {odds:.1f}x"
+            style = discord.ButtonStyle.secondary
         super().__init__(
-            label=f"#{index + 1} · {odds:.1f}x",
-            style=discord.ButtonStyle.success if selected else discord.ButtonStyle.secondary,
+            label=label[:80],
+            style=style,
             emoji=_parse_button_emoji(emoji_raw),
         )
         self.horse_index = index
@@ -230,12 +256,49 @@ class HorsePickButton(ui.Button):
             return await interaction.response.send_message(
                 embed=utils.error_embed("Not your race."), ephemeral=True,
             )
+        if view.chip_bet is None or view.chip_bet <= 0:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Select a chip amount first."),
+                ephemeral=True,
+            )
+        chip = float(view.chip_bet)
+        new_total = view.total_stake() + chip
+        user = await db.get_user(view.user_id)
+        bal = float((user or {}).get("balance", 0))
+        if bal < new_total:
+            return await interaction.response.send_message(
+                embed=utils.error_embed(
+                    f"Insufficient balance. Need **{utils.fmt_pts(new_total)}** pts "
+                    f"(you have **{utils.fmt_pts(bal)}**)."
+                ),
+                ephemeral=True,
+            )
         i = self.horse_index
-        if i in view.picks:
-            view.picks.remove(i)
-        else:
-            view.picks.append(i)
-            view.picks.sort()
+        view.stakes[i] += chip
+        await view.refresh(
+            interaction,
+            ephemeral_confirm=(
+                f"**#{i + 1}** — **{utils.fmt_pts(view.stakes[i])}** pts "
+                f"(+{utils.fmt_pts(chip)}). Total: **{utils.fmt_pts(view.total_stake())}** pts."
+            ),
+        )
+
+
+class HorseRaceClearBetsButton(ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Clear Bets",
+            style=discord.ButtonStyle.secondary,
+            emoji="🗑️",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view: HorseRaceSetupView = self.view  # type: ignore[assignment]
+        if interaction.user.id != view.user_id:
+            return await interaction.response.send_message(
+                embed=utils.error_embed("Not your race."), ephemeral=True,
+            )
+        view.stakes = _empty_stakes()
         await view.refresh(interaction)
 
 
@@ -274,7 +337,9 @@ class HorseRacePlayAgainButton(ui.Button):
         tiers = bet_tiers(min_b, max_b, 25)
         odds = _roll_odds(settings)
         win_pcts = win_chances(odds)
-        files = await _build_attachments(settings, odds, win_pcts, [], None)
+        files = await _build_attachments(
+            settings, odds, win_pcts, _empty_stakes(), None,
+        )
         view = HorseRaceSetupView(
             self.owner_id, settings, tiers, odds=odds, win_pcts=win_pcts,
         )
@@ -291,8 +356,8 @@ class HorseRaceSetupView(ui.LayoutView):
         *,
         odds: tuple[float, ...] | None = None,
         win_pcts: tuple[float, ...] | None = None,
-        bet: float | None = None,
-        picks: list[int] | None = None,
+        chip_bet: float | None = None,
+        stakes: list[float] | None = None,
         racing: bool = False,
     ):
         super().__init__(timeout=180)
@@ -301,41 +366,67 @@ class HorseRaceSetupView(ui.LayoutView):
         self.tiers = tiers
         self.odds = odds or _roll_odds(settings)
         self.win_pcts = win_pcts or win_chances(self.odds)
-        self.bet = bet
-        self.picks = list(picks or [])
+        self.chip_bet = chip_bet
+        self.stakes = list(stakes) if stakes else _empty_stakes()
+        if len(self.stakes) < NUM_HORSES:
+            self.stakes.extend([0.0] * (NUM_HORSES - len(self.stakes)))
+        self.stakes = self.stakes[:NUM_HORSES]
         self._racing = racing
         _populate_setup_view(self)
 
-    async def refresh(self, interaction: discord.Interaction) -> None:
+    def total_stake(self) -> float:
+        return sum(self.stakes)
+
+    def staked_lanes(self) -> list[int]:
+        return [i for i, s in enumerate(self.stakes) if s > 0]
+
+    async def refresh(
+        self,
+        interaction: discord.Interaction,
+        *,
+        ephemeral_confirm: str | bool = False,
+    ) -> None:
         if self._racing:
             return
-        await interaction.response.defer()
+        if ephemeral_confirm:
+            await interaction.response.send_message(
+                ephemeral_confirm if isinstance(ephemeral_confirm, str) else "Updated.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.defer()
         files = await _build_attachments(
-            self.settings, self.odds, self.win_pcts, self.picks, self.bet,
+            self.settings, self.odds, self.win_pcts, self.stakes, self.chip_bet,
         )
         new_view = HorseRaceSetupView(
             self.user_id, self.settings, self.tiers,
             odds=self.odds, win_pcts=self.win_pcts,
-            bet=self.bet, picks=self.picks,
+            chip_bet=self.chip_bet, stakes=list(self.stakes),
         )
-        await interaction.message.edit(
-            content=None, embed=None, attachments=files, view=new_view,
-        )
+        if ephemeral_confirm:
+            await interaction.message.edit(
+                content=None, embed=None, attachments=files, view=new_view,
+            )
+        else:
+            await interaction.message.edit(
+                content=None, embed=None, attachments=files, view=new_view,
+            )
         _horse_msg_to_user[str(interaction.message.id)] = self.user_id
 
     async def start_race(self, interaction: discord.Interaction) -> None:
-        from cogs.games import _check_game_interaction, _earn_rakeback, _payout, _record
+        from cogs.games import _check_game_interaction, _earn_rakeback, _record
 
-        if not self.picks:
+        total = self.total_stake()
+        staked = self.staked_lanes()
+        if not staked:
             return await interaction.response.send_message(
-                embed=utils.error_embed("Select at least one horse."), ephemeral=True,
-            )
-        if self.bet is None or self.bet <= 0:
-            return await interaction.response.send_message(
-                embed=utils.error_embed("Select a bet amount."), ephemeral=True,
+                embed=utils.error_embed(
+                    "Place at least one bet — select chip, then tap horse(s).",
+                ),
+                ephemeral=True,
             )
         if not await _check_game_interaction(
-            interaction, self.user_id, GAME_ID, self.bet,
+            interaction, self.user_id, GAME_ID, total,
         ):
             return
 
@@ -343,49 +434,57 @@ class HorseRaceSetupView(ui.LayoutView):
         self.stop()
         await interaction.response.defer()
 
-        bet = float(self.bet)
-        picks = list(self.picks)
+        stakes = list(self.stakes)
         settings = self.settings
         odds = self.odds
 
         await db.ensure_user(self.user_id, interaction.user.name)
+        await db.add_balance(self.user_id, -total, note="horse_race bets")
 
-        prospective = max(gross_payout(bet, i, odds) for i in picks)
-        rigged = await bc.should_rig_outcome(
-            self.user_id, GAME_ID, bet, gross=prospective,
+        prospective = max(
+            gross_payout(stakes[i], i, odds) for i in staked
         )
-        winner = pick_winner_index(odds, rig_lose=rigged, player_picks=picks)
-        won = winner in picks
-        gross = gross_payout(bet, winner, odds) if won else 0.0
+        rigged = await bc.should_rig_outcome(
+            self.user_id, GAME_ID, total, gross=prospective,
+        )
+        winner = pick_winner_index(
+            odds, rig_lose=rigged, player_picks=staked,
+        )
+        lane_bet = stakes[winner]
+        won = lane_bet > 0
+        gross = gross_payout(lane_bet, winner, odds) if won else 0.0
+
+        game_cfg = await db.get_game_config(GAME_ID)
+        he = float(game_cfg["house_edge"]) if game_cfg else 0.05
+        net = gross * (1 - he) if gross > 0 else 0.0
+
+        if won and net > 0:
+            await db.add_balance(self.user_id, net, note="horse_race win")
+        await db.add_wager(self.user_id, total)
+        await _earn_rakeback(
+            self.user_id, total,
+            interaction.user if isinstance(interaction.user, discord.Member) else None,
+        )
+        await _record(
+            self.user_id, won, total, net if won else 0.0,
+            game_id=GAME_ID,
+            user=interaction.user,
+            client=interaction.client,
+            guild_id=interaction.guild.id if interaction.guild else None,
+        )
 
         if won:
-            net = await _payout(self.user_id, GAME_ID, bet, gross)
-            await _record(
-                self.user_id, True, bet, net,
-                game_id=GAME_ID,
-                user=interaction.user,
-                client=interaction.client,
-                guild_id=interaction.guild.id if interaction.guild else None,
-            )
             footer = (
                 f"✅ **Horse #{winner + 1}** won at **{odds[winner]:.2f}x**! "
-                f"Payout **{utils.fmt_pts(net)}** pts."
+                f"Bet on lane: **{utils.fmt_pts(lane_bet)}** pts → "
+                f"payout **{utils.fmt_pts(net)}** pts "
+                f"(total staked **{utils.fmt_pts(total)}** pts)."
             )
         else:
-            await db.add_balance(self.user_id, -bet, note="horse_race bet")
-            await db.add_wager(self.user_id, bet)
-            await _earn_rakeback(
-                self.user_id, bet,
-                interaction.user if isinstance(interaction.user, discord.Member) else None,
+            footer = (
+                f"❌ **Horse #{winner + 1}** won ({odds[winner]:.2f}x). "
+                f"Lost **{utils.fmt_pts(total)}** pts total."
             )
-            await _record(
-                self.user_id, False, bet, 0.0,
-                game_id=GAME_ID,
-                user=interaction.user,
-                client=interaction.client,
-                guild_id=interaction.guild.id if interaction.guild else None,
-            )
-            footer = f"❌ **Horse #{winner + 1}** won ({odds[winner]:.2f}x). Your picks lost."
 
         race_gif = await image_gen.render_horse_race_gif(
             horse_emojis=settings["horse_emojis"],
@@ -393,12 +492,12 @@ class HorseRaceSetupView(ui.LayoutView):
             finish_emoji=settings["finish_emoji"],
         )
         files = await _build_attachments(
-            settings, odds, self.win_pcts, picks, bet, race_gif=race_gif,
+            settings, odds, self.win_pcts, stakes, self.chip_bet, race_gif=race_gif,
         )
 
         result_view = _HorseRaceResultView(
             self.user_id, settings, self.tiers,
-            header=footer, picks=picks, bet=bet,
+            header=footer, stakes=stakes, chip_bet=self.chip_bet,
             odds=odds, win_pcts=self.win_pcts,
         )
         await interaction.message.edit(
@@ -415,8 +514,8 @@ class _HorseRaceResultView(ui.LayoutView):
         tiers: list[int],
         *,
         header: str,
-        picks: list[int],
-        bet: float,
+        stakes: list[float],
+        chip_bet: float | None,
         odds: tuple[float, ...],
         win_pcts: tuple[float, ...],
     ):
@@ -474,7 +573,9 @@ async def start_horse_race(ctx: commands.Context) -> None:
     win_pcts = win_chances(odds)
 
     await db.ensure_user(ctx.author.id, ctx.author.name)
-    files = await _build_attachments(settings, odds, win_pcts, [], None)
+    files = await _build_attachments(
+        settings, odds, win_pcts, _empty_stakes(), None,
+    )
     view = HorseRaceSetupView(
         ctx.author.id, settings, tiers, odds=odds, win_pcts=win_pcts,
     )

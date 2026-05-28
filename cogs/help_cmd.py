@@ -25,7 +25,7 @@ CATEGORIES = {
             ("Hi-Lo", f"`{PREFIX}hilo <amount>`\nAnimated cards — **Higher** / **Lower** / **Cash Out** buttons on the game message."),
             ("Limbo", f"`{PREFIX}limbo <amount> <target_multiplier>`\nAnimated multiplier — land at or above your target to win."),
             ("Slide", f"`{PREFIX}slide <amount>`\nMultiplier strip slides left — pointer picks your payout (GIF result holds 20s)."),
-            ("Horse Race", f"`{PREFIX}horse` — 6 lanes, **bet select** (25 tiers), pick horse(s), **Start Race**.\nFresh odds each round (up to **20x**). Emojis in Game Management."),
+            ("Horse Race", f"`{PREFIX}horse` — pick **chip** (25 tiers), tap horses to **add** that bet per lane.\nTotal balance must cover **all stakes**. **Start Race** when ready."),
             ("Market Predict", f"`{PREFIX}market <amount> up|down` (or `u|d`)\nCenter line chart — if rigged, animation flips against your bet.\nWin pays ~**1.96x** (after 2% fee)."),
             ("Jackpot", f"In the **Jackpot room** (admin-set channel):\n"
                          f"`{PREFIX}jp <bet>` or `{PREFIX}jackpot <bet>` — join the pool (chance = your bet ÷ total).\n"
