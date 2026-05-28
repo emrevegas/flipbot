@@ -56,6 +56,39 @@ def filter_guild_horse_emojis(guild_emojis: list) -> list:
     return out
 
 
+def resolve_horse_bet_limits(settings: dict | None = None) -> tuple[float, float]:
+    """Min/max chip from Game Management (per-game + global limits)."""
+    settings = settings or get_horse_race_settings()
+    root = get_data("server/server") or {}
+    gmin = float(root.get("minBet", 20) or 20)
+    gmax = float(root.get("maxBet", 50000) or 50000)
+    pmin = float(settings.get("min_bet", gmin))
+    pmax = float(settings.get("max_bet", gmax))
+    min_b = max(gmin, pmin)
+    max_b = min(gmax, pmax)
+    if max_b < min_b:
+        max_b = min_b
+    return min_b, max_b
+
+
+async def ensure_horse_race_db_config() -> dict | None:
+    """Mirror server/games horse_race into SQLite so _check_game_* uses panel limits."""
+    from cogs.admin_panel import _ensure_all_game_entries
+    from database import db as flip_db
+
+    games = _ensure_all_game_entries(get_data("server/games") or {})
+    set_data("server/games", games)
+    hr = games.get(GAME_ID)
+    if isinstance(hr, dict):
+        settings = get_horse_race_settings()
+        min_b, max_b = resolve_horse_bet_limits(settings)
+        hr_sync = dict(hr)
+        hr_sync["min_bet"] = min_b
+        hr_sync["max_bet"] = max_b
+        await flip_db.upsert_game_from_panel(GAME_ID, hr_sync)
+    return await flip_db.get_game_config(GAME_ID)
+
+
 def get_horse_race_settings() -> dict:
     games = get_data("server/games") or {}
     hr = games.get(GAME_ID) if isinstance(games.get(GAME_ID), dict) else {}
@@ -168,6 +201,8 @@ def _status_text(
     odds: tuple[float, ...],
     *,
     pool_size: int = 0,
+    min_bet: float = 10,
+    max_bet: float = 10000,
 ) -> str:
     total = sum(stakes)
     chip_s = f"**{utils.fmt_pts(chip_bet)}** pts" if chip_bet else "—"
@@ -183,7 +218,8 @@ def _status_text(
         f"**Bets on horses:**\n{stake_block}\n\n"
         f"Select a chip, tap horses to **add** that amount each time. "
         f"You need balance for the **full total**. Then **Start Race**.\n"
-        f"-# Pool: **{pool_size}** `*_horse` emojis · 6 random per race."
+        f"-# Pool: **{pool_size}** `*_horse` emojis · 6 random per race.\n"
+        f"-# Chip range: **{utils.fmt_pts(min_bet)}** – **{utils.fmt_pts(max_bet)}** pts (game management)"
     )
 
 
@@ -194,6 +230,8 @@ def _populate_setup_view(view: "HorseRaceSetupView") -> None:
     head.add_item(ui.TextDisplay(_status_text(
         view.chip_bet, view.stakes, view.odds,
         pool_size=len(view.settings.get("emoji_pool") or []),
+        min_bet=view.min_bet,
+        max_bet=view.max_bet,
     )))
     view.add_item(head)
 
@@ -307,6 +345,14 @@ class HorsePickButton(ui.Button):
             )
         chip = float(view.chip_bet)
         new_total = view.total_stake() + chip
+        if new_total > view.max_bet:
+            return await interaction.response.send_message(
+                embed=utils.error_embed(
+                    f"Total stake cannot exceed **{utils.fmt_pts(view.max_bet)}** pts "
+                    f"(game management max bet)."
+                ),
+                ephemeral=True,
+            )
         user = await db.get_user(view.user_id)
         bal = float((user or {}).get("balance", 0))
         if bal < new_total:
@@ -382,9 +428,13 @@ class HorseRacePlayAgainButton(ui.Button):
                 ),
                 ephemeral=True,
             )
-        cfg = await db.get_game_config(GAME_ID)
-        min_b = float(cfg["min_bet"]) if cfg else settings["min_bet"]
-        max_b = float(cfg["max_bet"]) if cfg else settings["max_bet"]
+        cfg = await ensure_horse_race_db_config()
+        if not cfg or not cfg.get("enabled"):
+            return await interaction.followup.send(
+                embed=utils.error_embed("Horse Race is disabled."),
+                ephemeral=True,
+            )
+        min_b, max_b = resolve_horse_bet_limits(settings)
         tiers = bet_tiers(min_b, max_b, 25)
         odds = _roll_odds(settings)
         win_pcts = win_chances(odds)
@@ -394,6 +444,7 @@ class HorseRacePlayAgainButton(ui.Button):
         )
         view = HorseRaceSetupView(
             self.owner_id, settings, tiers,
+            min_bet=min_b, max_bet=max_b,
             odds=odds, win_pcts=win_pcts, horse_emojis=lane_emojis,
         )
         await interaction.message.edit(attachments=files, view=view)
@@ -407,6 +458,8 @@ class HorseRaceSetupView(ui.LayoutView):
         settings: dict,
         tiers: list[int],
         *,
+        min_bet: float = 10,
+        max_bet: float = 10000,
         odds: tuple[float, ...] | None = None,
         win_pcts: tuple[float, ...] | None = None,
         chip_bet: float | None = None,
@@ -418,6 +471,8 @@ class HorseRaceSetupView(ui.LayoutView):
         self.user_id = user_id
         self.settings = settings
         self.tiers = tiers
+        self.min_bet = float(min_bet)
+        self.max_bet = float(max_bet)
         self.odds = odds or _roll_odds(settings)
         self.win_pcts = win_pcts or win_chances(self.odds)
         self.horse_emojis = horse_emojis or roll_race_lane_emojis(settings)
@@ -615,7 +670,7 @@ class _HorseRaceResultView(ui.LayoutView):
 
 async def start_horse_race(ctx: commands.Context) -> None:
     settings = get_horse_race_settings()
-    cfg = await db.get_game_config(GAME_ID)
+    cfg = await ensure_horse_race_db_config()
     if not cfg or not cfg.get("enabled"):
         return await ctx.send(embed=utils.error_embed("Horse Race is disabled."))
 
@@ -630,8 +685,7 @@ async def start_horse_race(ctx: commands.Context) -> None:
                 f"You already have an active **{existing['game']}** game.",
             ))
 
-    min_b = float(cfg["min_bet"])
-    max_b = float(cfg["max_bet"])
+    min_b, max_b = resolve_horse_bet_limits(settings)
     tiers = bet_tiers(min_b, max_b, 25)
     odds = _roll_odds(settings)
     win_pcts = win_chances(odds)
@@ -649,6 +703,7 @@ async def start_horse_race(ctx: commands.Context) -> None:
     )
     view = HorseRaceSetupView(
         ctx.author.id, settings, tiers,
+        min_bet=min_b, max_bet=max_b,
         odds=odds, win_pcts=win_pcts, horse_emojis=lane_emojis,
     )
     msg = await ctx.send(files=files, view=view)
