@@ -3438,7 +3438,7 @@ async def render_coinflip_gif(
     history_results: list[str] | None = None,
 ) -> io.BytesIO:
     """Animated Hot/Cold coin flip. mode: 'bot' (2 columns) or 'pvp' (3 columns)."""
-    W, H = (720, 400) if progressive else (660, 360)
+    W, H = (780, 388) if progressive else (660, 360)
     BG = (10, 14, 28)
     PANEL = (16, 22, 40)
     WHITE = (245, 247, 255)
@@ -3496,13 +3496,22 @@ async def render_coinflip_gif(
     CARD_W, CARD_H = 152, 130
 
     if mode == "bot":
-        left_cx = W // 5
-        center_cx = W // 2
-        right_cx = 4 * W // 5
-        card_cy = 172 if progressive else 158
-        col_hdr_y = 78 if progressive else 72
-        center_card_w, center_card_h = 120, 110
-        hist_y = H - 58 if progressive else H
+        if progressive:
+            left_cx = int(W * 0.22)
+            center_cx = W // 2
+            right_cx = int(W * 0.78)
+            card_cy = 218
+            col_hdr_y = 138
+            center_card_w, center_card_h = 108, 98
+            hud_top, hud_bot = 48, 104
+        else:
+            left_cx = W // 5
+            center_cx = W // 2
+            right_cx = 4 * W // 5
+            card_cy = 158
+            col_hdr_y = 72
+            center_card_w, center_card_h = 120, 110
+            hud_top = hud_bot = 0
     else:
         left_cx = W // 4
         center_cx = W // 2
@@ -3562,21 +3571,39 @@ async def render_coinflip_gif(
         tw = _tw(draw, title, font_hdr)
         draw.text(((W - tw) / 2, 12), title, font=font_hdr, fill=CYAN)
 
+        if progressive:
+            draw.rounded_rectangle(
+                [14, hud_top, W - 14, hud_bot], radius=12,
+                fill=(18, 26, 46), outline=(52, 62, 88),
+            )
+            zone_w = (W - 28) // 3
+            z0, z1, z2 = 14, 14 + zone_w, 14 + zone_w * 2
+            for zl, title in ((z0, "CURRENT"), (z1, "NEXT"), (z2, "STREAK")):
+                draw.text((zl + 14, hud_top + 8), title, font=font_mult_sm, fill=MUTED)
+            draw.text((z0 + 14, hud_top + 26), f"{cur_mult:.2f}x", font=font_mult_lg, fill=GOLD)
+            draw.text((z1 + 14, hud_top + 26), f"{nxt_mult:.2f}x", font=font_mult_lg, fill=CYAN)
+            shown = hist_sides[: max(0, hist_reveal)]
+            hx = int(z2 + 14)
+            for side in shown[-8:]:
+                em = hot_sm if side == "HOT" else cold_sm
+                if em is None:
+                    continue
+                img = _paste_sm_emoji(img, hx + em.width // 2, hud_top + 38, em)
+                hx += em.width + 5
+
         for label, cx in (("Choice", left_cx), ("Outcome", right_cx)):
             lw = _tw(draw, label, font_cap)
-            draw.text((cx - lw / 2, col_hdr_y), label, font=font_cap, fill=MUTED)
+            draw.text((int(cx - lw / 2), col_hdr_y), label, font=font_cap, fill=MUTED)
 
-        if progressive and pick_sm is not None and res_sm is not None:
-            row_y = col_hdr_y + 20
-            last_lbl = "LAST"
-            draw.text((center_cx - 100, row_y), last_lbl, font=font_hist, fill=MUTED)
+        if progressive and final and pick_sm is not None and res_sm is not None:
+            last_y = col_hdr_y - 22
             arrow = "→"
-            aw = _tw(draw, arrow, font_hist)
-            ax = center_cx - aw // 2
-            draw.text((ax, row_y + 2), arrow, font=font_hist, fill=WHITE)
-            img = _paste_sm_emoji(img, center_cx - aw // 2 - pick_sm.width // 2 - 14, row_y + 14, pick_sm)
-            if final:
-                img = _paste_sm_emoji(img, center_cx + aw // 2 + res_sm.width // 2 + 14, row_y + 14, res_sm)
+            px = int(center_cx)
+            draw.text((px - 72, last_y), "LAST", font=font_hist, fill=MUTED)
+            img = _paste_sm_emoji(img, px - 28, last_y + 12, pick_sm)
+            aw = int(_tw(draw, arrow, font_hist))
+            draw.text((px - aw // 2, last_y + 2), arrow, font=font_hist, fill=WHITE)
+            img = _paste_sm_emoji(img, px + 28, last_y + 12, res_sm)
 
         spin_img = hot_img if spin_hot else cold_img
         left_border = (GREEN if left_won else RED) if final else (58, 66, 88)
@@ -3605,29 +3632,6 @@ async def render_coinflip_gif(
             )
 
         draw = ImageDraw.Draw(img)
-
-        if progressive:
-            box_x1, box_y1 = W - 200, 52
-            box_x2, box_y2 = W - 14, 118
-            draw.rounded_rectangle(
-                [box_x1, box_y1, box_x2, box_y2], radius=10,
-                fill=(22, 30, 52), outline=(58, 66, 88),
-            )
-            draw.text((box_x1 + 12, box_y1 + 8), "CURRENT", font=font_mult_sm, fill=MUTED)
-            draw.text((box_x1 + 12, box_y1 + 24), f"{cur_mult:.2f}x", font=font_mult_lg, fill=GOLD)
-            draw.text((box_x1 + 12, box_y1 + 54), "NEXT", font=font_mult_sm, fill=MUTED)
-            draw.text((box_x1 + 12, box_y1 + 68), f"{nxt_mult:.2f}x", font=font_mult_lg, fill=CYAN)
-
-            streak_lbl = "STREAK"
-            draw.text((20, hist_y - 8), streak_lbl, font=font_hist, fill=MUTED)
-            shown = hist_sides[: max(0, hist_reveal)]
-            ex = int(20 + _tw(draw, streak_lbl, font_hist) + 8)
-            for side in shown[-10:]:
-                em = hot_sm if side == "HOT" else cold_sm
-                if em is None:
-                    continue
-                img = _paste_sm_emoji(img, ex + em.width // 2, hist_y + 10, em)
-                ex += em.width + 6
 
         if final:
             wl = "WIN" if left_won else "LOSE"

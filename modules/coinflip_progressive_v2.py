@@ -9,11 +9,23 @@ import discord
 from discord import ui
 
 from modules.ui_v2 import ACCENT_BRAND, ACCENT_SUCCESS, panel_with_controls
-from modules.utils import format_balance
 
 COINFLIP_GIF = "coinflip.gif"
 CashoutFn = Callable[[discord.Interaction], Awaitable[None]]
 FlipFn = Callable[[discord.Interaction, str], Awaitable[None]]
+
+
+def server_coin_emoji() -> discord.PartialEmoji | str | None:
+    from modules.database import get_data
+
+    raw = str((get_data("server/server") or {}).get("coin_emoji") or "")
+    return parse_button_emoji(raw)
+
+
+def cashout_button_parts(amount: int) -> tuple[str, discord.PartialEmoji | str | None]:
+    """Button label (number only) + coin emoji — labels cannot render <:custom:>."""
+    coin = server_coin_emoji()
+    return f"Cash Out {int(amount):,}", coin
 
 
 def parse_button_emoji(raw: str) -> str | discord.PartialEmoji | None:
@@ -32,11 +44,12 @@ def parse_button_emoji(raw: str) -> str | discord.PartialEmoji | None:
 
 
 class _CfProgCashOutBtn(ui.Button):
-    def __init__(self, label: str):
+    def __init__(self, amount: int):
+        label, coin = cashout_button_parts(amount)
         super().__init__(
             label=label[:80],
             style=discord.ButtonStyle.success,
-            emoji="💰",
+            emoji=coin or "💰",
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -101,7 +114,7 @@ class CoinflipProgressiveView(ui.LayoutView):
         container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
 
         row = ui.ActionRow()
-        row.add_item(_CfProgCashOutBtn(f"Cash Out {format_balance(cashout_net, 'real')}"))
+        row.add_item(_CfProgCashOutBtn(cashout_net))
         row.add_item(_CfProgHotBtn(parse_button_emoji(hot_emoji)))
         row.add_item(_CfProgColdBtn(parse_button_emoji(cold_emoji)))
         container.add_item(row)
