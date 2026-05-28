@@ -19,6 +19,11 @@ from modules.translator import t
 from modules.utils import *
 import modules.bonus as bonus_engine
 
+# Discord modal TextInput.label max 45 characters
+RIGGED_PCT_LABEL = "Rigged % (+ loss / - win)"
+RIGGED_PCT_PLACEHOLDER = "+ house loss, - player win"
+RIGGED_RANGE_ERR = "Rigged chance must be between -100 and 100."
+
 
 def _build_admin_panel_embed(interaction: discord.Interaction) -> discord.Embed:
     """Build the rich admin panel home embed (user language)."""
@@ -2165,7 +2170,7 @@ class MinesRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be a number between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -2212,7 +2217,7 @@ class CrystalsRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -4082,7 +4087,7 @@ class TowersRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be a number between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -4513,7 +4518,7 @@ class BlackjackRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be a number between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -4608,8 +4613,8 @@ class RouletteRiggedModal(discord.ui.Modal):
         if not isinstance(current_info, dict):
             current_info = {}
         self.rigged_chance_input = discord.ui.TextInput(
-            label="Rigged Chance (%) — + house loss / − guaranteed win",
-            placeholder="0.0",
+            label=RIGGED_PCT_LABEL,
+            placeholder=RIGGED_PCT_PLACEHOLDER,
             default=str(current_info.get("rigged_chance", 0.0)),
             required=True,
             max_length=8,
@@ -4626,7 +4631,7 @@ class RouletteRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be a number between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -4667,8 +4672,8 @@ class DiceRiggedModal(discord.ui.Modal):
         if not isinstance(current_info, dict):
             current_info = {}
         self.rigged_chance_input = discord.ui.TextInput(
-            label="Rigged Chance (%) — + house loss / − guaranteed win",
-            placeholder="0.0",
+            label=RIGGED_PCT_LABEL,
+            placeholder=RIGGED_PCT_PLACEHOLDER,
             default=str(current_info.get("rigged_chance", 0.0)),
             required=True,
             max_length=8,
@@ -4685,7 +4690,7 @@ class DiceRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be a number between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -4753,8 +4758,8 @@ class HorseRaceRiggedModal(discord.ui.Modal, title="Horse Race — Rigged Chance
         if not isinstance(current_info, dict):
             current_info = {}
         self.rigged_chance_input = discord.ui.TextInput(
-            label="Rigged % — unpicked lane wins (all picked = lowest odds)",
-            placeholder="0.0",
+            label="Rigged % (+ unpicked / - win)",
+            placeholder="+ unpicked lane, - player win",
             default=str(current_info.get("rigged_chance", 0.0)),
             required=True,
             max_length=8,
@@ -4770,7 +4775,7 @@ class HorseRaceRiggedModal(discord.ui.Modal, title="Horse Race — Rigged Chance
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -4858,8 +4863,8 @@ class CoinflipRiggedModal(discord.ui.Modal):
         if not isinstance(current_info, dict):
             current_info = {}
         self.rigged_chance_input = discord.ui.TextInput(
-            label="Rigged Chance (%) — + house loss / − guaranteed win",
-            placeholder="0.0",
+            label=RIGGED_PCT_LABEL,
+            placeholder=RIGGED_PCT_PLACEHOLDER,
             default=str(current_info.get("rigged_chance", 0.0)),
             required=True,
             max_length=8,
@@ -4876,7 +4881,7 @@ class CoinflipRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be a number between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -5285,7 +5290,7 @@ class LimboRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be a number between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -5342,7 +5347,7 @@ class MarketPredictRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be a number between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -5405,7 +5410,7 @@ class SlideRiggedModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 embed=discord.Embed(
                     title="❌ Invalid Input",
-                    description="Rigged chance must be a number between 0 and 100.",
+                    description=RIGGED_RANGE_ERR,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
