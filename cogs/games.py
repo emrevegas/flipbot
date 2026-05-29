@@ -223,6 +223,25 @@ async def _refund_game(user_id: int | str, bet: float, game_id: str, note: str =
     await db.clear_game_session(user_id)
 
 
+def _client_from_message(msg: discord.Message | None) -> discord.Client | None:
+    """Resolve bot client from a Message (discord.py 2.x; no _state._parent)."""
+    if not msg:
+        return None
+    client = getattr(msg, "client", None)
+    if client is not None:
+        return client
+    try:
+        return msg._state._get_client()
+    except Exception:
+        pass
+    if msg.guild:
+        try:
+            return msg.guild._state._get_client()
+        except Exception:
+            pass
+    return None
+
+
 def _house_edge_decimal(game_cfg: dict | None, *, default: float = 0.02) -> float:
     from database.db import sql_house_edge_to_decimal
 
@@ -301,7 +320,7 @@ async def _bj_auto_stand(user_id: int, msg: discord.Message | None = None) -> No
         user_id, won, total_bet, net,
         game_id="blackjack",
         user=msg.guild.get_member(int(user_id)) if msg and msg.guild else None,
-        client=msg._state._parent if msg else None,
+        client=_client_from_message(msg),
         guild_id=msg.guild.id if msg and msg.guild else None,
         tie=(outcome == "PUSH"),
     )
