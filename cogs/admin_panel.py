@@ -633,7 +633,7 @@ def _ensure_blackjack_game_entry(games_data: dict) -> dict:
     bj.setdefault("description", "6-deck blackjack: Split, Double Down, Insurance & Side Bets!")
     bj.setdefault("min_bet", 10)
     bj.setdefault("max_bet", 10000)
-    bj.setdefault("house_edge", 0.5)
+    bj.setdefault("house_edge", 2.0)
     bj.setdefault("rigged_chance", 0.0)
     bj.setdefault("category", "special_games")
     bj.setdefault("emojis", {})

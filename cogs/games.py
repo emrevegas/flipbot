@@ -223,33 +223,74 @@ async def _refund_game(user_id: int | str, bet: float, game_id: str, note: str =
     await db.clear_game_session(user_id)
 
 
+def _house_edge_decimal(game_cfg: dict | None, *, default: float = 0.02) -> float:
+    from database.db import sql_house_edge_to_decimal
+
+    if not game_cfg:
+        return default
+    return sql_house_edge_to_decimal(game_cfg.get("house_edge"), default=default)
+
+
+def _bj_settle_round(
+    sess_bet: float,
+    state: dict,
+    reason: str,
+    *,
+    game_cfg: dict | None = None,
+) -> tuple[str, float, float, bool, float, float]:
+    """
+    Returns (outcome, gross_return, net_credit, won, total_bet, net_change).
+    Bet(s) already deducted from balance before this runs.
+    """
+    total_bet = float(sess_bet) * (2 if state.get("doubled") else 1)
+    he = _house_edge_decimal(game_cfg)
+
+    if reason not in ("bust", "natural_blackjack"):
+        while Games._hand_value_static(state["dealer"]) < 17:
+            state["dealer"].append(state["deck"].pop())
+
+    pv = Games._hand_value_static(state["player"])
+    dv = Games._hand_value_static(state["dealer"])
+
+    if reason == "natural_blackjack":
+        outcome, gross, won = "BLACKJACK", total_bet * 2.5, True
+    elif reason == "bust" or pv > 21:
+        outcome, gross, won = "BUST", 0.0, False
+    elif dv > 21 or pv > dv:
+        outcome, gross, won = "WIN", total_bet * 2.0, True
+    elif pv == dv:
+        outcome, gross, won = "PUSH", total_bet, False
+    else:
+        outcome, gross, won = "LOSS", 0.0, False
+
+    if outcome == "PUSH":
+        net = total_bet
+    elif gross > 0:
+        net = gross * (1.0 - he)
+    else:
+        net = 0.0
+
+    if won:
+        net_change = net - total_bet
+    elif outcome == "PUSH":
+        net_change = 0.0
+    else:
+        net_change = -total_bet
+
+    return outcome, gross, net, won, total_bet, net_change
+
+
 async def _bj_auto_stand(user_id: int, msg: discord.Message | None = None) -> None:
     """Finish an active BJ session as if the player stood (timeout)."""
     sess = await db.get_game_session(user_id)
     if not sess or sess["game"] != "blackjack":
         return
     state = json.loads(sess["state"])
-    total_bet = float(sess["bet"]) * (2 if state.get("doubled") else 1)
     username = state.get("username", "Player")
-
-    while Games._hand_value_static(state["dealer"]) < 17:
-        state["dealer"].append(state["deck"].pop())
-
-    pv = Games._hand_value_static(state["player"])
-    dv = Games._hand_value_static(state["dealer"])
-
-    if pv > 21:
-        outcome, gross, won = "BUST", 0.0, False
-    elif dv > 21 or pv > dv:
-        outcome, gross, won = "WIN", total_bet * 2, True
-    elif pv == dv:
-        outcome, gross, won = "PUSH", total_bet, False
-    else:
-        outcome, gross, won = "LOSS", 0.0, False
-
     game_cfg = await db.get_game_config("blackjack")
-    he = float(game_cfg["house_edge"]) if game_cfg else 0.02
-    net = gross * (1 - he) if gross > 0 else 0.0
+    outcome, gross, net, won, total_bet, net_change = _bj_settle_round(
+        float(sess["bet"]), state, "stand", game_cfg=game_cfg,
+    )
 
     if net > 0:
         await db.add_balance(user_id, net, note="blackjack timeout payout")
@@ -271,7 +312,6 @@ async def _bj_auto_stand(user_id: int, msg: discord.Message | None = None) -> No
     _bj_user_msg.pop(int(user_id), None)
 
     if msg:
-        net_change = (net - total_bet) if won else (-total_bet if outcome != "PUSH" else 0.0)
         gif_buf = await image_gen.render_bj_gif(
             state["player"], state["dealer"],
             reveal_dealer=True, result_text=outcome,
@@ -1414,30 +1454,11 @@ async def _bj_finish_from_interaction(
     sess = await db.get_game_session(user_id)
     if not sess:
         return
-    total_bet = float(sess["bet"]) * (2 if state.get("doubled") else 1)
     username = state.get("username", str(interaction.user.display_name))
-
-    if reason not in ("bust", "natural_blackjack"):
-        while Games._hand_value_static(state["dealer"]) < 17:
-            state["dealer"].append(state["deck"].pop())
-
-    pv = Games._hand_value_static(state["player"])
-    dv = Games._hand_value_static(state["dealer"])
-
-    if reason == "natural_blackjack":
-        outcome, gross, won = "BLACKJACK", total_bet * 2.5, True
-    elif reason == "bust" or pv > 21:
-        outcome, gross, won = "BUST", 0.0, False
-    elif dv > 21 or pv > dv:
-        outcome, gross, won = "WIN", total_bet * 2, True
-    elif pv == dv:
-        outcome, gross, won = "PUSH", total_bet, False
-    else:
-        outcome, gross, won = "LOSS", 0.0, False
-
     game_cfg = await db.get_game_config("blackjack")
-    he = float(game_cfg["house_edge"]) if game_cfg else 0.02
-    net = gross * (1 - he) if gross > 0 else 0.0
+    outcome, gross, net, won, total_bet, net_change = _bj_settle_round(
+        float(sess["bet"]), state, reason, game_cfg=game_cfg,
+    )
 
     if net > 0:
         await db.add_balance(user_id, net, note="blackjack payout")
@@ -1456,22 +1477,33 @@ async def _bj_finish_from_interaction(
     _bj_msg_to_user.pop(str(interaction.message.id), None)
     _bj_user_msg.pop(int(user_id), None)
 
-    net_change = (net - total_bet) if won else (-total_bet if outcome != "PUSH" else 0.0)
     gif_buf = await image_gen.render_bj_gif(
         state["player"], state["dealer"],
         reveal_dealer=True, result_text=outcome,
         net_change=net_change, bet=total_bet, username=username,
     )
+    gif_file = discord.File(gif_buf, "blackjack.gif")
+    result_view = _BJResultView(user_id, total_bet)
 
     try:
-        await interaction.response.edit_message(
-            attachments=[discord.File(gif_buf, "blackjack.gif")],
-            view=_BJResultView(user_id, total_bet),
-        )
+        if interaction.response.is_done():
+            await interaction.followup.edit_message(
+                interaction.message.id,
+                attachments=[gif_file],
+                view=result_view,
+            )
+        else:
+            await interaction.response.edit_message(
+                attachments=[gif_file],
+                view=result_view,
+            )
     except Exception:
         try:
             gif_buf.seek(0)
-            await interaction.followup.send(file=discord.File(gif_buf, "blackjack.gif"))
+            await interaction.followup.send(
+                file=discord.File(gif_buf, "blackjack.gif"),
+                view=result_view,
+            )
         except Exception:
             pass
 
@@ -1488,18 +1520,13 @@ async def _bj_finish_interaction_free(
     sess = await db.get_game_session(user_id)
     if not sess:
         return
-    total_bet = float(sess["bet"]) * (2 if state.get("doubled") else 1)
     if not username:
         username = state.get("username", (ctx.author.display_name if ctx else "Player"))
 
-    if reason == "natural_blackjack":
-        outcome, gross, won = "BLACKJACK", total_bet * 2.5, True
-    else:
-        outcome, gross, won = "LOSS", 0.0, False
-
     game_cfg = await db.get_game_config("blackjack")
-    he = float(game_cfg["house_edge"]) if game_cfg else 0.02
-    net = gross * (1 - he) if gross > 0 else 0.0
+    outcome, gross, net, won, total_bet, net_change = _bj_settle_round(
+        float(sess["bet"]), state, reason, game_cfg=game_cfg,
+    )
 
     if net > 0:
         await db.add_balance(user_id, net, note="blackjack payout")
@@ -1512,12 +1539,11 @@ async def _bj_finish_interaction_free(
         user=ctx.author if ctx else None,
         client=ctx.bot if ctx else (msg._state._parent if msg else None),
         guild_id=msg.guild.id if msg.guild else None,
+        tie=(outcome == "PUSH"),
     )
     await db.clear_game_session(user_id)
     _bj_msg_to_user.pop(str(msg.id), None)
     _bj_user_msg.pop(int(user_id), None)
-
-    net_change = (net - total_bet) if won else 0.0
     gif_buf = await image_gen.render_bj_gif(
         state["player"], state["dealer"],
         reveal_dealer=True, result_text=outcome,
@@ -1981,30 +2007,11 @@ class Games(commands.Cog):
             return
         if not state:
             state = json.loads(sess["state"])
-        total_bet = float(sess["bet"]) * (2 if state.get("doubled") else 1)
         username = state.get("username", ctx.author.display_name)
-
-        if reason not in ("bust", "natural_blackjack"):
-            while self._hand_value(state["dealer"]) < 17:
-                state["dealer"].append(state["deck"].pop())
-
-        pv = self._hand_value(state["player"])
-        dv = self._hand_value(state["dealer"])
-
-        if reason == "natural_blackjack":
-            outcome, gross, won = "BLACKJACK", total_bet * 2.5, True
-        elif reason == "bust" or pv > 21:
-            outcome, gross, won = "BUST", 0.0, False
-        elif dv > 21 or pv > dv:
-            outcome, gross, won = "WIN", total_bet * 2, True
-        elif pv == dv:
-            outcome, gross, won = "PUSH", total_bet, False
-        else:
-            outcome, gross, won = "LOSS", 0.0, False
-
         game_cfg = await db.get_game_config("blackjack")
-        he = float(game_cfg["house_edge"]) if game_cfg else 0.02
-        net = gross * (1 - he) if gross > 0 else 0.0
+        outcome, gross, net, won, total_bet, net_change = _bj_settle_round(
+            float(sess["bet"]), state, reason, game_cfg=game_cfg,
+        )
         if net > 0:
             await db.add_balance(ctx.author.id, net, note="blackjack payout")
         await db.add_wager(ctx.author.id, total_bet)
@@ -2022,7 +2029,6 @@ class Games(commands.Cog):
             if uid == ctx.author.id:
                 _bj_msg_to_user.pop(mid, None)
 
-        net_change = (net - total_bet) if won else (-total_bet if outcome != "PUSH" else 0.0)
         gif_buf = await image_gen.render_bj_gif(
             state["player"], state["dealer"],
             reveal_dealer=True, result_text=outcome,

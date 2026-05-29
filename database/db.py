@@ -694,11 +694,25 @@ async def get_game_config(game_id: str) -> dict | None:
 
 
 def _panel_house_edge_to_sql(he: float) -> float:
-    """server/games uses percent (e.g. 2.75); SQLite games.house_edge uses decimal."""
+    """server/games uses percent (e.g. 2.75, 0.5); SQLite games.house_edge uses decimal."""
     he = float(he)
-    if he >= 1.0:
+    if he >= 1.0 or (0 < he < 1.0):
         return round(he / 100.0, 6)
     return he
+
+
+def sql_house_edge_to_decimal(he: float, *, default: float = 0.02) -> float:
+    """Convert games.house_edge column to decimal (0.02 = 2%)."""
+    try:
+        he = float(he)
+    except (TypeError, ValueError):
+        return default
+    if he >= 1.0:
+        return min(0.99, he / 100.0)
+    # Legacy rows: panel 0.5% was stored as 0.5 (treated as 50% edge)
+    if he > 0.25:
+        return min(0.99, he / 100.0)
+    return min(0.99, max(0.0, he))
 
 
 async def upsert_game_from_panel(game_id: str, info: dict) -> None:
