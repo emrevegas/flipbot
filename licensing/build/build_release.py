@@ -31,6 +31,8 @@ if str(ROOT) not in sys.path:
 
 PLATFORM = "linux-x86_64"
 BUILD_DIRS = ("modules", "cogs", "Games", "database")
+# Never ship VDS admin cog sources to licensed customers
+CUSTOMER_EXCLUDE_PY = ("cogs/vds_panel.py",)
 # bot.py is a plain stub; core + license guard are inside modules/ (.so)
 LICENSED_BOT_STUB = '''"""Licensed runtime entry — edit blocked; logic is compiled."""
 from modules.flipbot_launcher import run
@@ -87,6 +89,15 @@ setup(
         for c_file in dst.rglob("*.c"):
             c_file.unlink(missing_ok=True)
         setup_path.unlink(missing_ok=True)
+
+
+def _strip_customer_admin_files(staging: Path) -> None:
+    """Remove owner-only cog sources from licensed customer bundles."""
+    for rel in CUSTOMER_EXCLUDE_PY:
+        target = staging / rel.replace("/", os.sep)
+        if target.is_file():
+            target.unlink(missing_ok=True)
+            print(f"Excluded from release: {rel}")
 
 
 def _create_tarball(staging: Path, version: str) -> Path:
@@ -202,6 +213,8 @@ def main() -> int:
                 shutil.copy2(src, dst)
 
         (staging / "bot.py").write_text(LICENSED_BOT_STUB, encoding="utf-8")
+
+        _strip_customer_admin_files(staging)
 
         if not args.skip_cython:
             try:

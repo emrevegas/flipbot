@@ -38,19 +38,20 @@ Firewall'da **8787** portunu aç. Müşterilere verilecek adres:
 
 Test: `curl http://SENIN_VDS_IP:8787/health`
 
-## 2. Ada bot komutları
+## 2. Ada bot (.env — proje kökündeki `.env`)
 
-Ada bot `.env`:
 ```
+ADA_CONTROL_BOT=1
+TOKEN=...
+OWNER_ID=...
 LICENSE_SERVER_IP=123.45.67.89
 LICENSE_SERVER_PORT=8787
 LICENSE_ADMIN_KEY=...
 ```
 
-Extension yükle:
-```python
-await bot.load_extension("licensing.ada_bot.vds_panel")
-```
+`python bot.py` — `cogs.vds_panel` otomatik yüklenir (`ADA_CONTROL_BOT=1` ve müşteri lisansı yoksa).
+
+Müşteri instance'ında (`LICENSE_KEY` veya `install_state.json` varsa) **yüklenmez**.
 
 | Komut | Açıklama |
 |-------|----------|
