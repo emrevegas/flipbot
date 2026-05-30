@@ -1,4 +1,5 @@
 .env
+ada.env
 *.db
 *.db-shm
 *.db-wal

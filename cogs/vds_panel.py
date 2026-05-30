@@ -12,7 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modules.control_bot import is_licensed_customer_instance
+from modules.control_bot import is_ada_standalone_bot, is_licensed_customer_instance
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,7 +53,7 @@ class VdsPanel(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        if is_licensed_customer_instance():
+        if not is_ada_standalone_bot() and is_licensed_customer_instance():
             raise commands.ExtensionError(
                 "vds_panel cannot run on a licensed customer instance."
             )
@@ -214,6 +214,6 @@ class VdsPanel(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    if is_licensed_customer_instance():
+    if not is_ada_standalone_bot() and is_licensed_customer_instance():
         return
     await bot.add_cog(VdsPanel(bot))

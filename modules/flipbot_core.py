@@ -98,14 +98,6 @@ class FlipBot(commands.Bot):
                 log.info(f"Loaded {cog}")
             except Exception:
                 log.error(f"Failed to load {cog}:\n{traceback.format_exc()}")
-        from modules.control_bot import should_load_vds_panel
-
-        if should_load_vds_panel():
-            try:
-                await self.load_extension("cogs.vds_panel")
-                log.info("Loaded cogs.vds_panel (Ada control bot)")
-            except Exception:
-                log.error(f"Failed to load cogs.vds_panel:\n{traceback.format_exc()}")
         try:
             from cogs.crypto_withdraw import WithdrawApprovalView
             from modules.database import get_data

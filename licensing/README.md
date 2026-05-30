@@ -38,20 +38,38 @@ Firewall'da **8787** portunu aç. Müşterilere verilecek adres:
 
 Test: `curl http://SENIN_VDS_IP:8787/health`
 
-## 2. Ada bot (.env — proje kökündeki `.env`)
+## 2. Ada bot (ayrı process, ayrı token)
 
+Casino bot (`bot.py`) ile **aynı klasör**, **farklı token**:
+
+```powershell
+copy ada.env.example ada.env
+notepad ada.env
+python ada_bot.py
 ```
-ADA_CONTROL_BOT=1
-TOKEN=...
-OWNER_ID=...
-LICENSE_SERVER_IP=123.45.67.89
-LICENSE_SERVER_PORT=8787
-LICENSE_ADMIN_KEY=...
+
+Logda görmelisin:
+```
+Loaded cogs.vds_panel
+Synced N slash command(s)
+Ada bot ready as ...
 ```
 
-`python bot.py` — `cogs.vds_panel` otomatik yüklenir (`ADA_CONTROL_BOT=1` ve müşteri lisansı yoksa).
+### `ada.env` — sadece bunlar
 
-Müşteri instance'ında (`LICENSE_KEY` veya `install_state.json` varsa) **yüklenmez**.
+| Değişken | Zorunlu | Açıklama |
+|----------|---------|----------|
+| `ADA_BOT_TOKEN` | ✅ | Ada bot Discord token (ayrı uygulama) |
+| `OWNER_ID` | ✅ | Senin Discord ID |
+| `LICENSE_SERVER_IP` | ✅ | Ana VDS IP |
+| `LICENSE_SERVER_PORT` | ✅ | `8787` |
+| `LICENSE_ADMIN_KEY` | ✅ | License API ile aynı |
+| `RELEASES_GITHUB_REPO` | build için | `user/flipbot-releases` |
+| `GITHUB_TOKEN` | build için | GitHub PAT |
+
+**Casino `.env`'e yazma:** mnemonic, `GUILD_ID`, `TOKEN` (casino token) Ada bot'ta olmaz.
+
+**Neden casino bot'ta yüklenmedi?** Aynı klasörde `install_state.json` veya `LICENSE_KEY` varsa `vds_panel` kasıtlı olarak devre dışı kalır. Ada bot bunu bypass eder (`ada_bot.py`).
 
 | Komut | Açıklama |
 |-------|----------|
