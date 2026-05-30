@@ -4,5 +4,10 @@
 *.db-wal
 __pycache__/
 *.py[cod]
+*.so
 *.log
 assets/cache/
+install_state.json
+runtime/
+dist/
+licensing/license_server/licenses.db

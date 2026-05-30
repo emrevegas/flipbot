@@ -1556,7 +1556,7 @@ async def _bj_finish_interaction_free(
         user_id, won, total_bet, net,
         game_id="blackjack",
         user=ctx.author if ctx else None,
-        client=ctx.bot if ctx else (msg._state._parent if msg else None),
+        client=ctx.bot if ctx else _client_from_message(msg),
         guild_id=msg.guild.id if msg.guild else None,
         tie=(outcome == "PUSH"),
     )

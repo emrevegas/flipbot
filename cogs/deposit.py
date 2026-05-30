@@ -219,6 +219,18 @@ class _WithdrawModal(discord.ui.Modal):
                 ephemeral=True,
             )
 
+        from modules.database import get_server_data
+        from modules.withdraw_deposit_gate import check_withdraw_deposit_requirement
+
+        guild_id = str(interaction.guild.id) if interaction.guild else ""
+        server_data = get_server_data(guild_id) if guild_id else {}
+        ok, dep_msg = check_withdraw_deposit_requirement(self.user_id, server_data)
+        if not ok:
+            return await interaction.response.send_message(
+                embed=utils.error_embed(dep_msg),
+                ephemeral=True,
+            )
+
         req_id = str(uuid.uuid4())[:8].upper()
         await db.add_balance(self.user_id, -amount, note="withdrawal hold")
         dbc = await db.get_db()
@@ -426,7 +438,7 @@ class Deposit(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @commands.command(name="deposit", aliases=["dep"])
+    @commands.command(name="deposit", aliases=["dep", "depo"])
     async def deposit(self, ctx: commands.Context):
         """Open deposit hub — crypto, in-game (Growtopia), and panel payment methods."""
         await db.ensure_user(ctx.author.id, ctx.author.name)

@@ -23,13 +23,19 @@ async def _run_slide_round(
     client: discord.Client | None = None,
     guild_id: int | None = None,
 ) -> io.BytesIO:
-    from Games.slide import gross_payout, pick_rigged_multiplier, roll_multiplier
+    import modules.balance_cap as balance_cap
+    from Games.slide import (
+        gross_payout,
+        max_gross_payout,
+        pick_favored_multiplier,
+        pick_rigged_multiplier,
+        roll_multiplier,
+    )
     from cogs.games import _payout, _record
 
-    from Games.slide import pick_favored_multiplier
-
-    force_win = await bc.should_force_win_outcome(user_id, "slide", bet, gross=bet * 3)
-    rigged = await bc.should_rig_outcome(user_id, "slide", bet, gross=bet * 3)
+    max_gross = max_gross_payout(bet)
+    force_win = await bc.should_force_win_outcome(user_id, "slide", bet, gross=max_gross)
+    rigged = await bc.should_rig_outcome(user_id, "slide", bet, gross=max_gross)
     if force_win:
         result_mult = pick_favored_multiplier()
     elif rigged:
@@ -38,6 +44,21 @@ async def _run_slide_round(
         result_mult = roll_multiplier()
 
     gross = gross_payout(bet, result_mult)
+    if gross > 0:
+        he = await bc._house_edge("slide")
+        net_win = bc._net_from_gross(gross, he)
+        bal = await bc._balance(user_id)
+        balance_after_bet = int(bal) - int(bet)
+        if balance_cap.should_force_cap_loss(
+            user_id,
+            "real",
+            balance_after_bet,
+            net_win,
+            game_id="slide",
+        ):
+            result_mult = pick_rigged_multiplier()
+            gross = gross_payout(bet, result_mult)
+
     won = gross > bet
     net = await _payout(user_id, "slide", bet, gross)
     net_change = net - bet

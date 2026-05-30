@@ -90,7 +90,13 @@ def owner_room_for_interaction(
 
     user_id = interaction.user.id
     guild_id = str(interaction.guild.id)
-    ch_id = str(interaction.channel.id)
+    channel = interaction.channel
+    if isinstance(channel, discord.Thread):
+        guard_channel = interaction.guild.get_channel(channel.parent_id)
+        ch_id = str(channel.parent_id)
+    else:
+        guard_channel = channel
+        ch_id = str(channel.id)
     is_hub = is_play_hub_channel(guild_id, ch_id)
 
     if is_hub:
@@ -119,7 +125,7 @@ def owner_room_for_interaction(
                 ),
                 None,
             )
-        play_ch = interaction.channel
+        play_ch = guard_channel
         if not isinstance(play_ch, discord.TextChannel):
             return None, "❌ Invalid channel."
         return (
@@ -139,15 +145,14 @@ def owner_room_for_interaction(
     if not room_info or int(room_info.get("owner") or 0) != user_id:
         return None, "❌ Only the room owner can use this menu!"
 
-    channel = interaction.channel
-    if not isinstance(channel, discord.TextChannel):
+    if not isinstance(guard_channel, discord.TextChannel):
         return None, t("private_rooms.no_room_for_hub", lang=lang, user_id=str(user_id))
 
     return (
         OwnerRoomContext(
             guild_id=guild_id,
             channel_id=ch_id,
-            channel=channel,
+            channel=guard_channel,
             is_play_hub=False,
             room_info=room_info,
         ),
@@ -165,9 +170,11 @@ async def reset_menu_message(
     from cogs.private_rooms import build_play_hub_menu_layout, build_welcome_menu_layout
 
     try:
-        if hub_mode or is_play_hub_channel(guild_id, interaction.channel.id):
+        ch = interaction.channel
+        hub_ch_id = ch.parent_id if isinstance(ch, discord.Thread) else ch.id
+        if hub_mode or is_play_hub_channel(guild_id, hub_ch_id):
             await interaction.message.edit(
-                view=build_play_hub_menu_layout(guild_id, str(interaction.channel.id))
+                view=build_play_hub_menu_layout(guild_id, str(hub_ch_id))
             )
         else:
             await interaction.message.edit(

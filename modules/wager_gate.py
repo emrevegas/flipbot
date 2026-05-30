@@ -11,6 +11,8 @@ Required = last_deposit_amount × multiplier (from server settings).
 
 from __future__ import annotations
 
+import time
+
 from modules.database import check_permission, get_user_data, set_user_data
 
 
@@ -97,3 +99,61 @@ def is_withdraw_wager_met(user_id: int | str, server_data: dict | None) -> bool:
 
 # Backwards-compatible names
 get_deposit_wager_gate = get_withdraw_wager_status
+
+
+def clear_user_withdraw_wagers(
+    user_id: int | str,
+    server_data: dict | None = None,
+) -> list[str]:
+    """
+    Clear every wager gate that can block withdrawal (deposit multiplier, bonus, promo).
+    Returns labels of what was changed (empty if nothing was blocking).
+    """
+    uid = int(user_id)
+    cleared: list[str] = []
+
+    mult = get_multiplier(server_data)
+    stats = _stats(uid)
+    last_dep = int(stats.get("last_deposit_amount", 0) or 0)
+    if last_dep > 0 and mult > 0:
+        required = int(last_dep * mult)
+        wagered = int(stats.get("wager_since_deposit", 0) or 0)
+        if wagered < required:
+            stats["wager_since_deposit"] = required
+            _save_stats(uid, stats)
+            cleared.append("deposit_wager")
+
+    raw_bonus = get_user_data(uid, "active_bonus") or {}
+    if isinstance(raw_bonus, dict) and raw_bonus.get("status") == "active":
+        btype = raw_bonus.get("type", "fixed")
+        req = int(raw_bonus.get("wager_requirement", 0) or 0)
+        changed = False
+        if btype == "percentage" and req > 0:
+            done = int(raw_bonus.get("wagered_so_far", 0) or 0)
+            if done < req:
+                raw_bonus["wagered_so_far"] = req
+                changed = True
+        elif btype == "fixed" and req > 0:
+            changed = True
+        if changed:
+            raw_bonus["status"] = "completed"
+            raw_bonus["completed_at"] = int(time.time())
+            if req > 0:
+                raw_bonus["wagered_so_far"] = req
+            set_user_data(uid, "active_bonus", raw_bonus)
+            cleared.append("bonus_wager")
+
+    from modules.promo import get_stored_promo, save_active_promo
+
+    promo = get_stored_promo(uid)
+    if isinstance(promo, dict) and promo.get("status") == "wagering":
+        req = int(promo.get("wager_requirement", 0) or 0)
+        done = int(promo.get("wagered_so_far", 0) or 0)
+        if req <= 0 or done < req:
+            promo["wagered_so_far"] = max(req, done)
+            promo["status"] = "completed"
+            promo["completed_at"] = int(time.time())
+            save_active_promo(uid, promo)
+            cleared.append("promo_wager")
+
+    return cleared

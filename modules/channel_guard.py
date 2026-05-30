@@ -40,6 +40,17 @@ class ChannelGuardError(commands.CheckFailure):
     super().__init__(message)
 
 
+def effective_guard_channel_id(
+  channel: discord.abc.GuildChannel | discord.Thread | None,
+) -> int | None:
+  """Thread commands inherit play/jackpot rules from the parent channel."""
+  if channel is None:
+    return None
+  if isinstance(channel, discord.Thread):
+    return channel.parent_id
+  return channel.id
+
+
 def is_channel_staff(member: discord.abc.User) -> bool:
   if is_super_admin(member.id):
     return True
@@ -117,6 +128,8 @@ async def handle_wrong_channel_message(message: discord.Message, bot) -> bool:
   """Reply with play-channel mentions, delete message. Returns True if handled."""
   if message.author.bot or not message.guild:
     return False
+  if message_was_channel_guard_handled(message):
+    return True
   if is_channel_staff(message.author):
     return False
 
@@ -129,14 +142,19 @@ async def handle_wrong_channel_message(message: discord.Message, bot) -> bool:
     return False
 
   guild_id = str(message.guild.id)
-  allowed, text = command_channel_allowed(guild_id, message.channel.id, content=content)
+  channel_id = effective_guard_channel_id(message.channel)
+  if channel_id is None:
+    return False
+  allowed, text = command_channel_allowed(guild_id, channel_id, content=content)
   if allowed or not text:
     return False
+
+  _mark_message_handled(message)
 
   text = redirect_text(
     guild_id,
     message.guild,
-    in_jackpot=is_jackpot_channel(message.channel.id),
+    in_jackpot=is_jackpot_channel(channel_id),
   )
   try:
     await message.channel.send(
@@ -154,7 +172,6 @@ async def handle_wrong_channel_message(message: discord.Message, bot) -> bool:
     await message.delete()
   except Exception:
     pass
-  _mark_message_handled(message)
   return True
 
 
@@ -163,20 +180,18 @@ def assert_command_channel(ctx: Context) -> None:
     return
   if is_channel_staff(ctx.author):
     return
-  if getattr(ctx.message, "_channel_guard_handled", False):
+  if message_was_channel_guard_handled(ctx.message):
     raise ChannelGuardError("")
 
   guild_id = str(ctx.guild.id)
   content = (ctx.message.content if ctx.message else "") or ""
-  allowed, text = command_channel_allowed(guild_id, ctx.channel.id, content=content)
+  channel_id = effective_guard_channel_id(ctx.channel)
+  if channel_id is None:
+    return
+  allowed, _text = command_channel_allowed(guild_id, channel_id, content=content)
   if allowed:
     return
-  text = redirect_text(
-    guild_id,
-    ctx.guild,
-    in_jackpot=is_jackpot_channel(ctx.channel.id),
-  )
-  raise ChannelGuardError(text)
+  raise ChannelGuardError("")
 
 
 async def interaction_channel_allowed(interaction: discord.Interaction) -> tuple[bool, str | None]:
@@ -187,10 +202,12 @@ async def interaction_channel_allowed(interaction: discord.Interaction) -> tuple
     return True, None
 
   guild_id = str(interaction.guild.id)
-  ch_id = interaction.channel.id
-  if is_play_hub_channel(guild_id, ch_id):
+  channel_id = effective_guard_channel_id(interaction.channel)
+  if channel_id is None:
     return True, None
-  if is_jackpot_channel(ch_id):
+  if is_play_hub_channel(guild_id, channel_id):
+    return True, None
+  if is_jackpot_channel(channel_id):
     return False, redirect_text(guild_id, interaction.guild, in_jackpot=True)
   return False, redirect_text(guild_id, interaction.guild, in_jackpot=False)
 

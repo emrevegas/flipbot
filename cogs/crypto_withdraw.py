@@ -225,6 +225,19 @@ async def _process_withdrawal(
             ephemeral=True,
         )
 
+    from modules.withdraw_deposit_gate import check_withdraw_deposit_requirement
+
+    dep_ok, dep_msg = check_withdraw_deposit_requirement(user_id, server_data)
+    if not dep_ok:
+        return await interaction.response.send_message(
+            embed=discord.Embed(
+                title="💳 Deposit Required",
+                description=dep_msg,
+                color=0xF59E0B,
+            ),
+            ephemeral=True,
+        )
+
     from modules.wager_gate import get_withdraw_wager_status
     from modules.database import get_user_stats
 

@@ -1941,9 +1941,22 @@ class WithdrawAmountModal(discord.ui.Modal, title="🏦 Withdrawal Request"):
                 ephemeral=True
             )
 
-        # Wager gate: last_deposit * multiplier (+ bonus wager req if any)
         guild_id = str(interaction.guild.id)
         server_data = get_server_data(guild_id)
+        from modules.withdraw_deposit_gate import check_withdraw_deposit_requirement
+
+        dep_ok, dep_msg = check_withdraw_deposit_requirement(self.user_id, server_data)
+        if not dep_ok:
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="💳 Deposit Required",
+                    description=dep_msg,
+                    color=0xF59E0B,
+                ),
+                ephemeral=True,
+            )
+
+        # Wager gate: last_deposit * multiplier (+ bonus wager req if any)
         req_wager, wagered_since, wager_remaining = _get_withdraw_wager_requirement(
             int(self.user_id), server_data
         )
@@ -2216,9 +2229,22 @@ class WithdrawGoldAmountModal(discord.ui.Modal, title="🪙 Gold Withdrawal Requ
                 ephemeral=True
             )
 
-        # Wager gate: last_deposit * multiplier (+ bonus wager req if any)
         _guild_id = str(interaction.guild.id)
         _server_data = get_server_data(_guild_id)
+        from modules.withdraw_deposit_gate import check_withdraw_deposit_requirement
+
+        dep_ok, dep_msg = check_withdraw_deposit_requirement(self.user_id, _server_data)
+        if not dep_ok:
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="💳 Deposit Required",
+                    description=dep_msg,
+                    color=0xF59E0B,
+                ),
+                ephemeral=True,
+            )
+
+        # Wager gate: last_deposit * multiplier (+ bonus wager req if any)
         req_wager, wagered_since, wager_remaining = _get_withdraw_wager_requirement(
             int(self.user_id), _server_data
         )

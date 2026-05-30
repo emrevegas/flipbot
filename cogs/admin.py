@@ -10,6 +10,8 @@ from discord.ext import commands
 
 from database import db
 from modules import flip_utils as utils
+from modules import moderation_log
+from modules.database import check_permission, is_super_admin
 
 
 def admin_only():
@@ -17,6 +19,24 @@ def admin_only():
         if not utils.is_admin(ctx):
             raise commands.CheckFailure("No permission.")
         return True
+    return commands.check(pred)
+
+
+def staff_mod_or_admin():
+    """Discord admin/owner, bot admin, or bot moderator."""
+
+    async def pred(ctx: commands.Context) -> bool:
+        if utils.is_admin(ctx):
+            return True
+        uid = ctx.author.id
+        if is_super_admin(uid):
+            return True
+        if not check_permission(str(uid), "admin"):
+            return True
+        if not check_permission(str(uid), "moderator"):
+            return True
+        raise commands.CheckFailure("No permission.")
+
     return commands.check(pred)
 
 
@@ -279,6 +299,50 @@ class Admin(commands.Cog):
         await dbc.execute("UPDATE balance_caps SET enabled=0 WHERE user_id=?", (str(member.id),))
         await dbc.commit()
         await ctx.send(embed=utils.success_embed(f"Balance cap removed for {member.mention}."))
+
+    @commands.command(name="clearwager")
+    @staff_mod_or_admin()
+    async def clear_wager(self, ctx: commands.Context, member: discord.Member):
+        """`.clearwager @user` — deposit/bonus/promo wager şartlarını temizler."""
+        from modules.database import get_server_data
+        from modules.wager_gate import clear_user_withdraw_wagers
+
+        guild_id = str(ctx.guild.id) if ctx.guild else ""
+        server_data = get_server_data(guild_id) if guild_id else {}
+        cleared = clear_user_withdraw_wagers(member.id, server_data)
+
+        labels = {
+            "deposit_wager": "Son yatırım × çarpan wager",
+            "bonus_wager": "Bonus wager",
+            "promo_wager": "Promo wager",
+        }
+        if cleared:
+            detail = "\n".join(f"• {labels.get(key, key)}" for key in cleared)
+            await ctx.send(
+                embed=utils.success_embed(
+                    f"{member.mention} için wager şartları temizlendi.\n\n{detail}"
+                )
+            )
+            log_details = detail
+        else:
+            log_details = "Aktif çekim wager şartı bulunamadı."
+            await ctx.send(
+                embed=utils.info_embed(
+                    "Wager zaten temiz",
+                    f"{member.mention} için aktif çekim wager şartı bulunamadı.",
+                )
+            )
+
+        if ctx.guild:
+            await moderation_log.log_moderation(
+                ctx.bot,
+                ctx.guild,
+                actor_id=ctx.author.id,
+                action="Cleared **withdraw wager** requirements (`.clearwager`)",
+                target_user_id=member.id,
+                details=log_details,
+                color=0x3498DB if cleared else 0x95A5A6,
+            )
 
     @commands.command(name="globalcap")
     @admin_only()

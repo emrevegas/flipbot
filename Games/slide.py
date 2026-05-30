@@ -25,6 +25,8 @@ for mult, w in SLIDE_SEGMENTS:
     _acc += w
     _CUMULATIVE.append((mult, _acc))
 
+MAX_SLIDE_MULTIPLIER = max(m for m, _ in SLIDE_SEGMENTS)
+
 
 def multiplier_from_float(f: float) -> float:
     """Map uniform [0,1) to segment multiplier."""
@@ -67,3 +69,8 @@ def random_strip_cell() -> float:
 
 def gross_payout(bet: float, multiplier: float) -> float:
     return max(0.0, bet * multiplier)
+
+
+def max_gross_payout(bet: float) -> float:
+    """Worst-case gross win — used for balance-cap rig checks."""
+    return gross_payout(bet, MAX_SLIDE_MULTIPLIER)

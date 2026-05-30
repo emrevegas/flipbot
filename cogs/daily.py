@@ -9,7 +9,7 @@ from database import db
 from modules import daily_rewards as daily
 from modules import flip_utils as utils
 from modules import server_tag
-from modules.database import check_permission
+from modules.database import check_permission, get_server_data
 from modules.player import Player
 
 
@@ -109,6 +109,9 @@ class Daily(commands.Cog):
                 "`.set daily status <keywords>` — custom status requirement\n"
                 "`.set daily tag on|off` — Server Tag required (promo + daily)\n"
                 "`.set daily show` — current settings\n"
+                "`.set depotowd <amount> <days>` — withdraw deposit requirement\n"
+                "`.set depotowd show` — show deposit requirement\n"
+                "`.set depotowd off` — disable deposit requirement\n"
                 "`.set moderation_log #channel` — moderator audit log channel\n"
                 "`.set moderation_log off` — disable audit log",
             )
@@ -244,6 +247,57 @@ class Daily(commands.Cog):
             )
         daily.set_default_amount(amount)
         await ctx.send(embed=utils.success_embed(f"Default daily set to **{amount:,} pts**."))
+
+    @set_group.command(name="depotowd", aliases=["depo_wd", "withdraw_deposit"])
+    @panel_admin_only()
+    async def set_depotowd(self, ctx: commands.Context, *args: str):
+        """
+        .set depotowd 5000 7  — withdraw için son 7 günde min 5000 coin deposit
+        .set depotowd show
+        .set depotowd off
+        """
+        if not ctx.guild:
+            return await ctx.send(embed=utils.error_embed("Use this in a server channel."))
+
+        from modules import withdraw_deposit_gate as wdg
+
+        gid = str(ctx.guild.id)
+        if not args or args[0].lower() in ("show", "list", "config"):
+            sd = get_server_data(gid) or {}
+            return await ctx.send(
+                embed=utils.info_embed("Deposit-to-withdraw", wdg.format_requirement_summary(sd))
+            )
+
+        if args[0].lower() in ("off", "disable", "clear", "0"):
+            wdg.set_requirement(gid, 0, 0)
+            return await ctx.send(
+                embed=utils.success_embed("Withdraw deposit requirement **disabled**.")
+            )
+
+        if len(args) < 2:
+            return await ctx.send(
+                embed=utils.error_embed(
+                    "Usage: `.set depotowd <amount> <days>` | `show` | `off`"
+                )
+            )
+
+        try:
+            amount = int(float(args[0].replace(",", "")))
+            days = int(float(args[1].replace(",", "")))
+        except (TypeError, ValueError):
+            return await ctx.send(embed=utils.error_embed("Invalid amount or days."))
+
+        if amount <= 0 or days <= 0:
+            return await ctx.send(
+                embed=utils.error_embed("Amount and days must be positive.")
+            )
+
+        wdg.set_requirement(gid, amount, days)
+        await ctx.send(
+            embed=utils.success_embed(
+                f"Withdraw deposit rule set: **{amount:,}** coins in last **{days}** day(s)."
+            )
+        )
 
 
 async def setup(bot: commands.Bot):
