@@ -1331,7 +1331,7 @@ def send_eth_from_treasury(to_address: str, amount_wei: int) -> str | None:
     try:
         acct = _eth_account_from_index(0, treasury=True)
         from_addr = acct.address
-        bal = _eth_balance_wei(from_addr)
+        bal = eth_balance(from_addr)
         if bal < amount_wei:
             raise ValueError(f"Insufficient treasury ETH: {bal} wei, need {amount_wei} wei.")
 
