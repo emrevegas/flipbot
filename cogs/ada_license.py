@@ -433,9 +433,9 @@ class AdaLicense(commands.Cog):
 
     # ── Customer: manage_bot ────────────────────────────────
 
-    bot_group = app_commands.Group(name="manage_bot", description="Manage your licensed bot")
+    manage_group = app_commands.Group(name="manage_bot", description="Manage your licensed bot")
 
-    @bot_group.command(name="status", description="License, VDS and bot status")
+    @manage_group.command(name="status", description="License, VDS and bot status")
     async def bot_status(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         uid = str(interaction.user.id)
@@ -465,7 +465,7 @@ class AdaLicense(commands.Cog):
             embed.add_field(name="VDS", value="Not connected", inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @bot_group.command(name="buy_license", description="Purchase a license with your balance")
+    @manage_group.command(name="buy_license", description="Purchase a license with your balance")
     @app_commands.choices(plan=PLAN_CHOICES)
     async def buy_license(self, interaction: discord.Interaction, plan: str):
         await interaction.response.defer(ephemeral=True)
@@ -480,14 +480,14 @@ class AdaLicense(commands.Cog):
             ephemeral=True,
         )
 
-    @bot_group.command(name="add_vds", description="Connect your VDS (one per license slot)")
+    @manage_group.command(name="add_vds", description="Connect your VDS (one per license slot)")
     async def add_vds(self, interaction: discord.Interaction):
         ok, msg = get_db().can_add_vds(str(interaction.user.id))
         if not ok:
             return await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
         await interaction.response.send_modal(VdsConnectModal(self, msg))
 
-    @bot_group.command(name="remove_vds", description="Remove your VDS (requires /use_license to add again)")
+    @manage_group.command(name="remove_vds", description="Remove your VDS (requires /use_license to add again)")
     async def remove_vds(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         uid = str(interaction.user.id)
@@ -505,7 +505,7 @@ class AdaLicense(commands.Cog):
             ephemeral=True,
         )
 
-    @bot_group.command(name="setup", description="Deploy bot to your VDS (Ubuntu)")
+    @manage_group.command(name="setup", description="Deploy bot to your VDS (Ubuntu)")
     async def setup(self, interaction: discord.Interaction):
         uid = str(interaction.user.id)
         if not get_db().get_vds(uid):
@@ -514,15 +514,15 @@ class AdaLicense(commands.Cog):
             return await interaction.response.send_message("❌ Active license required.", ephemeral=True)
         await interaction.response.send_modal(BotSetupModal(self))
 
-    @bot_group.command(name="start", description="Start bot service on VDS")
+    @manage_group.command(name="start", description="Start bot service on VDS")
     async def start_bot(self, interaction: discord.Interaction):
         await self._service_action(interaction, "start")
 
-    @bot_group.command(name="stop", description="Stop bot service on VDS")
+    @manage_group.command(name="stop", description="Stop bot service on VDS")
     async def stop_bot(self, interaction: discord.Interaction):
         await self._service_action(interaction, "stop")
 
-    @bot_group.command(name="restart", description="Restart bot service on VDS")
+    @manage_group.command(name="restart", description="Restart bot service on VDS")
     async def restart_bot(self, interaction: discord.Interaction):
         await self._service_action(interaction, "restart")
 
