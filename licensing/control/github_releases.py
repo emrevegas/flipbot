@@ -21,7 +21,10 @@ def fetch_latest_release(platform: str = "linux-x86_64") -> dict[str, Any] | Non
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
+            raw = resp.read().decode().strip()
+            if not raw:
+                return None
+            data = json.loads(raw)
     except Exception:
         return None
 

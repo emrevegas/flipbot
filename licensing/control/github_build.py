@@ -22,8 +22,19 @@ def _api(method: str, url: str, token: str, data: dict | None = None) -> dict[st
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode().strip()
+            if not raw:
+                return {}
+            return json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace").strip()
+        try:
+            detail = json.loads(body).get("message", body) if body else exc.reason
+        except json.JSONDecodeError:
+            detail = body or exc.reason
+        raise RuntimeError(f"GitHub API {exc.code}: {detail}") from exc
 
 
 def trigger_build_workflow(version: str) -> str:
