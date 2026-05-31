@@ -9,6 +9,8 @@ __pycache__/
 *.log
 assets/cache/
 install_state.json
+license.dat
 runtime/
 dist/
-licensing/license_server/licenses.db
+data/ada_license.db
+licensing/control/license_private.pem

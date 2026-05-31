@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 load_dotenv(ROOT / "ada.env")
 load_dotenv(ROOT / ".env")
 
-# Standalone — install_state.json olsa bile vds_panel yüklensin
+# Standalone license bot — never treated as a licensed customer instance
 os.environ["ADA_STANDALONE_BOT"] = "1"
 
 logging.basicConfig(
@@ -43,8 +43,8 @@ class AdaBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
 
     async def setup_hook(self):
-        await self.load_extension("cogs.vds_panel")
-        log.info("Loaded cogs.vds_panel")
+        await self.load_extension("cogs.ada_license")
+        log.info("Loaded cogs.ada_license")
         synced = await self.tree.sync()
         log.info("Synced %s slash command(s)", len(synced))
 

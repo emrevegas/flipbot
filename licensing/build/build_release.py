@@ -6,10 +6,8 @@ Usage (on Ubuntu build machine):
   python licensing/build/build_release.py --version 1.0.1
 
 Env:
-  LICENSE_SERVER_URL
-  LICENSE_ADMIN_KEY
   RELEASES_GITHUB_REPO   owner/repo for compiled tarballs
-  GITHUB_TOKEN           optional — upload release asset
+  GITHUB_TOKEN           upload release asset
 """
 
 from __future__ import annotations
@@ -31,8 +29,11 @@ if str(ROOT) not in sys.path:
 
 PLATFORM = "linux-x86_64"
 BUILD_DIRS = ("modules", "cogs", "Games", "database")
-# Never ship VDS admin cog sources to licensed customers
-CUSTOMER_EXCLUDE_PY = ("cogs/vds_panel.py",)
+# Never ship Ada / owner cogs to licensed customers
+CUSTOMER_EXCLUDE_PY = (
+    "cogs/vds_panel.py",
+    "cogs/ada_license.py",
+)
 # bot.py is a plain stub; core + license guard are inside modules/ (.so)
 LICENSED_BOT_STUB = '''"""Licensed runtime entry — edit blocked; logic is compiled."""
 from modules.flipbot_launcher import run
@@ -44,6 +45,8 @@ COPY_PATHS = (
     "assets",
     "database/lang",
     "licensing/VERSION",
+    "licensing/control/license_public.pem",
+    "licensing/control/license_sign.py",
     "requirements.txt",
     "config.py",
 )
@@ -168,27 +171,6 @@ def _upload_github_release(archive: Path, version: str) -> str:
     return asset["browser_download_url"]
 
 
-def _register_release(version: str, download_url: str, digest: str) -> None:
-    from licensing.client.license_client import LicenseClient
-    from licensing.common.server_url import resolve_license_server_url
-
-    admin_key = os.getenv("LICENSE_ADMIN_KEY", "")
-    server = resolve_license_server_url() or os.getenv("LICENSE_SERVER_URL", "http://127.0.0.1:8787")
-    if not admin_key:
-        print("⚠️  LICENSE_ADMIN_KEY not set — skipping server registration.")
-        return
-    client = LicenseClient(server)
-    client.admin_register_release(
-        admin_key,
-        version=version,
-        platform=PLATFORM,
-        download_url=download_url,
-        sha256=digest,
-        notes=f"Built on {PLATFORM}",
-    )
-    print("✅ Release registered on license server.")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Cython release for licensed bots")
     parser.add_argument("--version", required=True, help="Semver e.g. 1.0.1")
@@ -245,6 +227,17 @@ def main() -> int:
     manifest_path = ROOT / "dist" / f"manifest-{version}.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"Manifest: {manifest_path}")
+    print("Owner: run /vds_manage register_release with URL + sha256, or register via Ada DB.")
+    # Register locally when Ada DB is on this machine
+    db_path = os.getenv("ADA_LICENSE_DB_PATH", "")
+    if db_path or (ROOT / "data" / "ada_license.db").exists():
+        try:
+            from licensing.control.db import LicenseControlDB
+
+            LicenseControlDB().register_release(version, PLATFORM, download_url, digest)
+            print("✅ Release registered in Ada license DB.")
+        except Exception as exc:
+            print(f"⚠️  Ada DB register skipped: {exc}")
     return 0
 
 

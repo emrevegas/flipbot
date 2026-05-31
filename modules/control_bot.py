@@ -5,16 +5,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-INSTALL_STATE = Path("install_state.json")
+LICENSE_FILE = Path("license.dat")
 
 
 def is_licensed_customer_instance() -> bool:
-    """True on customer VDS after install.py (must not load VDS admin cog)."""
+    """True on customer VDS after license bot deploy (must not load Ada cogs)."""
     if is_ada_standalone_bot():
         return False
     if os.getenv("LICENSE_KEY", "").strip():
         return True
-    if INSTALL_STATE.exists():
+    if LICENSE_FILE.exists():
         return True
     return False
 

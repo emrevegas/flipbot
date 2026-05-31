@@ -1,80 +1,52 @@
 """
 Licensed runtime guard — compiled to .so in customer releases.
 
-IP whitelist + machine binding + heartbeat. Must run before bot startup.
-Do not rely on licensing/client/run.py (plain text installer only).
+Validates signed license.dat locally and checks GitHub for newer releases.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import platform
-import socket
+import re
 import sys
-import uuid
+import time
+import urllib.request
 from pathlib import Path
-from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
-INSTALL_STATE = Path("install_state.json")
+LICENSE_FILE = Path("license.dat")
 VERSION_FILE = Path("licensing/VERSION")
+PUBLIC_KEY_FILE = Path("licensing/control/license_public.pem")
 
 
-def _machine_id() -> str:
-    node = platform.node() or "unknown"
-    return uuid.uuid5(uuid.NAMESPACE_DNS, f"{node}-{uuid.getnode()}").hex
+def _licensed_install() -> bool:
+    if LICENSE_FILE.exists():
+        return True
+    if os.getenv("LICENSE_KEY", "").strip():
+        return True
+    return False
 
 
-def _public_ip() -> str:
-    for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
-        try:
-            with urlopen(url, timeout=8) as resp:
-                ip = resp.read().decode().strip()
-                if ip:
-                    return ip
-        except (URLError, HTTPError, TimeoutError, OSError):
-            continue
+def _verify_license_file() -> dict:
+    from licensing.control.license_sign import verify_license_file
+
+    if not LICENSE_FILE.exists():
+        raise RuntimeError("license.dat missing — run setup via license bot")
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except OSError:
-        return "127.0.0.1"
-
-
-def _api_post(server: str, path: str, payload: dict) -> dict[str, Any]:
-    url = server.rstrip("/") + path
-    req = Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read().decode())
-    except HTTPError as exc:
-        body = exc.read().decode()
-        try:
-            detail = json.loads(body).get("detail", body)
-        except json.JSONDecodeError:
-            detail = body or str(exc)
-        raise RuntimeError(str(detail)) from exc
-    except URLError as exc:
-        raise RuntimeError(f"License server unreachable: {exc}") from exc
-
-
-def _load_state() -> dict[str, Any]:
-    if not INSTALL_STATE.exists():
-        return {}
-    try:
-        return json.loads(INSTALL_STATE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+        data = json.loads(LICENSE_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError("Invalid license.dat") from exc
+    payload = verify_license_file(data)
+    if payload.get("status") not in ("active",):
+        raise RuntimeError(f"License status: {payload.get('status')}")
+    expires = int(payload.get("expires_at") or 0)
+    if expires < time.time():
+        raise RuntimeError("License expired")
+    env_key = (os.getenv("LICENSE_KEY") or "").strip().upper()
+    file_key = (payload.get("license_key") or "").strip().upper()
+    if env_key and file_key and env_key != file_key:
+        raise RuntimeError("LICENSE_KEY does not match license.dat")
+    return payload
 
 
 def _local_version() -> str:
@@ -83,56 +55,38 @@ def _local_version() -> str:
     return "0.0.0"
 
 
-def _licensed_install() -> bool:
-    if os.getenv("LICENSE_KEY", "").strip():
-        return True
-    return INSTALL_STATE.exists()
+def _check_github_update(payload: dict) -> None:
+    repo = (payload.get("releases_repo") or os.getenv("RELEASES_GITHUB_REPO") or "").strip()
+    if not repo:
+        return
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"}),
+            timeout=15,
+        ) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return
+    tag = (data.get("tag_name") or "").lstrip("v")
+
+    def _parse_ver(v: str) -> tuple[int, ...]:
+        parts = re.findall(r"\d+", v)
+        return tuple(int(x) for x in parts) if parts else (0,)
+
+    if _parse_ver(tag) > _parse_ver(_local_version()):
+        print(f"ℹ️  Update available: v{tag} (current v{_local_version()}) — use /manage_bot setup on license bot")
 
 
 def enforce_or_exit() -> None:
-    """
-    Block startup when license/IP invalid.
-    Skipped only on dev machines without LICENSE_KEY and without install_state.json.
-    """
+    """Block startup when license invalid. Skipped on dev machines without license.dat."""
     if not _licensed_install():
         return
-
-    state = _load_state()
-    license_key = (os.getenv("LICENSE_KEY") or state.get("license_key") or "").strip().upper()
-    from modules.license_env import resolve_license_server_url
-
-    server_url = (
-        (os.getenv("LICENSE_SERVER_URL") or state.get("server_url") or "").strip()
-        or resolve_license_server_url()
-    )
-    if not license_key or not server_url:
-        print("❌ Licensed install incomplete — run installer.", file=sys.stderr)
-        raise SystemExit(1)
-
-    ip = _public_ip()
-    mid = _machine_id()
-    payload = {"license_key": license_key, "ip": ip, "machine_id": mid}
-
     try:
-        result = _api_post(server_url, "/api/v1/license/validate", payload)
-    except RuntimeError as exc:
+        payload = _verify_license_file()
+    except Exception as exc:
         print(f"❌ License check failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-
-    lic = result.get("license") or {}
-    print(f"✅ License OK — {lic.get('plan', '?')} · expires {lic.get('expires_at', '?')} · IP {ip}")
-
-    try:
-        _api_post(
-            server_url,
-            "/api/v1/instance/heartbeat",
-            {
-                **payload,
-                "guild_id": state.get("guild_id") or os.getenv("GUILD_ID"),
-                "owner_id": state.get("owner_id") or os.getenv("OWNER_ID"),
-                "super_admin_id": state.get("super_admin_id") or os.getenv("SUPER_ADMIN_ID"),
-                "bot_version": _local_version(),
-            },
-        )
-    except RuntimeError as exc:
-        print(f"⚠️  Heartbeat failed: {exc}", file=sys.stderr)
+    days = max(0, int((int(payload["expires_at"]) - time.time()) / 86400))
+    print(f"✅ License OK — {payload.get('license_key', '?')} · {days} day(s) left")
+    _check_github_update(payload)
