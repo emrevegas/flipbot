@@ -43,7 +43,6 @@ if __name__ == "__main__":
 '''
 COPY_PATHS = (
     "assets",
-    "database/lang",
     "licensing/VERSION",
     "licensing/control/license_public.pem",
     "licensing/control/license_sign.py",
@@ -64,7 +63,12 @@ def _compile_cython(staging: Path) -> None:
         if not src.exists():
             continue
         dst = staging / pkg
-        shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        shutil.copytree(
+            src,
+            dst,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            dirs_exist_ok=True,
+        )
         setup_code = f'''
 from setuptools import setup
 from Cython.Build import cythonize
