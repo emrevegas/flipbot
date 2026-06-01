@@ -147,7 +147,8 @@ def _upload_github_release(archive: Path, version: str) -> str:
             },
         )
         with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode())
+            raw = resp.read().decode().strip()
+            return json.loads(raw) if raw else {}
 
     try:
         rel = api_call("POST", api, {"tag_name": tag, "name": tag, "draft": False, "prerelease": False})
@@ -221,7 +222,6 @@ def main() -> int:
 
     download_url = _upload_github_release(archive, version)
     print(f"Download URL: {download_url}")
-    _register_release(version, download_url, digest)
     manifest = {
         "version": version,
         "platform": PLATFORM,
