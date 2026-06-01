@@ -14,6 +14,7 @@ ETH: JSON-RPC batch + cache; set ETH_RPC_URL (Alchemy, Infura, etc.) — require
 """
 
 import os
+import threading
 import time
 import requests
 
@@ -62,6 +63,18 @@ _ETH_CACHE_TTL = 280
 _eth_backoff_until: float = 0.0
 _last_eth_rpc_at: float = 0.0
 _ETH_RPC_MIN_GAP = 0.12
+
+# Per-user lock — monitor task + "Check Now" can run concurrently otherwise.
+_deposit_check_locks: dict[str, threading.Lock] = {}
+_deposit_check_locks_guard = threading.Lock()
+
+
+def _deposit_check_lock(user_id: int) -> threading.Lock:
+    uid = str(user_id)
+    with _deposit_check_locks_guard:
+        if uid not in _deposit_check_locks:
+            _deposit_check_locks[uid] = threading.Lock()
+        return _deposit_check_locks[uid]
 
 
 # ── Seed / address derivation ──────────────────────────────────────────────────
@@ -1410,11 +1423,17 @@ def check_eth_tx_confirmed(tx_hash: str) -> bool:
         return False
 
 
-def _credit_deposit(user_id: int, coins: int) -> tuple[str, dict]:
-    """Credit coins, record deposit stats, race entry, and apply pending bonus."""
-    import uuid
-
-    from modules.database import get_user_data, set_user_data
+def _credit_deposit(
+    user_id: int,
+    coins: int,
+    *,
+    deposit_id: str,
+    chain: str,
+    amount_crypto: float,
+    amount_usd: float,
+) -> tuple[str, dict]:
+    """Credit coins after deposit_id was claimed in deposit_history."""
+    from modules.database import update_deposit_entry
     from modules.player import Player
     from modules.deposit_credit import apply_pending_deposit_bonus
 
@@ -1423,6 +1442,7 @@ def _credit_deposit(user_id: int, coins: int) -> tuple[str, dict]:
     p.record_deposit(coins)
     try:
         import modules.race as race_engine
+
         race_engine.add_entry(str(user_id), coins, "deposit")
     except Exception:
         pass
@@ -1433,25 +1453,160 @@ def _credit_deposit(user_id: int, coins: int) -> tuple[str, dict]:
         p.add_balance("real", bonus_amt)
 
     ts = int(time.time())
-    deposit_id = f"crypto-{uuid.uuid4().hex[:12]}"
-    history = get_user_data(user_id, "deposit_history") or {}
-    history[deposit_id] = {
-        "deposit_id": deposit_id,
-        "amount": int(coins),
-        "confirmed_amount": int(coins),
-        "status": "completed",
-        "timestamp": str(ts),
-        "approved_at": ts,
-        "auto": True,
-        "method_key": "crypto",
-    }
-    set_user_data(user_id, "deposit_history", history)
+    update_deposit_entry(
+        user_id,
+        deposit_id,
+        {
+            "deposit_id": deposit_id,
+            "amount": int(coins),
+            "confirmed_amount": int(coins),
+            "status": "completed",
+            "timestamp": str(ts),
+            "approved_at": ts,
+            "auto": True,
+            "method_key": "crypto",
+            "chain": chain,
+            "amount_crypto": amount_crypto,
+            "amount_usd": amount_usd,
+        },
+    )
     bonus_meta = {
         "bonus_id": bonus_id,
         "bonus_name": bonus_name,
         "bonus_coins": int(bonus_amt) if ok else 0,
     }
     return deposit_id, bonus_meta
+
+
+def _chain_balance_divisor(chain: str) -> float:
+    if chain == "SOL":
+        return 1_000_000_000
+    if chain == "LTC":
+        return 100_000_000
+    return 1e18  # ETH wei
+
+
+def _process_chain_delta(
+    user_id: int,
+    wallet: dict,
+    *,
+    chain: str,
+    info_key: str,
+    current: int,
+    rate_key: str,
+    symbol: str,
+    settings: dict,
+    rates: dict,
+    min_usd: float,
+) -> tuple[dict | None, bool]:
+    """
+    Apply balance delta for one chain. Updates last_balance before credit to prevent races.
+    Returns (credited_dict or None, wallet_changed).
+    """
+    from modules.database import try_claim_deposit_entry
+
+    info = wallet.get(info_key)
+    if not info:
+        return None, False
+
+    if current < 0:
+        return None, False
+
+    last_bal = int(info.get("last_balance", -1))
+    if last_bal < 0:
+        last_bal = 0
+        info["last_balance"] = 0
+
+    if current <= last_bal:
+        return None, False
+
+    prev_bal = last_bal
+    info["last_balance"] = current
+    wallet[info_key] = info
+
+    divisor = _chain_balance_divisor(chain)
+    diff_units = (current - prev_bal) / divisor
+    amount_usd = diff_units * rates.get(rate_key, 0)
+    coins = _usd_to_coins(amount_usd)
+
+    deposit_id = f"crypto-{chain}-{prev_bal}-{current}"
+    if not try_claim_deposit_entry(
+        user_id,
+        deposit_id,
+        {
+            "deposit_id": deposit_id,
+            "status": "processing",
+            "method_key": "crypto",
+            "chain": chain,
+            "amount_crypto": diff_units,
+            "amount_usd": amount_usd,
+            "coins": coins,
+        },
+    ):
+        return None, True
+
+    if amount_usd < min_usd or coins <= 0:
+        from modules.database import update_deposit_entry
+
+        update_deposit_entry(
+            user_id,
+            deposit_id,
+            {
+                "deposit_id": deposit_id,
+                "status": "skipped_below_minimum",
+                "method_key": "crypto",
+                "chain": chain,
+                "amount_usd": amount_usd,
+                "coins": coins,
+            },
+        )
+        return None, True
+
+    dep_id, bonus_meta = _credit_deposit(
+        user_id,
+        coins,
+        deposit_id=deposit_id,
+        chain=chain,
+        amount_crypto=diff_units,
+        amount_usd=amount_usd,
+    )
+    credited = {
+        "chain": chain,
+        "symbol": symbol,
+        "amount_crypto": round(diff_units, 8 if chain != "SOL" else 6),
+        "amount_usd": round(amount_usd, 2),
+        "coins": coins,
+        "deposit_id": dep_id,
+        **bonus_meta,
+    }
+
+    if settings.get("auto_sweep", False) and MNEMONIC:
+        if chain == "SOL":
+            sol_sweep_addr = settings.get("sol_sweep_address", "")
+            if sol_sweep_addr:
+                try:
+                    sig = sweep_sol(wallet["index"], current, sol_sweep_addr)
+                    _dispatch_sweep_log("SOL", round(diff_units, 6), sol_sweep_addr, sig)
+                except Exception as se:
+                    print(f"[AutoSweep SOL] {se}")
+        elif chain == "LTC":
+            ltc_sweep_addr = settings.get("ltc_sweep_address", "")
+            if ltc_sweep_addr:
+                try:
+                    txid = sweep_ltc(wallet["index"], ltc_sweep_addr)
+                    _dispatch_sweep_log("LTC", round(diff_units, 8), ltc_sweep_addr, txid)
+                except Exception as se:
+                    print(f"[AutoSweep LTC] {se}")
+        elif chain == "ETH":
+            eth_sweep_addr = settings.get("eth_sweep_address", "")
+            if eth_sweep_addr:
+                try:
+                    tx_hash = sweep_eth(wallet["index"], current, eth_sweep_addr)
+                    _dispatch_sweep_log("ETH", round(diff_units, 8), eth_sweep_addr, tx_hash)
+                except Exception as se:
+                    print(f"[AutoSweep ETH] {se}")
+
+    return credited, True
 
 
 def check_user_deposits(user_id: int) -> list[dict]:
@@ -1462,139 +1617,77 @@ def check_user_deposits(user_id: int) -> list[dict]:
     settings = get_settings()
     if not settings.get("enabled", False):
         return []
-    # NOTE: MNEMONIC is only required for auto-sweep, NOT for balance detection.
 
-    uid     = str(user_id)
-    wallets = _all_wallets()
-    wallet  = wallets.get(uid)
-    if not wallet:
-        return []
+    with _deposit_check_lock(user_id):
+        uid = str(user_id)
+        wallets = _all_wallets()
+        wallet = wallets.get(uid)
+        if not wallet:
+            return []
 
-    # Refresh monitoring window so monitor task keeps checking this user
-    wallets[uid]["check_until"] = int(time.time()) + MONITOR_TTL
-    changed = True
+        wallet["check_until"] = int(time.time()) + MONITOR_TTL
+        changed = True
 
-    rates     = get_rates()
-    min_usd   = float(settings.get("min_deposit_usd", 1.0))
-    credited  = []
+        rates = get_rates()
+        min_usd = float(settings.get("min_deposit_usd", 1.0))
+        credited: list[dict] = []
 
-    # ── SOL ────────────────────────────────────────────────────────────────────
-    sol_info = wallet.get("sol")
-    if settings.get("sol_enabled", True) and sol_info:
-        current  = sol_balance(sol_info["address"])
-        last_bal = int(sol_info.get("last_balance", -1))
+        if settings.get("sol_enabled", True) and wallet.get("sol"):
+            current = sol_balance(wallet["sol"]["address"])
+            item, ch = _process_chain_delta(
+                user_id,
+                wallet,
+                chain="SOL",
+                info_key="sol",
+                current=current,
+                rate_key="sol_usd",
+                symbol="◎",
+                settings=settings,
+                rates=rates,
+                min_usd=min_usd,
+            )
+            if item:
+                credited.append(item)
+            changed = changed or ch
 
-        if current >= 0:
-            if last_bal < 0:
-                # First ever check — treat as zero baseline so existing balance is credited
-                last_bal = 0
-                wallet["sol"]["last_balance"] = 0
-            if current > last_bal:
-                diff_sol   = (current - last_bal) / 1_000_000_000
-                amount_usd = diff_sol * rates.get("sol_usd", 0)
-                coins      = _usd_to_coins(amount_usd)
+        if settings.get("ltc_enabled", True) and wallet.get("ltc"):
+            current = ltc_balance(wallet["ltc"]["address"])
+            item, ch = _process_chain_delta(
+                user_id,
+                wallet,
+                chain="LTC",
+                info_key="ltc",
+                current=current,
+                rate_key="ltc_usd",
+                symbol="Ł",
+                settings=settings,
+                rates=rates,
+                min_usd=min_usd,
+            )
+            if item:
+                credited.append(item)
+            changed = changed or ch
 
-                if amount_usd >= min_usd and coins > 0:
-                    dep_id, bonus_meta = _credit_deposit(user_id, coins)
-                    credited.append({
-                        "chain": "SOL", "symbol": "◎",
-                        "amount_crypto": round(diff_sol, 6),
-                        "amount_usd":    round(amount_usd, 2),
-                        "coins":         coins,
-                        "deposit_id":    dep_id,
-                        **bonus_meta,
-                    })
-                    # Auto-sweep (requires MNEMONIC)
-                    if settings.get("auto_sweep", False) and MNEMONIC:
-                        sol_sweep_addr = settings.get("sol_sweep_address", "")
-                        if sol_sweep_addr:
-                            try:
-                                sig = sweep_sol(wallet["index"], current, sol_sweep_addr)
-                                _dispatch_sweep_log("SOL", round(diff_sol, 6), sol_sweep_addr, sig)
-                            except Exception as se:
-                                print(f"[AutoSweep SOL] {se}")
+        if settings.get("eth_enabled", True) and wallet.get("eth"):
+            current = eth_balance(wallet["eth"]["address"])
+            item, ch = _process_chain_delta(
+                user_id,
+                wallet,
+                chain="ETH",
+                info_key="eth",
+                current=current,
+                rate_key="eth_usd",
+                symbol="Ξ",
+                settings=settings,
+                rates=rates,
+                min_usd=min_usd,
+            )
+            if item:
+                credited.append(item)
+            changed = changed or ch
 
-                wallet["sol"]["last_balance"] = current
-                changed = True
+        if changed:
+            wallets[uid] = wallet
+            _save_wallets(wallets)
 
-    # ── LTC ────────────────────────────────────────────────────────────────────
-    ltc_info = wallet.get("ltc")
-    if settings.get("ltc_enabled", True) and ltc_info:
-        current  = ltc_balance(ltc_info["address"])
-        last_bal = int(ltc_info.get("last_balance", -1))
-
-        if current >= 0:
-            if last_bal < 0:
-                # First ever check — treat as zero baseline so existing balance is credited
-                last_bal = 0
-                wallet["ltc"]["last_balance"] = 0
-            if current > last_bal:
-                diff_ltc   = (current - last_bal) / 100_000_000
-                amount_usd = diff_ltc * rates.get("ltc_usd", 0)
-                coins      = _usd_to_coins(amount_usd)
-
-                if amount_usd >= min_usd and coins > 0:
-                    dep_id, bonus_meta = _credit_deposit(user_id, coins)
-                    credited.append({
-                        "chain": "LTC", "symbol": "Ł",
-                        "amount_crypto": round(diff_ltc, 8),
-                        "amount_usd":    round(amount_usd, 2),
-                        "coins":         coins,
-                        "deposit_id":    dep_id,
-                        **bonus_meta,
-                    })
-                    # Auto-sweep (requires MNEMONIC)
-                    if settings.get("auto_sweep", False) and MNEMONIC:
-                        ltc_sweep_addr = settings.get("ltc_sweep_address", "")
-                        if ltc_sweep_addr:
-                            try:
-                                txid = sweep_ltc(wallet["index"], ltc_sweep_addr)
-                                _dispatch_sweep_log("LTC", round(diff_ltc, 8), ltc_sweep_addr, txid)
-                            except Exception as se:
-                                print(f"[AutoSweep LTC] {se}")
-
-                wallet["ltc"]["last_balance"] = current
-                changed = True
-
-    # ── ETH ────────────────────────────────────────────────────────────────────
-    eth_info = wallet.get("eth")
-    if settings.get("eth_enabled", True) and eth_info:
-        current  = eth_balance(eth_info["address"])
-        last_bal = int(eth_info.get("last_balance", -1))
-
-        if current >= 0:
-            if last_bal < 0:
-                last_bal = 0
-                wallet["eth"]["last_balance"] = 0
-            if current > last_bal:
-                diff_eth   = (current - last_bal) / 1e18
-                amount_usd = diff_eth * rates.get("eth_usd", 0)
-                coins      = _usd_to_coins(amount_usd)
-
-                if amount_usd >= min_usd and coins > 0:
-                    dep_id, bonus_meta = _credit_deposit(user_id, coins)
-                    credited.append({
-                        "chain": "ETH", "symbol": "Ξ",
-                        "amount_crypto": round(diff_eth, 8),
-                        "amount_usd":    round(amount_usd, 2),
-                        "coins":         coins,
-                        "deposit_id":    dep_id,
-                        **bonus_meta,
-                    })
-                    if settings.get("auto_sweep", False) and MNEMONIC:
-                        eth_sweep_addr = settings.get("eth_sweep_address", "")
-                        if eth_sweep_addr:
-                            try:
-                                tx_hash = sweep_eth(wallet["index"], current, eth_sweep_addr)
-                                _dispatch_sweep_log("ETH", round(diff_eth, 8), eth_sweep_addr, tx_hash)
-                            except Exception as se:
-                                print(f"[AutoSweep ETH] {se}")
-
-                wallet["eth"]["last_balance"] = current
-                changed = True
-
-    if changed:
-        wallets[uid] = wallet
-        _save_wallets(wallets)
-
-    return credited
+        return credited

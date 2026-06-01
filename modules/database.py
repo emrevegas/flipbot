@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -133,6 +134,11 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_dh_user ON deposit_history(user_id);
         CREATE INDEX IF NOT EXISTS idx_wh_user ON withdraw_history(user_id);
         CREATE INDEX IF NOT EXISTS idx_th_user ON ticket_history(user_id);
+
+        CREATE TABLE IF NOT EXISTS ingame_deposit_processed (
+            message_id TEXT PRIMARY KEY,
+            created_at INTEGER NOT NULL
+        );
     """)
     _migrate_schema(conn)
     conn.commit()
@@ -157,6 +163,111 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE user_stats ADD COLUMN total_withdraw INTEGER NOT NULL DEFAULT 0"
         )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ingame_deposit_processed (
+            message_id TEXT PRIMARY KEY,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+
+
+# ── Deposit idempotency (prevent double-credit) ─────────────────────────────
+
+def try_claim_deposit_entry(user_id: int, entry_key: str, entry_data: dict) -> bool:
+    """
+    Insert a deposit_history row only if entry_key is new.
+    Returns True if this caller should perform the credit.
+    """
+    conn = _get_conn()
+    uid = str(user_id)
+    payload = json.dumps(entry_data, ensure_ascii=False)
+    with _write_lock:
+        _ensure_user(conn, uid)
+        try:
+            conn.execute(
+                "INSERT INTO deposit_history(user_id, entry_key, data) VALUES(?,?,?)",
+                (uid, str(entry_key), payload),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def get_deposit_entry(user_id: int, entry_key: str) -> dict | None:
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT data FROM deposit_history WHERE user_id=? AND entry_key=?",
+        (str(user_id), str(entry_key)),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["data"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def update_deposit_entry(user_id: int, entry_key: str, entry_data: dict) -> None:
+    conn = _get_conn()
+    uid = str(user_id)
+    with _write_lock:
+        _ensure_user(conn, uid)
+        conn.execute(
+            "INSERT OR REPLACE INTO deposit_history(user_id, entry_key, data) VALUES(?,?,?)",
+            (uid, str(entry_key), json.dumps(entry_data, ensure_ascii=False)),
+        )
+        conn.commit()
+
+
+def begin_deposit_ticket_credit(user_id: int, entry_key: str) -> tuple[bool, dict]:
+    """
+    Atomically claim a pending manual deposit ticket for crediting.
+    Returns (claimed, deposit_data).
+    """
+    conn = _get_conn()
+    uid = str(user_id)
+    key = str(entry_key)
+    with _write_lock:
+        _ensure_user(conn, uid)
+        row = conn.execute(
+            "SELECT data FROM deposit_history WHERE user_id=? AND entry_key=?",
+            (uid, key),
+        ).fetchone()
+        if not row:
+            return False, {}
+        try:
+            data = json.loads(row["data"])
+        except (json.JSONDecodeError, TypeError):
+            return False, {}
+        status = (data.get("status") or "").lower()
+        if status not in ("pending", ""):
+            return False, data
+        data["status"] = "processing"
+        conn.execute(
+            "UPDATE deposit_history SET data=? WHERE user_id=? AND entry_key=?",
+            (json.dumps(data, ensure_ascii=False), uid, key),
+        )
+        conn.commit()
+        return True, data
+
+
+def claim_ingame_deposit_message(message_id: int) -> bool:
+    """Returns True if this message_id has not been credited yet."""
+    conn = _get_conn()
+    mid = str(message_id)
+    with _write_lock:
+        try:
+            conn.execute(
+                "INSERT INTO ingame_deposit_processed(message_id, created_at) VALUES(?,?)",
+                (mid, int(time.time())),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────

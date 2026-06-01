@@ -209,6 +209,11 @@ def process_deposit_from_log(
     if not user_id:
         return False, "unknown_growid", {"growid": growid}
 
+    from modules.database import claim_ingame_deposit_message
+
+    if not claim_ingame_deposit_message(message_id):
+        return False, "duplicate", None
+
     rate = float(cfg.get("dl_to_coin_rate", 0) or 0)
     coins = dl_units_to_coins(amount_units, rate)
     if coins <= 0:
@@ -243,6 +248,15 @@ def process_deposit_from_log(
         player.add_balance("real", bonus_amt, by="bonus", reason="Deposit bonus")
 
     deposit_id = f"ingame-{message_id}"
+    from modules.database import try_claim_deposit_entry, update_deposit_entry
+
+    if not try_claim_deposit_entry(
+        user_id,
+        deposit_id,
+        {"deposit_id": deposit_id, "status": "processing", "method_key": INGAME_METHOD_KEY},
+    ):
+        return False, "duplicate", None
+
     history = get_user_data(user_id, "deposit_history") or {}
     history[deposit_id] = {
         "deposit_id": deposit_id,
@@ -260,7 +274,7 @@ def process_deposit_from_log(
         "managed_by": None,
         "bonus_amount_credited": bonus_amt if bonus_amt > 0 else None,
     }
-    set_user_data(user_id, "deposit_history", history)
+    update_deposit_entry(user_id, deposit_id, history[deposit_id])
     _mark_processed(message_id)
 
     return True, "credited", {

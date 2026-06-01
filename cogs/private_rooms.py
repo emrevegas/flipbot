@@ -3323,10 +3323,10 @@ class DepositAutoAddView(discord.ui.View):
         custom_id="deposit_ticket:auto_add_yes"
     )
     async def auto_add_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # ── Guard: only process once ──────────────────────────────────────
-        history_pre = get_user_data(self.user_id, "deposit_history") or {}
-        pre_data = history_pre.get(self.deposit_id, {})
-        if pre_data.get("status") != "pending":
+        from modules.database import begin_deposit_ticket_credit
+
+        claimed, pre_data = begin_deposit_ticket_credit(self.user_id, self.deposit_id)
+        if not claimed:
             return await interaction.response.send_message(
                 "❌ This deposit has already been processed.", ephemeral=True
             )
@@ -3341,11 +3341,8 @@ class DepositAutoAddView(discord.ui.View):
                 ephemeral=True
             )
 
-        # Add deposit to history with auto status
         player = Player(self.user_id)
-        history = get_user_data(self.user_id, "deposit_history") or {}
-        deposit_data = history.get(self.deposit_id, {})
-        
+        deposit_data = dict(pre_data)
         deposit_data.update({
             "status": "completed",
             "timestamp": str(int(time.time())),
@@ -3502,17 +3499,16 @@ class DepositConfirmAmountModal(discord.ui.Modal, title="💳 Confirm Deposit Am
                 ephemeral=True
             )
 
-        # ── Guard: only process once ──────────────────────────────────────
-        player = Player(self.user_id)
-        history = get_user_data(self.user_id, "deposit_history") or {}
-        deposit_data = history.get(self.deposit_id, {})
-        if deposit_data.get("status") != "pending":
+        from modules.database import begin_deposit_ticket_credit
+
+        claimed, deposit_data = begin_deposit_ticket_credit(self.user_id, self.deposit_id)
+        if not claimed:
             return await interaction.response.send_message(
                 "❌ This deposit has already been processed.", ephemeral=True
             )
 
-        # Add to deposit history with confirmed amount
-        
+        player = Player(self.user_id)
+        deposit_data = dict(deposit_data)
         deposit_data.update({
             "amount": confirmed_amount,
             "status": "completed",
