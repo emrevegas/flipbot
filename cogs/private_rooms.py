@@ -3341,6 +3341,8 @@ class DepositAutoAddView(discord.ui.View):
                 ephemeral=True
             )
 
+        from modules.database import update_deposit_entry
+
         player = Player(self.user_id)
         deposit_data = dict(pre_data)
         deposit_data.update({
@@ -3350,8 +3352,7 @@ class DepositAutoAddView(discord.ui.View):
             "confirmed_amount": deposit_data.get("amount", 0),
             "managed_by": interaction.user.id
         })
-        history[self.deposit_id] = deposit_data
-        set_user_data(self.user_id, "deposit_history", history)
+        update_deposit_entry(self.user_id, self.deposit_id, deposit_data)
         
         # Add to balance
         deposit_amount_val = int(deposit_data.get("amount", 0))
@@ -3507,6 +3508,8 @@ class DepositConfirmAmountModal(discord.ui.Modal, title="💳 Confirm Deposit Am
                 "❌ This deposit has already been processed.", ephemeral=True
             )
 
+        from modules.database import update_deposit_entry
+
         player = Player(self.user_id)
         deposit_data = dict(deposit_data)
         deposit_data.update({
@@ -3518,9 +3521,7 @@ class DepositConfirmAmountModal(discord.ui.Modal, title="💳 Confirm Deposit Am
             "confirmed_amount": confirmed_amount,
             "managed_by": interaction.user.id
         })
-        
-        history[self.deposit_id] = deposit_data
-        set_user_data(self.user_id, "deposit_history", history)
+        update_deposit_entry(self.user_id, self.deposit_id, deposit_data)
         
         # Add confirmed amount to balance
         confirmed_amount_int = int(confirmed_amount)

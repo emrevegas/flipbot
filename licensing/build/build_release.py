@@ -34,6 +34,10 @@ CUSTOMER_EXCLUDE_PY = (
     "cogs/vds_panel.py",
     "cogs/ada_license.py",
 )
+# Too large / discord.ui-heavy for Cython — ship as plain .py in releases
+CYTHON_SKIP_BY_PKG: dict[str, tuple[str, ...]] = {
+    "cogs": ("private_rooms.py",),
+}
 # bot.py is a plain stub; core + license guard are inside modules/ (.so)
 LICENSED_BOT_STUB = '''"""Licensed runtime entry — edit blocked; logic is compiled."""
 from modules.flipbot_launcher import run
@@ -69,14 +73,19 @@ def _compile_cython(staging: Path) -> None:
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
             dirs_exist_ok=True,
         )
+        skip_names = CYTHON_SKIP_BY_PKG.get(pkg, ())
         setup_code = f'''
 from setuptools import setup
 from Cython.Build import cythonize
 from pathlib import Path
-import glob
 
 root = Path(r"{dst}")
-py_files = [str(p) for p in root.rglob("*.py") if p.name != "__init__.py"]
+skip = set({skip_names!r})
+py_files = []
+for p in root.rglob("*.py"):
+    if p.name == "__init__.py" or p.name in skip:
+        continue
+    py_files.append(str(p))
 setup(
     ext_modules=cythonize(
         py_files,
@@ -89,8 +98,9 @@ setup(
         setup_path = staging / f"setup_{pkg.replace('/', '_')}.py"
         setup_path.write_text(setup_code, encoding="utf-8")
         _run([sys.executable, str(setup_path)], cwd=staging)
+        skip_set = set(skip_names)
         for py in dst.rglob("*.py"):
-            if py.name == "__init__.py":
+            if py.name == "__init__.py" or py.name in skip_set:
                 continue
             py.unlink(missing_ok=True)
         for c_file in dst.rglob("*.c"):
