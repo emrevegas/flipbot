@@ -282,6 +282,14 @@ def rig_case_winners(items: list[dict], count: int) -> list[dict]:
     return [dict(random.choice(pool)) for _ in range(count)]
 
 
+def rig_case_lowest_winners(items: list[dict], count: int) -> list[dict]:
+    """Minimum-value item on every pull (balance cap overflow)."""
+    if not items or count < 1:
+        return []
+    low = min(items, key=lambda x: int(x.get("value", 0) or 0))
+    return [dict(low) for _ in range(count)]
+
+
 # ── HTW / Dice bot rig ────────────────────────────────────────────────────────
 
 

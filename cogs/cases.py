@@ -2501,17 +2501,23 @@ async def _settle_case_opens(
 
     record_wager(user.id, total_cost)
     chances = case.get("item_chances", {})
-    from modules import flip_balance_cap as bc
-    from modules.game_rig import rig_case_winners
-
-    max_item_val = max((int(i.get("value", 0) or 0) for i in items), default=0)
-    from modules.game_rig import rig_case_best_winners
-
-    force_win = await bc.should_force_win_outcome(
-        user.id, "case_opening", float(total_cost), payout=max_item_val * count,
+    import modules.balance_cap as balance_cap
+    from modules.game_rig import (
+        rig_case_best_winners,
+        rig_case_lowest_winners,
+        rig_case_winners,
     )
-    rigged = await bc.should_rig_outcome(
-        user.id, "case_opening", float(total_cost), payout=max_item_val * count,
+
+    balance_after_bet = int(player.get_balance("real"))
+    bet_int = int(total_cost)
+    max_item_val = max((int(i.get("value", 0) or 0) for i in items), default=0)
+    max_payout = max_item_val * count
+
+    force_win = balance_cap.should_force_win_outcome(
+        user.id, "real", balance_after_bet, bet_int, max_payout, game_id="case_opening",
+    )
+    rigged = balance_cap.should_rig_outcome(
+        user.id, "real", balance_after_bet, bet_int, max_payout, game_id="case_opening",
     )
     if force_win:
         winners = rig_case_best_winners(items, count)
@@ -2520,6 +2526,17 @@ async def _settle_case_opens(
     else:
         winners = [_open_case_item(items, chances) for _ in range(count)]
 
+    total_won = sum(int(w.get("value", 0) or 0) for w in winners)
+    if total_won > 0 and balance_cap.should_force_cap_loss(
+        user.id,
+        "real",
+        balance_after_bet,
+        total_won,
+        game_id="case_opening",
+    ):
+        winners = rig_case_lowest_winners(items, count)
+        total_won = sum(int(w.get("value", 0) or 0) for w in winners)
+
     if is_community:
         owner_id = case.get("owner_id")
         fee_each = round(unit * (PLATFORM_FEE_PCT / 100))
@@ -2527,7 +2544,6 @@ async def _settle_case_opens(
             for _ in range(count):
                 Player(owner_id).add_balance("real", fee_each)
 
-    total_won = sum(int(w.get("value", 0)) for w in winners)
     if total_won > 0:
         player.add_balance("real", total_won)
 
