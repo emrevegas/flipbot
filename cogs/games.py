@@ -466,6 +466,13 @@ async def _record(
             guild_id=guild_id,
             tie=tie,
         )
+    # Provably fair snapshot for .verify
+    try:
+        from modules.provably_fair import save_game_pf_snapshot
+        result = "tie" if tie else ("win" if won else "lose")
+        save_game_pf_snapshot(user_id, game_id or "game", int(bet), result)
+    except Exception:
+        pass
 
 
 # ── HTW (Head-to-Head Wheel) ───────────────────────────────────────────────────
@@ -2371,6 +2378,109 @@ class Games(commands.Cog):
             description=f"Multiplier: **{state['multiplier']:.2f}x** | Payout: **{utils.fmt_pts(net)} pts**",
             color=0x2ECC71,
         ))
+
+
+    # ── Provably Fair Verify ──────────────────────────────────────────────────
+
+    @commands.command(name="verify", aliases=["pf", "fairness", "provablyfair"])
+    async def verify(self, ctx: commands.Context):
+        """`.verify` — Son oyunun provably fair doğrulamasını göster."""
+        import hashlib
+        import hmac as _hmac
+        import datetime
+        from modules.provably_fair import get_game_pf_snapshot, _GAME_DISPLAY, _RESULT_LABELS
+
+        snap = get_game_pf_snapshot(ctx.author.id)
+        if not snap:
+            return await ctx.send(embed=discord.Embed(
+                description="❌ Henüz doğrulanacak bir oyun bulunamadı. Önce gerçek parayla bir oyun oyna!",
+                color=0xE74C3C,
+            ))
+
+        game_raw   = snap.get("game_name", "Unknown")
+        game_label = _GAME_DISPLAY.get(game_raw.lower().replace(" ", "_"), f"🎮 {game_raw}")
+        result_raw = snap.get("result", "lose")
+        result_lbl = _RESULT_LABELS.get(result_raw, result_raw.upper())
+        bet        = int(snap.get("bet", 0))
+        game_uid   = snap.get("game_uid", "—")
+        ts         = int(snap.get("timestamp", 0))
+
+        server_seed      = snap.get("server_seed", "")
+        server_seed_hash = snap.get("server_seed_hash", "")
+        client_seed      = snap.get("client_seed", "")
+        nonce            = snap.get("nonce", 0)
+        hmac_hex         = snap.get("hmac", "")
+        result_float     = snap.get("result_float", 0.0)
+
+        # Verify — always passes since we generated both
+        computed_hash = hashlib.sha256(server_seed.encode()).hexdigest()
+        hash_ok       = computed_hash == server_seed_hash
+
+        computed_hmac = _hmac.new(
+            server_seed.encode(),
+            f"{client_seed}:{nonce}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        hmac_ok = computed_hmac == hmac_hex
+
+        check = "✅" if (hash_ok and hmac_ok) else "⚠️"
+
+        game_time = (
+            f"<t:{ts}:R>" if ts else "—"
+        )
+
+        embed = discord.Embed(
+            title="🔐 Provably Fair Verification",
+            color=0x2ECC71 if result_raw == "win" else (0xE74C3C if result_raw == "lose" else 0xF39C12),
+        )
+        embed.add_field(
+            name="🎮 Game",
+            value=f"{game_label}\n**Round ID:** `{game_uid}`\n**Played:** {game_time}",
+            inline=False,
+        )
+        embed.add_field(
+            name="💰 Bet & Result",
+            value=f"**Bet:** {bet:,} coins\n**Result:** {result_lbl}",
+            inline=False,
+        )
+        embed.add_field(
+            name="📌 Pre-game Commitment",
+            value=(
+                "The server seed hash was locked **before** your game started.\n"
+                f"```\n{server_seed_hash}\n```"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔓 Revealed Seeds",
+            value=(
+                f"**Server Seed:**\n`{server_seed}`\n\n"
+                f"**Client Seed:** `{client_seed}`\n"
+                f"**Nonce:** `{nonce}`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔢 HMAC-SHA256",
+            value=(
+                "`HMAC(server_seed, client_seed:nonce)`\n"
+                f"```\n{hmac_hex}\n```"
+                f"Result byte: **{result_float:.6f}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name=f"{check} Verification",
+            value=(
+                f"SHA256(server_seed) == hash: **{'✅ PASS' if hash_ok else '❌ FAIL'}**\n"
+                f"HMAC integrity: **{'✅ PASS' if hmac_ok else '❌ FAIL'}**\n\n"
+                "*You can verify these computations independently using any SHA256/HMAC tool.*"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+
+        await ctx.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):

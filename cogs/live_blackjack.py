@@ -16,7 +16,6 @@ import modules.bonus as bonus_engine
 import modules.live_blackjack_tables as tables
 import modules.live_blackjack_v2 as lbv2
 import modules.promo as promo_engine
-import modules.race as race_engine
 from Games import live_blackjack as lbj
 from modules.database import get_data, set_data
 from modules.live_blackjack_tables import get_settings
@@ -352,7 +351,11 @@ async def _settle_table_economy(
                     bonus_engine.check_forfeit(uid, current_bal)
             promo_engine.on_real_bet_wagered(uid, main_bet)
             promo_engine.check_forfeit_promo(uid, current_bal)
-            race_engine.add_entry(uid, main_bet, "wager")
+            try:
+                from modules.provably_fair import save_game_pf_snapshot
+                save_game_pf_snapshot(uid, "live_blackjack", main_bet, result_label)
+            except Exception:
+                pass
             if member:
                 _apply_rakeback(member, player, main_bet)
             try:

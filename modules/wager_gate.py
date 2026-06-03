@@ -37,10 +37,16 @@ def start_deposit_cycle(user_id: int | str, deposit_coins: int) -> None:
 
 
 def record_wager(user_id: int | str, amount: int | float) -> None:
-    """Count bet toward the current deposit wager cycle."""
+    """Count bet toward withdraw wager cycle and active wager races."""
     amount = int(amount)
     if amount <= 0:
         return
+    try:
+        import modules.race as race_engine
+
+        race_engine.add_entry(user_id, amount, "wager")
+    except Exception:
+        pass
     stats = _stats(user_id)
     if int(stats.get("last_deposit_amount", 0) or 0) <= 0:
         return
@@ -74,7 +80,7 @@ def get_withdraw_wager_status(
     Returns (required, wagered, remaining) in coins.
     Staff/admin bypass (no requirement).
     """
-    if not check_permission(int(user_id), "admin"):
+    if check_permission(int(user_id), "admin"):
         return 0, 0, 0
 
     mult = get_multiplier(server_data)

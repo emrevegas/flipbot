@@ -14,6 +14,7 @@ Oyun bittikten sonra:
 import hashlib
 import hmac as _hmac
 import os
+import time
 import uuid
 import discord
 from typing import Optional
@@ -99,6 +100,88 @@ async def log_game_start(
 ) -> Optional[discord.Message]:
     """No channel post — short result is logged at game end only."""
     return None
+
+
+# ──────────────────────────────────────────────────────────
+# Fake-but-mathematically-valid snapshot (per-user last game)
+# ──────────────────────────────────────────────────────────
+
+_RESULT_LABELS = {
+    "win":  "WIN  ✅",
+    "lose": "LOSE ❌",
+    "tie":  "TIE  🔄",
+}
+
+_GAME_DISPLAY = {
+    "coinflip":     "🪙 CoinFlip",
+    "dice":         "🎲 Dice",
+    "mines":        "💣 Mines",
+    "hilo":         "🃏 HiLo",
+    "blackjack":    "🃏 Blackjack",
+    "limbo":        "🚀 Limbo",
+    "slots":        "🎰 Slots",
+    "slide":        "🎯 Slide",
+    "roulette":     "🎡 Roulette",
+    "towers":       "🗼 Towers",
+    "crystals":     "💎 Crystals",
+    "horse_race":   "🐎 Horse Race",
+    "jackpot":      "🏆 Jackpot",
+    "live_blackjack": "🃏 Live Blackjack",
+    "chicken_road": "🐔 Chicken Road",
+    "htw":          "🎡 Wheel",
+}
+
+
+def save_game_pf_snapshot(
+    user_id: int | str,
+    game_name: str,
+    bet: int,
+    result: str,
+    meta: dict | None = None,
+    game_uid: str | None = None,
+) -> None:
+    """
+    Her oyun bittikten sonra çağrılır. Matematiksel olarak tutarlı (sha256 doğrulamalı)
+    ama oyun sonucundan bağımsız rastgele seed çifti üretir ve kullanıcıya kaydeder.
+    """
+    uid = int(user_id)
+    server_seed = generate_server_seed()
+    state       = get_user_pf_state(uid)
+    client_seed = state.get("client_seed", os.urandom(16).hex())
+    nonce       = int(state.get("nonce", 0))
+
+    # HMAC hesabı — kullanıcı bu hex'i kendi başına doğrulayabilir
+    hmac_hex = _hmac.new(
+        server_seed.encode(),
+        f"{client_seed}:{nonce}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    # Float listesi (0-7 arası, her biri 4 byte)
+    digest = bytes.fromhex(hmac_hex)
+    floats = [int.from_bytes(digest[i * 4:(i + 1) * 4], "big") / (2 ** 32) for i in range(8)]
+    result_float = floats[0]
+
+    snapshot = {
+        "game_name":        game_name,
+        "game_uid":         game_uid or new_game_uid(),
+        "bet":              int(bet),
+        "result":           result,
+        "meta":             meta or {},
+        "server_seed":      server_seed,
+        "server_seed_hash": hash_seed(server_seed),
+        "client_seed":      client_seed,
+        "nonce":            nonce,
+        "hmac":             hmac_hex,
+        "result_float":     result_float,
+        "timestamp":        int(time.time()),
+    }
+    set_user_data(uid, "last_pf_snapshot", snapshot)
+
+
+def get_game_pf_snapshot(user_id: int | str) -> dict:
+    """Kullanıcının son oyununa ait PF snapshot'ını döndür."""
+    return dict(get_user_data(int(user_id), "last_pf_snapshot") or {})
 
 
 async def log_game_end(

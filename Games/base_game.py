@@ -10,7 +10,6 @@ from modules.player import Player
 from modules.utils import format_balance
 import modules.bonus as bonus_engine
 import modules.promo as promo_engine
-import modules.race as race_engine
 
 def _is_tracking_exempt_user(user_id: int | str) -> bool:
     """Return True when user's bets must not be tracked in history/statistics."""
@@ -286,8 +285,7 @@ class BaseGame:
             promo_engine.on_real_bet_wagered(player.uid, bet)
             promo_engine.check_forfeit_promo(player.uid, current_bal)
 
-            # ── Race wager tracking ────────────────────────────────────
-            race_engine.add_entry(player.uid, bet, "wager")
+            # Race + withdraw wager: player.update_stats → record_wager()
 
             # Apply rakeback if member provided
             if member is not None:
@@ -336,6 +334,16 @@ class BaseGame:
             server_record["by_user"] = by_user
             game_stats[self.id]      = server_record
             set_data("server/game_stats", game_stats)
+
+        # Provably fair snapshot — kullanıcı .verify ile görebilir
+        if mode == "real" and not is_free_round:
+            try:
+                from modules.provably_fair import save_game_pf_snapshot
+                save_game_pf_snapshot(
+                    player.uid, self.name, bet, game_result.result, game_result.meta,
+                )
+            except Exception:
+                pass
 
         return {
             "game":       self.name,

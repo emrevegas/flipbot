@@ -416,14 +416,6 @@ async def add_wager(user_id: int | str, amount: float) -> None:
         "UPDATE users SET total_wagered = total_wagered + ? WHERE user_id = ?",
         (amt, uid),
     )
-    # Update active race entry if any
-    race = await get_active_race()
-    if race:
-        await db.execute(
-            """INSERT INTO race_entries (race_id, user_id, wagered) VALUES (?, ?, ?)
-               ON CONFLICT(race_id, user_id) DO UPDATE SET wagered = wagered + ?""",
-            (race["id"], uid, amt, amt),
-        )
     # Update active bonus wager
     await db.execute(
         """UPDATE active_bonuses SET wagered = wagered + ?
