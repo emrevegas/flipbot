@@ -659,7 +659,7 @@ class CryptoWithdraw(commands.Cog):
             return False, "No crypto chains are enabled.", False
         return True, "", False
 
-    async def start_withdrawal(self, interaction: discord.Interaction) -> None:
+    async def start_withdrawal(self, interaction: discord.Interaction, *, edit: bool = False) -> None:
         from cogs.crypto_withdraw_v2 import build_withdraw_coin_layout, build_withdraw_disabled_layout
         from modules.ui_v2 import send_ephemeral
 
@@ -668,8 +668,9 @@ class CryptoWithdraw(commands.Cog):
             return await send_ephemeral(
                 interaction,
                 build_withdraw_disabled_layout("Unavailable", msg, warning=warning),
+                edit=edit,
             )
-        await send_ephemeral(interaction, build_withdraw_coin_layout(interaction.user.id))
+        await send_ephemeral(interaction, build_withdraw_coin_layout(interaction.user.id), edit=edit)
 
     async def start_withdrawal_from_ctx(self, ctx: commands.Context) -> None:
         from cogs.crypto_withdraw_v2 import build_withdraw_coin_layout, build_withdraw_disabled_layout

@@ -111,6 +111,9 @@ async def route_deposit_after_bonus(
                 ),
                 view=None,
             )
+        from modules.luci_queue import set_deposit_watch
+
+        set_deposit_watch(seconds=900, user_id=user_id)
         await interaction.response.send_modal(
             GrowIDDepositModal(str(user_id), lang, cfg, skip_bonus=True)
         )
