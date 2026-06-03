@@ -1,7 +1,14 @@
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+ROOT = Path(__file__).resolve().parent
+DATA_DIR = ROOT / "data"
+DATA_DIR.mkdir(exist_ok=True)
+LUCI_QUEUE_DIR = Path(os.getenv("LUCI_QUEUE_DIR", str(DATA_DIR / "luci")))
 
 TOKEN        = os.getenv("TOKEN", "")
 PREFIX       = os.getenv("PREFIX", ".")

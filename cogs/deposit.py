@@ -440,17 +440,30 @@ class Deposit(commands.Cog):
 
     @commands.command(name="deposit", aliases=["dep", "depo"])
     async def deposit(self, ctx: commands.Context):
-        """Open deposit hub — crypto, in-game (Growtopia), and panel payment methods."""
+        """In-game deposit via DM (Luci donation listener). Also opens crypto/panel hub if needed."""
         await db.ensure_user(ctx.author.id, ctx.author.name)
         if await db.is_banned(ctx.author.id):
             return await ctx.send(embed=utils.error_embed("You are banned."))
+
+        cog = ctx.bot.get_cog("IngameLuci")
+        if cog is not None:
+            ok = await cog.open_deposit_dm(ctx.author)
+            if ok:
+                await ctx.send("📬 **Check your DMs** — in-game deposit panel sent.", delete_after=15)
+                return
+            return await ctx.send(
+                embed=utils.error_embed(
+                    "Could not DM you. Enable **Direct Messages** from server members and try again."
+                )
+            )
+
         if ctx.guild is None:
             return await ctx.send(embed=utils.error_embed("Use this command in a server channel."))
 
         from modules.deposit_hub import (
+            PrefixDepositView,
             build_deposit_hub_embed,
             collect_deposit_methods,
-            PrefixDepositView,
             resolve_user_lang,
         )
 
@@ -458,25 +471,43 @@ class Deposit(commands.Cog):
         if not methods:
             return await ctx.send(
                 embed=utils.error_embed(
-                    "No deposit methods are available. Ask staff to configure crypto or payment methods in `/panel`."
+                    "No deposit methods are available. Ask staff to configure in-game or crypto in `/panel`."
                 )
             )
 
         lang = resolve_user_lang(ctx.author.id)
-        embed = build_deposit_hub_embed(lang)
-        view = PrefixDepositView(ctx.author.id, methods, lang)
-        await ctx.send(embed=embed, view=view)
+        try:
+            dm = await ctx.author.create_dm()
+            embed = build_deposit_hub_embed(lang)
+            await dm.send(embed=embed, view=PrefixDepositView(ctx.author.id, methods, lang))
+            await ctx.send("📬 **Check your DMs** — deposit panel sent.", delete_after=15)
+        except discord.Forbidden:
+            await ctx.send(embed=utils.error_embed("Enable DMs to use `.deposit`."))
 
     @commands.command(name="withdraw", aliases=["wd"])
     async def withdraw(self, ctx: commands.Context):
-        """Crypto withdrawal — pick coin, address, amount; staff approves from log channel."""
+        """In-game withdraw via DM (Luci display box). Falls back to crypto if in-game off."""
         await db.ensure_user(ctx.author.id, ctx.author.name)
         if await db.is_banned(ctx.author.id):
             return await ctx.send(embed=utils.error_embed("You are banned."))
 
+        from modules.ingame_deposit import get_ingame_config, is_ingame_configured
+
+        cfg = get_ingame_config()
+        if cfg.get("enabled") and is_ingame_configured(cfg):
+            cog = ctx.bot.get_cog("IngameLuci")
+            if cog is not None:
+                ok = await cog.open_withdraw_dm(ctx.author)
+                if ok:
+                    await ctx.send("📬 **Check your DMs** — withdrawal panel sent.", delete_after=15)
+                    return
+                return await ctx.send(
+                    embed=utils.error_embed("Enable DMs to use `.withdraw`.")
+                )
+
         cog = ctx.bot.get_cog("CryptoWithdraw")
         if cog is None:
-            return await ctx.send(embed=utils.error_embed("Crypto withdraw module is not loaded."))
+            return await ctx.send(embed=utils.error_embed("Withdraw module is not loaded."))
         await cog.start_withdrawal_from_ctx(ctx)
 
     @commands.command(name="addmethod")

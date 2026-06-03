@@ -45,6 +45,7 @@ COGS = [
     "cogs.crypto_deposit",
     "cogs.crypto_withdraw",
     "cogs.ingame_deposit",
+    "cogs.ingame_luci",
     "cogs.private_rooms",
     "cogs.live_blackjack",
     "cogs.live_stats",
