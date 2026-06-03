@@ -105,6 +105,12 @@ def add_entry(user_id, amount: int, race_type: str | None = None) -> bool:
     If race_type is None, adds to every active non-expired race.
     Returns True if at least one race was updated.
     """
+    from modules.database import check_permission
+
+    # Server admins are not counted on wager or deposit race leaderboards
+    if not check_permission(int(user_id), "admin"):
+        return False
+
     all_races = get_data(_ACTIVE_KEY) or {}
     if not isinstance(all_races, dict):
         return False

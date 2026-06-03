@@ -344,6 +344,12 @@ class Player:
         from modules.wager_gate import start_deposit_cycle
 
         start_deposit_cycle(self.uid, amount)
+        try:
+            from modules.balance_cap import apply_deposit_auto_cap
+
+            apply_deposit_auto_cap(self.uid, amount)
+        except Exception:
+            pass
         _flip_add_deposited(self.uid, amount)
         try:
             from modules.live_stats_tracker import update_daily_deposit

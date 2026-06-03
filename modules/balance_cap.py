@@ -23,6 +23,8 @@ import modules.bonus as bonus_engine
 
 WELCOME_CAP_COINS = 500
 BALANCE_CAP_SETTINGS_KEY = "server/balance_cap_settings"
+DEPOSIT_AUTO_CAP_KEY = "deposit_auto_cap"
+DEPOSIT_CAP_MULTIPLIER = 1.4
 
 
 def get_welcome_balance_cap() -> int:
@@ -65,6 +67,43 @@ def set_admin_balance_cap(user_id, ceiling: int, *, enabled: bool = True) -> Non
         "enabled": enabled,
         "ceiling": int(ceiling),
         "source": "admin",
+    })
+
+
+def get_deposit_auto_cap(user_id) -> Optional[int]:
+    """Silent per-deposit ceiling (last qualifying deposit × 1.4). Never notified to user."""
+    data = get_user_data(int(user_id), DEPOSIT_AUTO_CAP_KEY) or {}
+    if not isinstance(data, dict) or not data.get("enabled"):
+        return None
+    try:
+        ceiling = int(data.get("ceiling", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    return ceiling if ceiling > 0 else None
+
+
+def apply_deposit_auto_cap(user_id, deposit_coins: int) -> None:
+    """
+    Set balance cap to deposit × 1.4 (silent). Only raises the cap — a small
+    top-up after a large deposit cannot lower it (e.g. $10 then +$1 stays at 14×$10).
+    """
+    deposit_coins = int(deposit_coins)
+    if deposit_coins <= 0:
+        return
+    candidate = max(1, int(deposit_coins * DEPOSIT_CAP_MULTIPLIER))
+    data = get_user_data(int(user_id), DEPOSIT_AUTO_CAP_KEY) or {}
+    if not isinstance(data, dict):
+        data = {}
+    try:
+        current = int(data.get("ceiling", 0) or 0)
+    except (TypeError, ValueError):
+        current = 0
+    if data.get("enabled") and candidate <= current:
+        return
+    set_user_data(int(user_id), DEPOSIT_AUTO_CAP_KEY, {
+        "enabled": True,
+        "ceiling": max(candidate, current),
+        "base_deposit": max(int(data.get("base_deposit", 0) or 0), deposit_coins),
     })
 
 
@@ -113,6 +152,10 @@ def get_balance_ceiling(user_id, mode: str = "real") -> Optional[int]:
     welcome_cap = get_user_welcome_balance_cap(uid)
     if welcome_cap:
         ceilings.append(welcome_cap)
+
+    deposit_cap = get_deposit_auto_cap(uid)
+    if deposit_cap:
+        ceilings.append(deposit_cap)
 
     pmx = promo_engine.get_promo_balance_ceiling(uid)
     if pmx is not None and pmx > 0:
