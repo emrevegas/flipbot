@@ -50,8 +50,21 @@ def _read_json(path: Path) -> Optional[dict[str, Any]]:
         return None
 
 
+def bot_stock_wl_units(balance: dict[str, Any]) -> int:
+    """WL-units: 1 WL + 100 per DL + 10000 per BGL (same as donation.lua)."""
+    return (
+        int(balance.get("wl") or 0)
+        + int(balance.get("dl") or 0) * 100
+        + int(balance.get("bgl") or 0) * 10000
+    )
+
+
+def read_bot_balance() -> Optional[dict[str, Any]]:
+    return _read_json(BOT_BALANCE_FILE)
+
+
 def _order_payload(order: dict[str, Any]) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "id": int(order["id"]),
         "user_id": int(order["user_id"]),
         "growid": str(order["growid"]),
@@ -62,6 +75,19 @@ def _order_payload(order: dict[str, Any]) -> dict[str, Any]:
         "coins_paid": int(order.get("coins_paid") or 0),
         "created_at": int(order.get("created_at") or time.time()),
     }
+    deliveries = order.get("deliveries")
+    if isinstance(deliveries, list) and deliveries:
+        payload["deliveries"] = [
+            {
+                "item_type": str(d["item_type"]),
+                "quantity": int(d["quantity"]),
+                "item_id": int(d.get("item_id") or item_id_for(str(d["item_type"]))),
+            }
+            for d in deliveries
+        ]
+        if order.get("delivery_summary"):
+            payload["delivery_summary"] = str(order["delivery_summary"])
+    return payload
 
 
 def enqueue_withdraw(order: dict[str, Any]) -> None:
@@ -89,10 +115,6 @@ def set_deposit_watch(seconds: int = 900, user_id: int | None = None) -> None:
     log.info("[Luci] deposit watch until %s", payload["until"])
 
 
-def read_bot_balance() -> Optional[dict[str, Any]]:
-    if not BOT_BALANCE_FILE.exists():
-        return None
-    return _read_json(BOT_BALANCE_FILE)
 
 
 def process_deposit_inbox_sync() -> list[tuple[bool, str, dict | None]]:
@@ -202,7 +224,7 @@ async def process_withdraw_results(bot) -> int:
                 view = build_detail_panel(
                     title="✅ In-Game Withdrawal Complete",
                     body=(
-                        f"**{order.get('quantity', '?')}x {order.get('item_type', 'dl').upper()}** "
+                        f"**{order.get('delivery_summary') or (str(order.get('quantity', '?')) + 'x ' + str(order.get('item_type', 'dl')).upper())}** "
                         f"delivered to display box in **`{order.get('world_name', '?')}`**.\n"
                         f"GrowID: `{order.get('growid', '?')}`"
                     ),
@@ -234,6 +256,8 @@ async def process_withdraw_results(bot) -> int:
                     fail_msg = "No display box found in world"
                 elif fail_msg == "warp_failed":
                     fail_msg = "Bot could not enter your world"
+                elif fail_msg == "insufficient_bot_stock":
+                    fail_msg = "Bot did not have the required locks (BGL/DL/WL)"
                 view = build_detail_panel(
                     title="❌ In-Game Withdrawal Failed",
                     body=f"{fail_msg}\n\n**{format_balance(coins_paid, 'real')}** refunded to your balance.",

@@ -29,8 +29,11 @@ def _staff_can_approve(user_id: int) -> bool:
     return not check_permission(user_id, "admin") or not check_permission(user_id, "cashier")
 
 
+def _delivery_label(w: dict) -> str:
+    return str(w.get("delivery_summary") or f"{w.get('quantity', '?')}x {str(w.get('item_type', 'dl')).upper()}")
+
+
 def _build_ingame_approval_embed(w: dict) -> discord.Embed:
-    item = str(w.get("item_type", "dl")).upper()
     embed = discord.Embed(
         title="💸 In-Game Withdrawal Request",
         color=0xFFA500,
@@ -39,7 +42,7 @@ def _build_ingame_approval_embed(w: dict) -> discord.Embed:
     embed.add_field(name="User", value=f"<@{w['user_id']}> (`{w['user_id']}`)", inline=True)
     embed.add_field(
         name="Delivery",
-        value=f"`{w.get('quantity', '?')}x {item}` → **`{w.get('world_name', '?')}`**",
+        value=f"`{_delivery_label(w)}` → **`{w.get('world_name', '?')}`**",
         inline=True,
     )
     embed.add_field(
@@ -93,6 +96,12 @@ class LuciWithdrawApprovalView(discord.ui.View):
 
         ok, code, w = approve_withdrawal(self.withdrawal_id, interaction.user.id)
         if not ok:
+            if code == "insufficient_bot_stock" and w:
+                from modules.ingame_withdraw import validate_bot_stock
+
+                required = int(w.get("required_wl_units") or 0)
+                msg = validate_bot_stock(required) or "Bot has insufficient locks."
+                return await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
             return await interaction.response.send_message(f"❌ Could not approve ({code}).", ephemeral=True)
 
         uid = int(w["user_id"])
@@ -120,8 +129,7 @@ class LuciWithdrawApprovalView(discord.ui.View):
                     embed=discord.Embed(
                         title="✅ In-Game Withdrawal Approved",
                         description=(
-                            f"**{w.get('quantity')}x {str(w.get('item_type', 'dl')).upper()}** "
-                            f"→ **`{w.get('world_name')}`**\n"
+                            f"**{_delivery_label(w)}** → **`{w.get('world_name')}`**\n"
                             f"GrowID: `{w.get('growid')}`\n\n"
                             "The bot is delivering to your Display Box. You'll get another DM when done."
                         ),
@@ -248,6 +256,7 @@ class IngameWithdrawModal(discord.ui.Modal, title="In-Game Withdrawal"):
             "world_name": world,
             "item_type": order["item_type"],
             "quantity": order["quantity"],
+            "delivery_summary": order.get("delivery_summary"),
             "status": "pending_approval",
             "timestamp": str(int(time.time())),
             "user_id": self.user_id,
@@ -258,7 +267,7 @@ class IngameWithdrawModal(discord.ui.Modal, title="In-Game Withdrawal"):
             embed=discord.Embed(
                 title="⏳ Withdrawal Submitted",
                 description=(
-                    f"**{format_balance(coins, 'real')}** → **{order['quantity']}x {order['item_type'].upper()}**\n"
+                    f"**{format_balance(coins, 'real')}** → **{order.get('delivery_summary', order['item_type'].upper())}**\n"
                     f"World: `{world}` · GrowID: `{self.growid}`\n\n"
                     "Your balance has been deducted. Staff will review your request.\n"
                     f"🆔 `{wid}`"

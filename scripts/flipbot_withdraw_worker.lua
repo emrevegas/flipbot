@@ -123,17 +123,31 @@ function GT_order_expired()
   return (GT_now_ms() - state.order_started_ms) >= ORDER_TIMEOUT_MS
 end
 
+function GT_parse_deliveries(body)
+  local deliveries = {}
+  local section = body:match('"deliveries":%[(.-)%]')
+  if not section or section == "" then return deliveries end
+  for typ, qty, iid in section:gmatch('"item_type":"([^"]+)","quantity":(%d+),"item_id":(%d+)') do
+    deliveries[#deliveries + 1] = {
+      item_type = typ,
+      quantity = tonumber(qty) or 1,
+      item_id = tonumber(iid) or GT_item_id_for_type(typ),
+    }
+  end
+  return deliveries
+end
+
 function GT_parse_order_json(body)
   if not body or body == "" then return nil end
-  body = body:gsub("%s+", "")
-  local id = body:match('"id":(%d+)')
-  local growid = body:match('"growid":"([^"]+)"')
-  local world = body:match('"world_name":"([^"]+)"')
-  local item_type = body:match('"item_type":"([^"]+)"')
-  local qty = body:match('"quantity":(%d+)')
-  local item_id = body:match('"item_id":(%d+)')
+  local compact = body:gsub("%s+", "")
+  local id = compact:match('"id":(%d+)')
+  local growid = compact:match('"growid":"([^"]+)"')
+  local world = compact:match('"world_name":"([^"]+)"')
+  local item_type = compact:match('"item_type":"([^"]+)"')
+  local qty = compact:match('"quantity":(%d+)')
+  local item_id = compact:match('"item_id":(%d+)')
   if id and growid and world then
-    return {
+    local order = {
       id = tonumber(id),
       growid = growid,
       world_name = world,
@@ -141,6 +155,11 @@ function GT_parse_order_json(body)
       quantity = tonumber(qty) or 1,
       item_id = tonumber(item_id) or ITEM_WL,
     }
+    local deliveries = GT_parse_deliveries(compact)
+    if #deliveries > 0 then
+      order.deliveries = deliveries
+    end
+    return order
   end
   return nil
 end
@@ -554,7 +573,9 @@ function GT_drop_on_display(display_x, display_y, item_id, count)
   end
   if not skind then skind = "left" end
 
-  for attempt = 1, 2 do
+  local max_attempts = 2
+  if item_id == ITEM_BGL then max_attempts = 1 end
+  for attempt = 1, max_attempts do
     if GT_order_expired() then return false end
     if GT_inventory_dropped(before, item_id, count) then
       local delta = before - GT_inventory_count(item_id)
@@ -577,12 +598,18 @@ function GT_drop_on_display(display_x, display_y, item_id, count)
   return false
 end
 
+function GT_max_drop_chunk(item_id)
+  if item_id == ITEM_BGL then return 1 end
+  return MAX_STACK
+end
+
 function GT_drop_all_on_display(box, item_id, total_qty)
   local remaining = total_qty
+  local max_chunk = GT_max_drop_chunk(item_id)
   while remaining > 0 do
     if GT_order_expired() then return false, "order_timeout_2min" end
     local chunk = remaining
-    if chunk > MAX_STACK then chunk = MAX_STACK end
+    if chunk > max_chunk then chunk = max_chunk end
     local ok = GT_drop_on_display(box.x, box.y, item_id, chunk)
     if not ok then
       return false, "drop_failed"
@@ -617,20 +644,45 @@ function GT_finish_success(order)
   GT_go_home()
 end
 
+function GT_order_deliveries(order)
+  if order.deliveries and #order.deliveries > 0 then
+    return order.deliveries
+  end
+  return {
+    {
+      item_type = order.item_type or "wl",
+      quantity = tonumber(order.quantity) or 1,
+      item_id = order.item_id or GT_item_id_for_type(order.item_type),
+    },
+  }
+end
+
+function GT_can_fulfill_deliveries(deliveries)
+  for _, d in ipairs(deliveries) do
+    local iid = d.item_id or GT_item_id_for_type(d.item_type)
+    local need = tonumber(d.quantity) or 0
+    if need <= 0 or GT_inventory_count(iid) < need then
+      return false, iid, need
+    end
+  end
+  return true
+end
+
 function GT_run_order(order)
   state.busy = true
   state.order = order
   state.order_started_ms = GT_now_ms()
 
-  local item_id = order.item_id or GT_item_id_for_type(order.item_type)
-  local qty = tonumber(order.quantity) or 1
+  local deliveries = GT_order_deliveries(order)
   local world_name = GT_split_world(order.world_name)
 
   if world_name == "" then
     GT_finish_fail(order, "invalid_world")
     return
   end
-  if GT_inventory_count(item_id) < qty then
+  local can, missing_id, missing_qty = GT_can_fulfill_deliveries(deliveries)
+  if not can then
+    GT_log("Stock check failed item " .. tostring(missing_id) .. " need " .. tostring(missing_qty))
     GT_finish_fail(order, "insufficient_bot_stock")
     return
   end
@@ -640,8 +692,8 @@ function GT_run_order(order)
   end
 
   GT_log(string.format(
-    "Order #%d world=%s growid=%s qty=%d item=%d",
-    order.id, order.world_name, order.growid, qty, item_id
+    "Order #%d world=%s growid=%s lines=%d",
+    order.id, order.world_name, order.growid, #deliveries
   ))
 
   if not GT_warp_to_world(order.world_name) then
@@ -666,9 +718,27 @@ function GT_run_order(order)
   local reason = "drop_failed"
   for i, box in ipairs(boxes) do
     GT_log("Display box " .. i .. "/" .. #boxes .. " tile " .. box.x .. "," .. box.y)
-    ok, reason = GT_drop_all_on_display(box, item_id, qty)
+    ok = true
+    reason = ""
+    for li, line in ipairs(deliveries) do
+      local item_id = line.item_id or GT_item_id_for_type(line.item_type)
+      local qty = tonumber(line.quantity) or 1
+      GT_log("Line " .. li .. "/" .. #deliveries .. ": " .. qty .. "x item " .. item_id)
+      if GT_inventory_count(item_id) < qty then
+        ok = false
+        reason = "insufficient_bot_stock"
+        break
+      end
+      local line_ok, line_reason = GT_drop_all_on_display(box, item_id, qty)
+      if not line_ok then
+        ok = false
+        reason = line_reason ~= "" and line_reason or "drop_failed"
+        break
+      end
+      sleep(600)
+    end
     if ok then break end
-    GT_log("Display " .. box.x .. "," .. box.y .. " failed, try next")
+    GT_log("Display " .. box.x .. "," .. box.y .. " failed: " .. reason)
   end
   if ok then
     GT_finish_success(order)
