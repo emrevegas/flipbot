@@ -2,8 +2,9 @@
 Soft balance ceiling — users stay below caps without noticing rigging.
 
 When a win would push balance over the effective cap, the round becomes a normal
-loss (no trimmed/partial payouts). Near the cap, extra random losses keep play
-feeling natural while the player still believes big wins are possible.
+loss (no trimmed/partial payouts). While balance stays under the cap, natural
+wins are not rigged away; some losses are flipped to wins (~70–80% overall on
+even games when server rig is ~50%).
 
 Caps (strictest / lowest wins):
   - Global cap (`/panel` → Tools → Global Balance Cap)
@@ -26,13 +27,11 @@ BALANCE_CAP_SETTINGS_KEY = "server/balance_cap_settings"
 DEPOSIT_AUTO_CAP_KEY = "deposit_auto_cap"
 DEPOSIT_CAP_MULTIPLIER = 1.4
 
-# When a win stays under the cap, lower rig % so players keep ~70–80% of natural wins
-# (e.g. server rig 50% → effective ~20–30% rig on cap-safe rounds).
-CAP_SAFE_RIG_REDUCTION_MIN = 20.0
-CAP_SAFE_RIG_REDUCTION_MAX = 30.0
-CAP_SAFE_FAVOR_WIN_MIN = 70.0
-CAP_SAFE_FAVOR_WIN_MAX = 80.0
-CAP_SAFE_FAVOR_MIN_BASE_RIG = 40.0
+# Cap-safe: do NOT rig natural wins; flip some losses → wins to reach ~70–80% overall
+# (server rig 50% no longer means "lower rig to 20" — that read as worse win odds).
+CAP_SAFE_TARGET_WIN_MIN = 70.0
+CAP_SAFE_TARGET_WIN_MAX = 80.0
+CAP_SAFE_NATURAL_WIN_EST = 50.0  # ~coinflip / even games before house rig
 
 
 def get_welcome_balance_cap() -> int:
@@ -343,13 +342,25 @@ def payout_stays_under_cap(
     return projected_balance_after_payout(current_balance, payout) <= int(ceiling)
 
 
-def cap_safe_rigged_chance(base_rig: float) -> float:
-    """Lower house rig when the round would stay under cap (50% rig → ~20–30%)."""
-    base = max(0.0, min(100.0, float(base_rig)))
+def cap_safe_loss_to_win_chance(game_id: str) -> float:
+    """
+    % to turn a cap-safe loss into a win so overall win rate lands ~70–80%.
+    Server rig 50 + cap-safe ≈ keep all natural wins + ~50% of losses flipped.
+    Negative rigged_chance (player-favor mode) => always favor.
+    """
+    raw = get_raw_rigged_chance(game_id)
+    if raw < 0:
+        return 100.0
+    base = get_game_rigged_chance(game_id)
     if base <= 0:
         return 0.0
-    cut = random.uniform(CAP_SAFE_RIG_REDUCTION_MIN, CAP_SAFE_RIG_REDUCTION_MAX)
-    return max(0.0, base - cut)
+    target = random.uniform(CAP_SAFE_TARGET_WIN_MIN, CAP_SAFE_TARGET_WIN_MAX)
+    natural = CAP_SAFE_NATURAL_WIN_EST
+    if natural >= 100.0:
+        return 0.0
+    need = max(0.0, target - natural)
+    favor = need / (100.0 - natural) * 100.0
+    return min(95.0, max(0.0, favor))
 
 
 def should_cap_favor_win(
@@ -360,17 +371,12 @@ def should_cap_favor_win(
     *,
     game_id: str = "",
 ) -> bool:
-    """
-    On cap-safe rounds, sometimes flip a natural loss to a win.
-    Used with cap_safe_rigged_chance so overall win rate moves toward ~70–80%
-    when server rig is ~50%.
-    """
+    """Cap-safe loss → win roll (does not stack with negative rig beyond force-win path)."""
     if not payout_stays_under_cap(user_id, mode, current_balance, payout):
         return False
-    base = get_game_rigged_chance(game_id)
-    if base < CAP_SAFE_FAVOR_MIN_BASE_RIG:
+    favor = cap_safe_loss_to_win_chance(game_id)
+    if favor <= 0:
         return False
-    favor = random.uniform(CAP_SAFE_FAVOR_WIN_MIN, CAP_SAFE_FAVOR_WIN_MAX)
     return random.uniform(0, 100) < favor
 
 
@@ -405,13 +411,16 @@ def get_cap_aware_rigged_chance(
     bet: int,
     payout: int,
 ) -> float:
-    """Server rig %, 100 when payout exceeds cap, reduced rig when win stays under cap."""
+    """
+    House rig % for this round.
+    Cap overflow => 100. Cap-safe => 0 (never rig wins away; boost via favor on losses).
+    Negative rigged_chance (player-favor) => never rig losses on wins path.
+    """
     if should_force_cap_loss(user_id, mode, current_balance, payout, game_id=game_id):
         return 100.0
-    base = get_game_rigged_chance(game_id)
-    if base > 0 and payout_stays_under_cap(user_id, mode, current_balance, payout):
-        return cap_safe_rigged_chance(base)
-    return base
+    if payout_stays_under_cap(user_id, mode, current_balance, payout):
+        return 0.0
+    return get_game_rigged_chance(game_id)
 
 
 def cap_side_bet_payout(
