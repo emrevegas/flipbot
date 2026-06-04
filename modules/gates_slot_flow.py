@@ -26,69 +26,72 @@ async def _spin_for_outcome(
     rigged: bool,
     force_win: bool = False,
     pf_fl: list | None = None,
-) -> tuple[list, list, int, list[int]]:
+) -> tuple[list, dict, list, int]:
     from Games.gates_slot import (
         apply_emoji_map,
         build_win_grid,
         evaluate_grid,
         get_gates_emojis,
         gross_payout,
+        roll_grid_orbs,
         spin_round,
+        _rng_from_pf,
     )
+
     emoji_map = get_gates_emojis()
     bal_row = await db.get_user(user_id)
     balance = int(float(bal_row["balance"])) if bal_row else 0
     b = int(bet)
     bal_after_bet = balance - b
 
-    def _pack(grid, wins, gross, orbs):
-        return apply_emoji_map(grid, emoji_map), wins, gross, orbs
+    def _pack(grid, grid_orbs, wins, gross):
+        return apply_emoji_map(grid, emoji_map), grid_orbs, wins, gross
 
     if force_win:
-        for match in (14, 12, 10, 16, 18, 8):
-            for sym_id in ("ruby", "emerald", "sapphire", "topaz", "crown"):
-                grid = build_win_grid(match_count=match, symbol_id=sym_id, pf_fl=pf_fl)
-                wins, orbs = evaluate_grid(grid, pf_fl=pf_fl)
-                gross = gross_payout(b, wins, orbs)
+        for match in (9, 10, 8, 11):
+            for sym_id in ("ruby", "emerald", "sapphire", "topaz"):
+                grid, grid_orbs = build_win_grid(
+                    match_count=match,
+                    symbol_id=sym_id,
+                    pf_fl=pf_fl,
+                    grid_orbs={},
+                )
+                if match <= 9:
+                    grid_orbs = roll_grid_orbs(_rng_from_pf(pf_fl, salt=3), cap_safe=True)
+                wins = evaluate_grid(grid, grid_orbs)
+                gross = gross_payout(b, wins, grid_orbs)
                 net = await _net_from_gross(gross)
                 if gross <= b:
                     continue
                 if await bc.max_win_exceeds_cap(user_id, bal_after_bet, net):
-                    orbs = orbs[:1] if orbs else []
-                    gross = gross_payout(b, wins, orbs)
-                    net = await _net_from_gross(gross)
-                    if gross <= b or await bc.max_win_exceeds_cap(user_id, bal_after_bet, net):
-                        continue
-                return _pack(grid, wins, gross, orbs)
-        grid, wins, gross, orbs = spin_round(b, pf_fl=pf_fl)
+                    continue
+                return _pack(grid, grid_orbs, wins, gross)
+        grid, grid_orbs, wins, gross = spin_round(b, pf_fl=pf_fl)
         if gross <= b:
-            grid = build_win_grid(match_count=10, pf_fl=pf_fl)
-            wins, orbs = evaluate_grid(grid, pf_fl=pf_fl)
-            gross = gross_payout(b, wins, orbs)
-        return _pack(grid, wins, max(gross, b * 2), orbs)
+            grid, grid_orbs = build_win_grid(match_count=8, pf_fl=pf_fl, grid_orbs={})
+            wins = evaluate_grid(grid, grid_orbs)
+            gross = gross_payout(b, wins, grid_orbs)
+        return _pack(grid, grid_orbs, wins, max(gross, int(b * 1.5)))
 
     if rigged:
         for _ in range(64):
-            grid, wins, gross, orbs = spin_round(b, pf_fl=None)
-            net = await _net_from_gross(gross)
+            grid, grid_orbs, wins, gross = spin_round(b, pf_fl=None)
             if not wins or gross <= b:
-                return _pack(grid, wins, gross, orbs)
-            if await bc.max_win_exceeds_cap(user_id, bal_after_bet, net):
-                return _pack(grid, wins, gross, orbs)
-        grid, wins, gross, orbs = spin_round(b, pf_fl=None)
-        return _pack(grid, [], 0, [])
+                return _pack(grid, grid_orbs, wins, gross)
+        grid, grid_orbs, wins, gross = spin_round(b, pf_fl=None)
+        return _pack(grid, {}, [], 0)
 
-    grid, wins, gross, orbs = spin_round(b, pf_fl=pf_fl)
+    grid, grid_orbs, wins, gross = spin_round(b, pf_fl=pf_fl)
     net = await _net_from_gross(gross)
     if gross > b and await bc.max_win_exceeds_cap(user_id, bal_after_bet, net):
         for _ in range(64):
-            grid, wins, gross, orbs = spin_round(b, pf_fl=None)
+            grid, grid_orbs, wins, gross = spin_round(b, pf_fl=None)
             net = await _net_from_gross(gross)
             if not wins or gross <= b:
-                return _pack(grid, wins, gross, orbs)
-        return _pack(grid, [], 0, [])
+                return _pack(grid, grid_orbs, wins, gross)
+        return _pack(grid, {}, [], 0)
 
-    return _pack(grid, wins, gross, orbs)
+    return _pack(grid, grid_orbs, wins, gross)
 
 
 async def _run_gates_round(
@@ -111,11 +114,11 @@ async def _run_gates_round(
     except Exception:
         pf_fl = None
 
-    gross_hint = bet * 12
+    gross_hint = bet * 4
     force_win = await bc.should_force_win_outcome(user_id, "gates", bet, gross=gross_hint)
     rigged = await bc.should_rig_outcome(user_id, "gates", bet, gross=gross_hint)
 
-    grid, wins, gross, orb_mults = await _spin_for_outcome(
+    grid, grid_orbs, wins, gross = await _spin_for_outcome(
         user_id,
         bet,
         rigged=rigged and not force_win,
@@ -147,7 +150,7 @@ async def _run_gates_round(
         wins=wins,
         payout=payout,
         won=won,
-        orb_mults=orb_mults,
+        grid_orbs=grid_orbs,
         emoji_map=get_gates_emojis(),
     )
 

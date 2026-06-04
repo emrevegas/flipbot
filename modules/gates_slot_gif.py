@@ -1,4 +1,4 @@
-"""Gates of Olympus style GIF — fast render, orb drop, 10s hold at end."""
+"""Gates of Olympus style GIF — multiplier orbs rendered on grid cells."""
 
 from __future__ import annotations
 
@@ -123,15 +123,16 @@ async def render_gates_gif(
     wins: list[dict],
     payout: float,
     won: bool,
-    orb_mults: list[int] | None = None,
+    grid_orbs: dict[tuple[int, int], int] | None = None,
     emoji_map: dict[str, str] | None = None,
 ) -> io.BytesIO:
-    orb_mults = list(orb_mults or [])
+    grid_orbs = dict(grid_orbs or {})
     id_to_sym = {s["id"]: s for s in SYMBOLS}
     pool_ids = [s["id"] for s in SYMBOLS]
     layout = _layout()
     cell = layout["cell"]
     em_size = max(36, cell - 16)
+    orb_total = sum(grid_orbs.values()) if grid_orbs else 0
 
     font_title = _font(16, bold=True)
     font_name = _font(12, bold=True)
@@ -140,7 +141,7 @@ async def render_gates_gif(
     font_amt = _font(22, bold=True)
     font_pts = _font(12, bold=True)
     font_sub = _font(11, bold=True)
-    font_orb = _font(14, bold=True)
+    font_orb = _font(11, bold=True)
 
     def _tw(draw_obj: ImageDraw.ImageDraw, text: str, font) -> float:
         try:
@@ -181,29 +182,21 @@ async def render_gates_gif(
 
     static_bg = _make_static_bg(layout)
 
-    def _draw_orbs(
-        draw: ImageDraw.ImageDraw,
-        *,
-        dropped: int,
-        drop_phase: float = 0.0,
-    ) -> None:
-        if not orb_mults:
-            return
-        cx_base = layout["grid_x0"] + layout["grid_w"] // 2
-        for i, mult in enumerate(orb_mults[:dropped]):
-            t = drop_phase if i == dropped - 1 else 1.0
-            ox = cx_base - 40 + (i % 3) * 40 + int(math.sin(i * 1.7) * 12)
-            oy = layout["grid_y0"] - 20 + int((1.0 - t) * -80)
-            r = 18
-            draw.ellipse([ox - r, oy - r, ox + r, oy + r], fill=(255, 210, 70), outline=(255, 240, 180), width=2)
-            lbl = f"x{mult}"
-            lw = _tw(draw, lbl, font_orb)
-            draw.text((ox - lw / 2, oy - 8), lbl, font=font_orb, fill=(40, 25, 10))
-        if dropped > 0:
-            total = sum(orb_mults[:dropped])
-            txt = f"Orb x{total}"
-            tw = _tw(draw, txt, font_lbl)
-            draw.text((W - tw - PAD, layout["meter_y0"] - 18), txt, font=font_lbl, fill=GOLD)
+    def _draw_orb_badge(layer: Image.Image, mult: int, *, pulse: float = 0.0) -> None:
+        ld = ImageDraw.Draw(layer)
+        sz = layer.size[0]
+        badge = int(26 * (1.0 + 0.08 * pulse))
+        bx = sz - badge - 4
+        by = sz - badge - 4
+        ld.ellipse(
+            [bx, by, bx + badge, by + badge],
+            fill=(255, 215, 70),
+            outline=(255, 245, 200),
+            width=2,
+        )
+        lbl = f"x{mult}"
+        lw = _tw(ld, lbl, font_orb)
+        ld.text((bx + (badge - lw) / 2, by + badge / 2 - 7), lbl, font=font_orb, fill=(45, 28, 8))
 
     def _paste_cell(
         base: Image.Image,
@@ -214,6 +207,8 @@ async def render_gates_gif(
         dim: float = 1.0,
         glow: float = 0.0,
         scale: float = 1.0,
+        show_orb: bool = True,
+        orb_pulse: float = 0.0,
     ) -> None:
         x, y = _cell_xy(col, row)
         sz = int(cell * scale)
@@ -226,6 +221,10 @@ async def render_gates_gif(
         glow_col = _SYM_GLOW.get(sid, PURPLE)
         fill = (30, 22, 50)
         border = (70, 58, 100)
+        orb_here = grid_orbs.get((row, col))
+        if orb_here and show_orb:
+            border = GOLD
+            fill = (42, 32, 58)
         if glow > 0:
             border = glow_col
         ld.rounded_rectangle([1, 1, sz - 2, sz - 2], radius=10, fill=fill, outline=border, width=2)
@@ -237,6 +236,9 @@ async def render_gates_gif(
         esz = sz - 12
         em = em.resize((esz, esz), Image.LANCZOS)
         layer.paste(em, ((sz - em.width) // 2, (sz - em.height) // 2), em)
+
+        if orb_here and show_orb:
+            _draw_orb_badge(layer, orb_here, pulse=orb_pulse)
 
         if dim < 1.0:
             r, g, b, a = layer.split()
@@ -257,9 +259,8 @@ async def render_gates_gif(
     def _draw_meter(draw: ImageDraw.ImageDraw, *, show_result: bool) -> None:
         x1, y1 = layout["meter_x0"], layout["meter_y0"]
         x2 = x1 + layout["meter_w"]
-        y2 = y1 + METER_H
         outline = GREEN if show_result and won else (RED if show_result else (60, 50, 90))
-        draw.rounded_rectangle([x1, y1, x2, y2], radius=10, fill=(26, 18, 44), outline=outline, width=2)
+        draw.rounded_rectangle([x1, y1, x2, y1 + METER_H], radius=10, fill=(26, 18, 44), outline=outline, width=2)
         if not show_result:
             hint = "SPINNING..."
             hw = _tw(draw, hint, font_lbl)
@@ -276,6 +277,12 @@ async def render_gates_gif(
         ax = (W - aw - pw - 6) / 2
         draw.text((ax, y1 + 6), core, font=font_amt, fill=col)
         draw.text((ax + aw + 6, y1 + 14), pts, font=font_pts, fill=col)
+
+        if show_result and won and orb_total > 1:
+            mx = f"Mult x{orb_total}"
+            mw = _tw(draw, mx, font_lbl)
+            draw.text((x2 - mw - 12, y1 + 8), mx, font=font_lbl, fill=GOLD)
+
         draw.line([(x1 + 10, y1 + 40), (x2 - 10, y1 + 40)], fill=(55, 45, 80))
         bal = f"{_fmt(balance)} pts"
         draw.text((x1 + 12, y1 + 48), "Balance", font=font_lbl, fill=MUTED)
@@ -289,8 +296,6 @@ async def render_gates_gif(
         spin_t: float = 0.0,
         show_result: bool = False,
         glow_phase: float = 0.0,
-        orb_dropped: int = 0,
-        orb_drop_phase: float = 0.0,
     ) -> Image.Image:
         img = static_bg.copy().convert("RGBA")
         draw = ImageDraw.Draw(img)
@@ -304,18 +309,21 @@ async def render_gates_gif(
                 if spinning:
                     flick = id_to_sym[random.choice(pool_ids)]
                     bounce = 0.94 + 0.06 * abs(math.sin(spin_t * math.pi * 3))
-                    _paste_cell(img, col, row, flick, dim=0.7, scale=bounce)
+                    _paste_cell(img, col, row, flick, dim=0.7, scale=bounce, show_orb=False)
                 elif locked:
                     glow = 0.0
                     if show_result and (row, col) in win_positions:
                         glow = 0.4 + 0.6 * (0.5 + 0.5 * math.sin(glow_phase * math.pi * 2))
-                    _paste_cell(img, col, row, sym, glow=glow, scale=1.0 + 0.05 * glow)
+                    orb_pulse = glow_phase if (row, col) in grid_orbs else 0.0
+                    _paste_cell(
+                        img, col, row, sym,
+                        glow=glow,
+                        scale=1.0 + 0.05 * glow,
+                        show_orb=True,
+                        orb_pulse=orb_pulse,
+                    )
                 else:
-                    _paste_cell(img, col, row, sym, dim=0.2)
-
-        if orb_dropped > 0 or (show_result and orb_mults):
-            draw = ImageDraw.Draw(img)
-            _draw_orbs(draw, dropped=orb_dropped, drop_phase=orb_drop_phase)
+                    _paste_cell(img, col, row, sym, dim=0.2, show_orb=False)
 
         draw = ImageDraw.Draw(img)
         _draw_meter(draw, show_result=show_result)
@@ -333,34 +341,13 @@ async def render_gates_gif(
         frames.append(_make_frame(col + 1))
         durations.append(55)
 
-    if orb_mults and wins:
-        for i, _ in enumerate(orb_mults):
-            for sub in range(3):
-                phase = (sub + 1) / 3
-                frames.append(_make_frame(COLS, show_result=True, orb_dropped=i + 1, orb_drop_phase=phase))
-                durations.append(50)
-
     result_frames = 4 if wins else 2
     for i in range(result_frames):
         phase = i / max(result_frames - 1, 1)
-        frames.append(
-            _make_frame(
-                COLS,
-                show_result=True,
-                glow_phase=phase,
-                orb_dropped=len(orb_mults),
-                orb_drop_phase=1.0,
-            )
-        )
+        frames.append(_make_frame(COLS, show_result=True, glow_phase=phase))
         durations.append(90)
 
-    final = _make_frame(
-        COLS,
-        show_result=True,
-        glow_phase=1.0,
-        orb_dropped=len(orb_mults),
-        orb_drop_phase=1.0,
-    )
+    final = _make_frame(COLS, show_result=True, glow_phase=1.0)
     frames.append(final)
     durations.append(FINAL_HOLD_MS)
 
