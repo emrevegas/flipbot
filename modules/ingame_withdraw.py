@@ -89,16 +89,20 @@ def coins_to_deliveries(coins: int, rate: float) -> Tuple[list[dict[str, Any]], 
 
 
 def validate_bot_stock(required_wl_units: int) -> Optional[str]:
+    """
+    Total-value check only (BGL counts as 100 DL — bot can shatter in-game).
+    Does not require exact DL/BGL stacks in inventory.
+    """
     balance = read_bot_balance()
     if not balance:
-        return "Bot lock balance is not available yet. Try again in a few seconds."
+        return None
     have = bot_stock_wl_units(balance)
     if have < required_wl_units:
         need_dl = required_wl_units / WL_UNITS_PER_DL
         have_dl = have / WL_UNITS_PER_DL
         return (
-            f"Bot does not have enough locks for this withdrawal "
-            f"(need ~{need_dl:.1f} DL, bot has ~{have_dl:.1f} DL: {format_bot_stock_short(balance)})."
+            f"Bot total locks are too low "
+            f"(need ~{need_dl:.1f} DL, bot ~{have_dl:.1f} DL equiv: {format_bot_stock_short(balance)})."
         )
     return None
 
@@ -123,7 +127,7 @@ def validate_withdraw_request(
     if rate <= 0:
         return "Exchange rate not configured."
     _, _, _, required_units = coins_to_deliveries(coins, rate)
-    return validate_bot_stock(required_units)
+    return validate_bot_stock(required_units)  # total DL-equivalent only
 
 
 def build_withdraw_order(

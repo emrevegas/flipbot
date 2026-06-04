@@ -257,7 +257,7 @@ async def process_withdraw_results(bot) -> int:
                 elif fail_msg == "warp_failed":
                     fail_msg = "Bot could not enter your world"
                 elif fail_msg == "insufficient_bot_stock":
-                    fail_msg = "Bot did not have the required locks (BGL/DL/WL)"
+                    fail_msg = "Bot could not prepare locks (total too low or shatter failed)"
                 view = build_detail_panel(
                     title="❌ In-Game Withdrawal Failed",
                     body=f"{fail_msg}\n\n**{format_balance(coins_paid, 'real')}** refunded to your balance.",

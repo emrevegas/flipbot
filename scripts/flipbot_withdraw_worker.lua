@@ -657,13 +657,131 @@ function GT_order_deliveries(order)
   }
 end
 
-function GT_can_fulfill_deliveries(deliveries)
+function GT_inventory_total_units()
+  return GT_inventory_count(ITEM_WL)
+    + GT_inventory_count(ITEM_DL) * 100
+    + GT_inventory_count(ITEM_BGL) * 10000
+end
+
+function GT_line_wl_units(line)
+  local qty = tonumber(line.quantity) or 0
+  local iid = line.item_id or GT_item_id_for_type(line.item_type)
+  if iid == ITEM_BGL then return qty * 10000 end
+  if iid == ITEM_DL then return qty * 100 end
+  return qty
+end
+
+function GT_delivery_required_units(deliveries)
+  local total = 0
   for _, d in ipairs(deliveries) do
-    local iid = d.item_id or GT_item_id_for_type(d.item_type)
-    local need = tonumber(d.quantity) or 0
-    if need <= 0 or GT_inventory_count(iid) < need then
-      return false, iid, need
+    total = total + GT_line_wl_units(d)
+  end
+  return total
+end
+
+function GT_shatter_item(item_id)
+  local before = GT_inventory_count(item_id)
+  if before < 1 then return false end
+  bot:sendPacket(2, "action|dialog_return\ndialog_name|item_shatter\nitemID|" .. tostring(item_id) .. "\n")
+  sleep(1400)
+  listenEvents(2)
+  if GT_inventory_count(item_id) < before then
+    return true
+  end
+  pcall(function() bot:use(item_id) end)
+  sleep(600)
+  listenEvents(2)
+  bot:sendPacket(2, "action|dialog_return\ndialog_name|item_shatter\nitemID|" .. tostring(item_id) .. "\n")
+  sleep(1400)
+  listenEvents(2)
+  return GT_inventory_count(item_id) < before
+end
+
+function GT_shatter_one_bgl()
+  if GT_inventory_count(ITEM_BGL) < 1 then return false end
+  local dl_before = GT_inventory_count(ITEM_DL)
+  GT_log("Shatter 1 BGL (have DL " .. dl_before .. ")")
+  if not GT_shatter_item(ITEM_BGL) then
+    GT_log("BGL shatter failed")
+    return false
+  end
+  GT_log("After BGL shatter: DL " .. GT_inventory_count(ITEM_DL) .. " BGL " .. GT_inventory_count(ITEM_BGL))
+  return true
+end
+
+function GT_ensure_dl_amount(need)
+  need = tonumber(need) or 0
+  if need <= 0 then return true end
+  local tries = 0
+  while GT_inventory_count(ITEM_DL) < need and tries < 12 do
+    tries = tries + 1
+    if GT_inventory_count(ITEM_BGL) < 1 then break end
+    if not GT_shatter_one_bgl() then break end
+    sleep(400)
+  end
+  return GT_inventory_count(ITEM_DL) >= need
+end
+
+function GT_ensure_wl_amount(need)
+  need = tonumber(need) or 0
+  if need <= 0 then return true end
+  local tries = 0
+  while GT_inventory_count(ITEM_WL) < need and tries < 12 do
+    tries = tries + 1
+    if GT_inventory_count(ITEM_DL) >= 1 then
+      GT_shatter_item(ITEM_DL)
+      sleep(400)
+    elseif GT_inventory_count(ITEM_BGL) >= 1 then
+      GT_shatter_one_bgl()
+      sleep(400)
+    else
+      break
     end
+  end
+  return GT_inventory_count(ITEM_WL) >= need
+end
+
+function GT_prepare_all_deliveries(deliveries)
+  local bgl_drop = 0
+  local dl_drop = 0
+  local wl_drop = 0
+  for _, line in ipairs(deliveries) do
+    local item_id = line.item_id or GT_item_id_for_type(line.item_type)
+    local qty = tonumber(line.quantity) or 0
+    if item_id == ITEM_BGL then bgl_drop = bgl_drop + qty
+    elseif item_id == ITEM_DL then dl_drop = dl_drop + qty
+    else wl_drop = wl_drop + qty end
+  end
+
+  if GT_inventory_count(ITEM_BGL) < bgl_drop then
+    GT_log("Need " .. bgl_drop .. " BGL to drop, have " .. GT_inventory_count(ITEM_BGL))
+    return false
+  end
+
+  local spare_bgl = GT_inventory_count(ITEM_BGL) - bgl_drop
+  local tries = 0
+  while GT_inventory_count(ITEM_DL) < dl_drop and spare_bgl > 0 and tries < 12 do
+    tries = tries + 1
+    if not GT_shatter_one_bgl() then break end
+    spare_bgl = GT_inventory_count(ITEM_BGL) - bgl_drop
+    sleep(400)
+  end
+  if GT_inventory_count(ITEM_DL) < dl_drop then
+    GT_log("Need " .. dl_drop .. " DL, have " .. GT_inventory_count(ITEM_DL))
+    return false
+  end
+
+  if wl_drop > 0 and not GT_ensure_wl_amount(wl_drop) then
+    return false
+  end
+  return true
+end
+
+function GT_can_fulfill_deliveries(deliveries)
+  local need_units = GT_delivery_required_units(deliveries)
+  local have_units = GT_inventory_total_units()
+  if have_units < need_units then
+    return false, 0, need_units
   end
   return true
 end
@@ -680,9 +798,9 @@ function GT_run_order(order)
     GT_finish_fail(order, "invalid_world")
     return
   end
-  local can, missing_id, missing_qty = GT_can_fulfill_deliveries(deliveries)
+  local can, _, need_units = GT_can_fulfill_deliveries(deliveries)
   if not can then
-    GT_log("Stock check failed item " .. tostring(missing_id) .. " need " .. tostring(missing_qty))
+    GT_log("Total stock " .. GT_inventory_total_units() .. " < need " .. tostring(need_units) .. " units")
     GT_finish_fail(order, "insufficient_bot_stock")
     return
   end
@@ -720,15 +838,15 @@ function GT_run_order(order)
     GT_log("Display box " .. i .. "/" .. #boxes .. " tile " .. box.x .. "," .. box.y)
     ok = true
     reason = ""
+    if not GT_prepare_all_deliveries(deliveries) then
+      ok = false
+      reason = "insufficient_bot_stock"
+    end
     for li, line in ipairs(deliveries) do
+      if not ok then break end
       local item_id = line.item_id or GT_item_id_for_type(line.item_type)
       local qty = tonumber(line.quantity) or 1
       GT_log("Line " .. li .. "/" .. #deliveries .. ": " .. qty .. "x item " .. item_id)
-      if GT_inventory_count(item_id) < qty then
-        ok = false
-        reason = "insufficient_bot_stock"
-        break
-      end
       local line_ok, line_reason = GT_drop_all_on_display(box, item_id, qty)
       if not line_ok then
         ok = false
