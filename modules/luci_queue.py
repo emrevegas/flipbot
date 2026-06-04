@@ -186,6 +186,12 @@ async def process_withdraw_results(bot) -> int:
         history = get_user_data(user_id, "withdraw_history") or {}
         wkey = str(oid)
         entry = history.get(wkey) or {}
+        if entry.get("status") in ("rejected", "pending_approval"):
+            path.unlink(missing_ok=True)
+            (PROCESSING_DIR / f"{oid}.json").unlink(missing_ok=True)
+            (PENDING_DIR / f"{oid}.json").unlink(missing_ok=True)
+            continue
+
         entry["status"] = "completed" if status == "completed" else "failed"
         entry["reason"] = reason
         history[wkey] = entry

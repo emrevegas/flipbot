@@ -101,6 +101,7 @@ class FlipBot(commands.Bot):
                 log.error(f"Failed to load {cog}:\n{traceback.format_exc()}")
         try:
             from cogs.crypto_withdraw import WithdrawApprovalView
+            from cogs.ingame_luci import LuciWithdrawApprovalView
             from modules.database import get_data
 
             withdrawals = get_data("server/crypto_withdrawals") or {}
@@ -110,6 +111,14 @@ class FlipBot(commands.Bot):
                     self.add_view(WithdrawApprovalView(wid))
             if n:
                 log.info(f"Registered {n} pending crypto withdrawal views")
+
+            ingame = get_data("server/ingame_withdrawals") or {}
+            ni = sum(1 for w in ingame.values() if w.get("status") == "pending")
+            for wid, w in ingame.items():
+                if w.get("status") == "pending":
+                    self.add_view(LuciWithdrawApprovalView(wid))
+            if ni:
+                log.info(f"Registered {ni} pending in-game withdrawal views")
         except Exception:
             log.error(f"Failed to register withdrawal views:\n{traceback.format_exc()}")
         try:

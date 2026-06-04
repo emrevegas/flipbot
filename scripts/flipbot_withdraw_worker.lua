@@ -1,6 +1,7 @@
 --[[
-  FlipBot — Luci worker (dosya kuyruğu)
-  Withdraw: display box drop | Deposit: home world donation listener (donation.lua)
+  FlipBot — Luci withdraw worker (ayrı script)
+  Sadece pending/*.json kuyruğunu işler — display box drop.
+  Deposit için flipbot_donation_listener.lua kullanın.
 ]]
 
 local QUEUE_BASE = "C:/Users/Administrator/Desktop/flipbot/data/luci"
@@ -26,10 +27,6 @@ local RESULTS_DIR = ""
 local INDEX_FILE = ""
 local ACTIVE_FILE = ""
 local BALANCE_FILE = ""
-local DEPOSIT_INBOX_DIR = ""
-local DEPOSIT_WATCH_FILE = ""
-local FB_deposit_hook_active = false
-local FB_deposit_hook_registered = false
 
 local bot = getBot()
 bot.auto_reconnect = true
@@ -64,8 +61,6 @@ function GT_init_paths()
   INDEX_FILE = base .. "/pending_index.txt"
   ACTIVE_FILE = base .. "/processing/active.txt"
   BALANCE_FILE = base .. "/bot_balance.json"
-  DEPOSIT_INBOX_DIR = base .. "/deposit_inbox"
-  DEPOSIT_WATCH_FILE = base .. "/deposit_watch.json"
   GT_log("Queue path: " .. base)
 end
 
@@ -684,91 +679,13 @@ end
 
 GT_init_paths()
 GT_write_bot_balance()
-
-function FB_deposit_watch_active()
-  local raw = read(DEPOSIT_WATCH_FILE)
-  if not raw or raw == "" then return false end
-  local until_ts = tonumber(raw:match('"until":(%d+)'))
-  if not until_ts then return false end
-  return os.time() < until_ts
-end
-
-function FB_write_deposit_inbox(growid, amount_units)
-  if DEPOSIT_INBOX_DIR == "" then return end
-  local fname = DEPOSIT_INBOX_DIR .. "/" .. os.time() .. "_" .. growid .. ".json"
-  local json = string.format(
-    '{"growid":"%s","amount_units":%d,"at":%d}',
-    GT_json_escape(growid), amount_units, os.time()
-  )
-  write(fname, json)
-  GT_log("Deposit inbox " .. growid .. " " .. amount_units)
-end
-
-function FB_on_donation_variant(var, netid)
-  if not FB_deposit_hook_active then return end
-  local ok, v0 = pcall(function() return var:get(0):getString() end)
-  if not ok then return end
-  if not tostring(v0):find("OnConsoleMessage", 1, true) then return end
-  local ok2, v1 = pcall(function() return var:get(1):getString() end)
-  if not ok2 or not v1 then return end
-  local msg = tostring(v1)
-  if not msg:find("Donation Box", 1, true) then return end
-  if not msg:find("places", 1, true) then return end
-  local username = msg:match("`w(%S+) places")
-  local item = msg:match("`2(.-)``")
-  local amount = tonumber(msg:match("places `5(%d+)"))
-  if not username or not amount or not item then return end
-  if item == "World Lock" then
-    -- amount as-is
-  elseif item == "Diamond Lock" then
-    amount = amount * 100
-  elseif item == "Blue Gem Lock" then
-    amount = amount * 10000
-  else
-    return
-  end
-  local fake = msg:find("CP:0_PL:4_OID:_CT:", 1, true) ~= nil
-  if fake then return end
-  if item == "World Lock" or item == "Diamond Lock" or item == "Blue Gem Lock" then
-    FB_write_deposit_inbox(username, amount)
-  end
-end
-
-function FB_register_deposit_hook()
-  if FB_deposit_hook_registered then return end
-  pcall(function() addEvent(Event.variantlist, FB_on_donation_variant) end)
-  FB_deposit_hook_registered = true
-  GT_log("Donation listener registered")
-end
-
-function FB_tick_deposit_watch()
-  if state.busy then
-    FB_deposit_hook_active = false
-    return
-  end
-  if not FB_deposit_watch_active() then
-    FB_deposit_hook_active = false
-    return
-  end
-  FB_register_deposit_hook()
-  FB_deposit_hook_active = true
-  local home = tostring(BOT_HOME_WORLD or ""):gsub("%s+", "")
-  if home == "" then return end
-  if bot:isInWorld() and bot:getWorld() then
-    local cur = string.upper(tostring(bot:getWorld().name or ""))
-    if cur == string.upper(home) then return end
-  end
-  GT_log("Deposit watch active — going home")
-  GT_go_home()
-end
+GT_log("Withdraw worker started")
 
 while true do
   if not state.busy then
     GT_write_bot_balance()
-    FB_tick_deposit_watch()
     local order = GT_claim_next_order()
     if order then
-      FB_deposit_hook_active = false
       GT_run_order(order)
     end
   end
