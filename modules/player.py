@@ -244,7 +244,7 @@ class Player:
         current_balance = int(self.get_balance(mode))  # Ensure current_balance is int
         new_balance = current_balance + amount
         self.set_balance(mode, new_balance)
-        if by is not None:
+        if by is not None and not (reason or "").strip().lower().startswith("promo:"):
             self._log_balance_op("add", mode, amount, by, reason=reason)
     
     def remove_balance(self, mode="real", amount="0", by=None, reason: str = ""):

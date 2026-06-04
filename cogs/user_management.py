@@ -1480,6 +1480,22 @@ class UserPanelSelect(discord.ui.Select):
 
         entries = sorted(raw_log.values(), key=lambda e: e.get("timestamp", 0), reverse=True)[:20]
 
+        promo_ts = [
+            int(e.get("timestamp", 0))
+            for e in entries
+            if e.get("type") == "promo" and e.get("timestamp")
+        ]
+        if promo_ts:
+            def _dup_promo_balance_add(entry: dict) -> bool:
+                if entry.get("type") != "balance_add":
+                    return False
+                if not str(entry.get("reason", "")).strip().lower().startswith("promo:"):
+                    return False
+                ts = int(entry.get("timestamp", 0))
+                return any(abs(ts - pts) <= 2 for pts in promo_ts)
+
+            entries = [e for e in entries if not _dup_promo_balance_add(e)]
+
         embed = Embed(
             title=t('user_panel.activity_title', lang, name=display_name),
             color=0x2b2d31,
@@ -1531,17 +1547,62 @@ class UserPanelSelect(discord.ui.Select):
                     icon  = "ℹ️"
                     label = ttype
 
-                reason_part = f" · **{t('user_panel.activity_reason', lang, reason=reason)}**" if reason else ""
+                reason_short = _truncate_activity_reason(reason)
+                reason_part = (
+                    f" · **{t('user_panel.activity_reason', lang, reason=reason_short)}**"
+                    if reason_short
+                    else ""
+                )
                 lines.append(f"{icon} {label}{reason_part} · {ts_str}")
 
             embed.add_field(
                 name=t('user_panel.activity_movements_title', lang),
-                value="\n".join(lines),
+                value=_fit_activity_field(lines),
                 inline=False,
             )
 
         embed.set_footer(text=t('user_panel.activity_footer', lang))
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ---------------------------------------------------------------------------
+# Activity log helpers
+# ---------------------------------------------------------------------------
+
+_DISCORD_FIELD_MAX = 1024
+
+
+def _truncate_activity_reason(reason: str, max_len: int = 72) -> str:
+    reason = str(reason or "").strip()
+    if len(reason) <= max_len:
+        return reason
+    return reason[: max_len - 1] + "…"
+
+
+def _fit_activity_field(lines: list[str], max_len: int = _DISCORD_FIELD_MAX) -> str:
+    """Join activity lines; trim to Discord embed field limit (1024)."""
+    if not lines:
+        return ""
+    text = "\n".join(lines)
+    if len(text) <= max_len:
+        return text
+    kept: list[str] = []
+    used = 0
+    reserve = 28  # room for "... (+N more)"
+    for line in lines:
+        need = len(line) + (1 if kept else 0)
+        if used + need > max_len - reserve:
+            break
+        kept.append(line)
+        used += need
+    omitted = len(lines) - len(kept)
+    body = "\n".join(kept)
+    if omitted > 0:
+        suffix = f"\n… *+{omitted} more*"
+        if len(body) + len(suffix) > max_len:
+            body = body[: max_len - len(suffix)]
+        body += suffix
+    return body[:max_len]
 
 
 # ---------------------------------------------------------------------------
