@@ -188,8 +188,11 @@ async def render_affiliate_card(
     claimable: float,
     total_claimed: float,
     today_earning: float = 0.0,
+    *,
+    wager_earnings: float = 0.0,
+    wager_rate_pct: float = 0.0,
 ) -> io.BytesIO:
-    """Affiliate card — commission = 10% of (daily deposits − withdrawals) per referred user."""
+    """Affiliate card — net deposit % + optional wager % from referred users."""
     W, H = 560, 310
     RADIUS = 18
     BG = config.CARD_BG_COLOR
@@ -225,8 +228,10 @@ async def render_affiliate_card(
 
     # rate label
     rate_pct = int(config.AFFILIATE_NET_RATE * 100)
-    rate_txt = f"{rate_pct}% of (daily dep − wd)"
-    draw.text((badge_x + cw + 14, 90), rate_txt, font=_font(11), fill=MUTED)
+    rate_txt = f"{rate_pct}% daily net dep"
+    if wager_rate_pct > 0:
+        rate_txt += f" · {wager_rate_pct:g}% wager"
+    draw.text((badge_x + cw + 14, 86), rate_txt, font=_font(10), fill=MUTED)
 
     # row 1: referrals / today's earning
     col2_w = (W - 44) // 2
@@ -243,9 +248,14 @@ async def render_affiliate_card(
 
     # row 2: net earnings / claimable
     row2_y = 186
+    wager_label = f"WAGER EARN ({wager_rate_pct:g}%)" if wager_rate_pct > 0 else "WAGER EARN"
     stats2 = [
-        (f"NET EARNINGS ({rate_pct}%)", f"{_fmt(net_earnings)} pts", GREEN),
+        (f"NET EARN ({rate_pct}%)", f"{_fmt(net_earnings)} pts", GREEN),
+        (wager_label, f"{_fmt(wager_earnings)} pts", BLUE if wager_earnings else MUTED),
+    ]
+    stats2b = [
         ("CLAIMABLE NOW", f"{_fmt(claimable)} pts", GOLD),
+        ("TOTAL CLAIMED", f"{_fmt(total_claimed)} pts", WHITE),
     ]
     for i, (label, val, color) in enumerate(stats2):
         cx = 22 + i * col2_w
@@ -253,14 +263,16 @@ async def render_affiliate_card(
         draw.text((cx + 10, row2_y + 7), label, font=_font(10), fill=MUTED)
         draw.text((cx + 10, row2_y + 23), val, font=_font(17, bold=True), fill=color)
 
-    # row 3: total claimed (full width)
     row3_y = 246
-    _rounded_rect(draw, (22, row3_y, W - 22, row3_y + 50), 8, (18, 25, 40), BORDER, 1)
-    draw.text((32, row3_y + 7), "TOTAL CLAIMED", font=_font(10), fill=MUTED)
-    draw.text((32, row3_y + 23), f"{_fmt(total_claimed)} pts", font=_font(17, bold=True), fill=WHITE)
-    settle_note = "Settled daily 00:00 UTC"
+    for i, (label, val, color) in enumerate(stats2b):
+        cx = 22 + i * col2_w
+        _rounded_rect(draw, (cx, row3_y, cx + col2_w - 8, row3_y + 50), 8, (18, 25, 40), BORDER, 1)
+        draw.text((cx + 10, row3_y + 7), label, font=_font(10), fill=MUTED)
+        draw.text((cx + 10, row3_y + 23), val, font=_font(17, bold=True), fill=color)
+
+    settle_note = "Net: daily 00:00 UTC · Wager: live"
     sn_w = draw.textlength(settle_note, font=_font(10))
-    draw.text((W - 22 - sn_w, row3_y + 30), settle_note, font=_font(10), fill=MUTED)
+    draw.text((W - 22 - sn_w, row3_y + 34), settle_note, font=_font(9), fill=MUTED)
 
     buf = io.BytesIO()
     img.save(buf, "PNG")

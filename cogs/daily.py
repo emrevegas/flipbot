@@ -113,7 +113,79 @@ class Daily(commands.Cog):
                 "`.set depotowd show` — show deposit requirement\n"
                 "`.set depotowd off` — disable deposit requirement\n"
                 "`.set moderation_log #channel` — moderator audit log channel\n"
-                "`.set moderation_log off` — disable audit log",
+                "`.set moderation_log off` — disable audit log\n"
+                "`.set affiliate wager <percent> [min_deposit]` — affiliate wager % (default 0.5%, min 100)\n"
+                "`.set affiliate wager show` — show affiliate wager settings\n"
+                "`.set affiliate wager off` — disable wager commission",
+            )
+        )
+
+    @set_group.group(name="affiliate", invoke_without_command=True)
+    @panel_admin_only()
+    async def set_affiliate_group(self, ctx: commands.Context):
+        from modules.affiliate_settings import format_settings_summary
+
+        await ctx.send(embed=utils.info_embed("Affiliate settings", format_settings_summary()))
+
+    @set_affiliate_group.command(name="wager")
+    @panel_admin_only()
+    async def set_affiliate_wager(self, ctx: commands.Context, *args: str):
+        """
+        .set affiliate wager 0.5 100   — 0.5% wager commission, min 100 coin deposit
+        .set affiliate wager show
+        .set affiliate wager off
+        """
+        from modules.affiliate_settings import (
+            format_settings_summary,
+            parse_wager_rate_input,
+            save_affiliate_settings,
+        )
+
+        if not args or args[0].lower() in ("show", "list", "config"):
+            return await ctx.send(
+                embed=utils.info_embed("Affiliate wager", format_settings_summary())
+            )
+
+        if args[0].lower() in ("off", "disable", "clear", "0"):
+            save_affiliate_settings({"wager_enabled": False, "wager_rate": 0})
+            return await ctx.send(
+                embed=utils.success_embed("Affiliate wager commission **disabled**.")
+            )
+
+        if args[0].lower() in ("on", "enable"):
+            save_affiliate_settings({"wager_enabled": True})
+            return await ctx.send(
+                embed=utils.success_embed(
+                    "Affiliate wager commission **enabled**.\n" + format_settings_summary()
+                )
+            )
+
+        try:
+            rate = parse_wager_rate_input(args[0])
+        except ValueError as e:
+            return await ctx.send(embed=utils.error_embed(str(e)))
+
+        min_dep = None
+        if len(args) >= 2:
+            try:
+                min_dep = float(args[1].replace(",", ""))
+                if min_dep < 0:
+                    raise ValueError()
+            except ValueError:
+                return await ctx.send(embed=utils.error_embed("Invalid min deposit amount."))
+
+        patch: dict = {"wager_rate": rate, "wager_enabled": True}
+        if min_dep is not None:
+            patch["wager_min_deposit"] = min_dep
+        save_affiliate_settings(patch)
+
+        pct = rate * 100
+        cfg = format_settings_summary()
+        await ctx.send(
+            embed=utils.success_embed(
+                f"Affiliate wager set to **{pct:g}%**"
+                + (f", min deposit **{min_dep:g}** coins." if min_dep is not None else ".")
+                + f"\n\n{cfg}"
             )
         )
 

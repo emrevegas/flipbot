@@ -1,6 +1,6 @@
 """Affiliate system: .affiliate
-Commission formula: referrer earns AFFILIATE_NET_RATE (10%) of each referred user's
-(daily approved deposits − daily approved withdrawals), settled every midnight UTC.
+Commission: AFFILIATE_NET_RATE (10%) of daily (deposits − withdrawals) per referred user.
+Extra: configurable % of referred wagers (`.set affiliate wager`) if they deposited enough.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 
 from database import db
 from modules import image_gen, flip_utils as utils
+from modules.affiliate_settings import format_settings_summary, get_affiliate_settings
 import config
 
 log = logging.getLogger("flipbot.affiliate")
@@ -56,6 +57,13 @@ class Affiliate(commands.Cog):
         aff = await db.get_affiliate(ctx.author.id)
         if not aff:
             rate_pct = int(config.AFFILIATE_NET_RATE * 100)
+            wager_cfg = get_affiliate_settings()
+            wager_line = ""
+            if wager_cfg["wager_enabled"] and wager_cfg["wager_rate"] > 0:
+                wager_line = (
+                    f"• Plus **{wager_cfg['wager_rate'] * 100:g}%** of their bets "
+                    f"(if they deposited ≥ **{wager_cfg['wager_min_deposit']:g}** coins)\n"
+                )
             embed = discord.Embed(
                 title="🤝 Affiliate Program",
                 description=(
@@ -63,7 +71,8 @@ class Affiliate(commands.Cog):
                     f"**How it works:**\n"
                     f"• Someone uses your code with `.affiliate use <CODE>`\n"
                     f"• Each day at midnight, for every person you referred:\n"
-                    f"  `(deposits − withdrawals) × {rate_pct}%` is added to your claimable balance\n\n"
+                    f"  `(deposits − withdrawals) × {rate_pct}%` is added to your claimable balance\n"
+                    f"{wager_line}\n"
                     "Create your code with `.affiliate create <CODE>`"
                 ),
                 color=0xF59E0B,
@@ -261,14 +270,17 @@ class Affiliate(commands.Cog):
             t = await db.get_affiliate_today_net(ref["referred_id"])
             today_earning += t["earned_today"]
 
+        wager_cfg = get_affiliate_settings()
         buf = await image_gen.render_affiliate_card(
             username=ctx.author.display_name,
             code=aff["code"],
             referrals=len(refs),
             net_earnings=float(aff.get("net_earnings", 0)),
+            wager_earnings=float(aff.get("wager_earnings", 0) or 0),
             claimable=float(aff["claimable"]),
             total_claimed=float(aff["total_claimed"]),
             today_earning=today_earning,
+            wager_rate_pct=wager_cfg["wager_rate"] * 100 if wager_cfg["wager_enabled"] else 0,
         )
         await ctx.send(
             content=f"Your Affiliate Code: `{aff['code']}`",

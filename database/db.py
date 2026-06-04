@@ -257,6 +257,8 @@ async def _init_tables():
         );
     """)
 
+    await _ensure_sqlite_columns(db)
+
     # seed default games
     await db.executescript("""
         INSERT OR IGNORE INTO games (id, name, enabled, min_bet, max_bet, rigged_chance, house_edge)
@@ -408,6 +410,17 @@ async def set_balance(user_id: int | str, amount: float, *, note: str = "", by: 
     return amount
 
 
+async def _ensure_sqlite_columns(db: aiosqlite.Connection) -> None:
+    """Light migrations for columns added after first deploy."""
+    migrations = [
+        ("affiliates", "wager_earnings", "REAL NOT NULL DEFAULT 0"),
+    ]
+    for table, column, definition in migrations:
+        rows = await (await db.execute(f"PRAGMA table_info({table})")).fetchall()
+        if column not in {r[1] for r in rows}:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 async def add_wager(user_id: int | str, amount: float) -> None:
     db = await get_db()
     uid = str(user_id)
@@ -431,6 +444,10 @@ async def add_wager(user_id: int | str, amount: float) -> None:
         stats["total_wagered"] = int(stats.get("total_wagered", 0) or 0) + amt
         set_user_data(int(user_id), "stats", stats)
         record_wager(int(user_id), amt)
+    except Exception:
+        pass
+    try:
+        await credit_affiliate_wager_commission(user_id, amt)
     except Exception:
         pass
 
@@ -524,6 +541,50 @@ async def add_affiliate_net_earnings(affiliate_id: int | str, amount: float) -> 
         (amount, amount, uid),
     )
     await db.commit()
+
+
+async def add_affiliate_wager_earnings(affiliate_id: int | str, amount: float) -> None:
+    """Credit wager commission (referred user's bets) to claimable balance."""
+    if amount <= 0:
+        return
+    db = await get_db()
+    uid = str(affiliate_id)
+    await db.execute(
+        "UPDATE affiliates SET wager_earnings=wager_earnings+?, claimable=claimable+? WHERE user_id=?",
+        (amount, amount, uid),
+    )
+    await db.commit()
+
+
+async def credit_affiliate_wager_commission(referred_id: int | str, wager_amount: float) -> None:
+    """Referrer earns wager_rate × bet if referred user deposited at least min_deposit."""
+    from modules.affiliate_settings import get_affiliate_settings, wager_commission_enabled
+
+    if not wager_commission_enabled():
+        return
+    cfg = get_affiliate_settings()
+    rate = float(cfg["wager_rate"])
+    min_dep = float(cfg["wager_min_deposit"])
+    bet = float(wager_amount)
+    if bet <= 0 or rate <= 0:
+        return
+
+    user = await get_user(referred_id)
+    if not user or float(user.get("total_deposited") or 0) < min_dep:
+        return
+
+    db = await get_db()
+    row = await (await db.execute(
+        "SELECT affiliate_id FROM affiliate_refs WHERE referred_id=?",
+        (str(referred_id),),
+    )).fetchone()
+    if not row:
+        return
+
+    earned = bet * rate
+    if earned < 0.0001:
+        return
+    await add_affiliate_wager_earnings(row["affiliate_id"], earned)
 
 
 async def settle_affiliate_daily(date_str: str) -> list[dict]:
