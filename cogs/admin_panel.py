@@ -417,6 +417,8 @@ def _ensure_gates_game_entry(games_data: dict) -> dict:
     gates.setdefault("house_edge", 13.0)
     gates.setdefault("rigged_chance", 0.0)
     gates.setdefault("category", "special_games")
+    if not isinstance(gates.get("emojis"), dict):
+        gates["emojis"] = {}
     gates.setdefault("created_at", int(time.time()))
     gates.setdefault("last_modified", int(time.time()))
     games_data["gates"] = gates
@@ -3736,6 +3738,39 @@ class _BotGuildSelect(discord.ui.Select):
             embed.set_footer(text="Vegas Casino | Slot Setup")
             await interaction.response.edit_message(embed=embed, view=SlotEmojiSetupView(guild_emojis))
 
+        elif self.game_type == "gates":
+            if not guild_emojis:
+                return await interaction.response.edit_message(
+                    embed=discord.Embed(
+                        title="❌ Özel emoji yok",
+                        description=(
+                            f"**{guild.name}** sunucusunda özel emoji bulunamadı.\n"
+                            "Önce sunucuya emoji yükleyin, sonra tekrar deneyin."
+                        ),
+                        color=discord.Color.red(),
+                    ),
+                    view=None,
+                )
+            ordered = list(_GATES_EMOJI_KEYS)
+            first_name = _GATES_EMOJI_NAMES[ordered[0]]
+            total = len(ordered)
+            view = _EmojiPickView(
+                ordered, _GATES_EMOJI_NAMES, 0,
+                guild_emojis, {},
+                _make_gates_save_fn(), "⚡ Gates Emoji Setup",
+            )
+            embed = discord.Embed(
+                title=f"⚡ Gates Emoji Setup — Adım 1/{total}",
+                description=(
+                    f"**Sunucu:** {guild.name}\n"
+                    f"**{first_name}** için bir emoji seç.\n"
+                    "Tüm semboller sırayla sorulacak."
+                ),
+                color=discord.Color.purple(),
+            )
+            embed.set_footer(text="Vegas Casino | Gates Setup")
+            await interaction.response.edit_message(embed=embed, view=view)
+
         elif self.game_type == "horse_race":
             from Games.horse_race import NUM_HORSES
             from modules.horse_race_flow import filter_guild_horse_emojis, save_horse_race_emoji_pool
@@ -4421,6 +4456,156 @@ class SlotEmojiSetupView(discord.ui.View):
         )
         embed.set_footer(text="Vegas Casino | Slot Setup")
         await interaction.response.edit_message(embed=embed, view=view)
+
+
+# ─── Gates Emoji Setup Wizard ─────────────────────────────────────────────────
+
+_GATES_EMOJI_KEYS = [
+    "game", "ruby", "emerald", "sapphire", "amethyst",
+    "topaz", "goblet", "ring", "crown", "scatter",
+]
+_GATES_EMOJI_NAMES = {
+    "game":     "Oyun (panel/başlık)",
+    "ruby":     "Ruby 🔴",
+    "emerald":  "Emerald 🟢",
+    "sapphire": "Sapphire 🔵",
+    "amethyst": "Amethyst 🟣",
+    "topaz":    "Topaz 🟡",
+    "goblet":   "Goblet 🏆",
+    "ring":     "Ring 💍",
+    "crown":    "Crown 👑",
+    "scatter":  "Zeus ⚡",
+}
+
+
+def _make_gates_save_fn():
+    async def _save(temp_emojis: dict) -> discord.Embed:
+        games_data = _ensure_gates_game_entry(get_data("server/games") or {})
+        gates = games_data.get("gates", {})
+        if not isinstance(gates.get("emojis"), dict):
+            gates["emojis"] = {}
+        saved = dict(temp_emojis)
+        game_emoji = saved.pop("game", None)
+        if game_emoji:
+            gates["emoji"] = game_emoji
+            gates["emojis"]["game"] = game_emoji
+        gates["emojis"].update(saved)
+        gates["last_modified"] = int(time.time())
+        games_data["gates"] = gates
+        set_data("server/games", games_data)
+        display = {}
+        if game_emoji:
+            display["game"] = game_emoji
+        display.update(saved)
+        lines = "\n".join(
+            f"{e}  **{_GATES_EMOJI_NAMES.get(k, k.title())}**"
+            for k, e in display.items()
+        )
+        return discord.Embed(
+            title="✅ Gates Emoji Güncellendi!",
+            description=f"Kaydedilen emojiler:\n\n{lines}",
+            color=discord.Color.green(),
+        ).set_footer(text="Vegas Casino | Gates Setup")
+    return _save
+
+
+class _GatesSetupButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="⚡ Gates Setup", style=discord.ButtonStyle.primary, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        guilds = list(interaction.client.guilds)
+        if not guilds:
+            return await interaction.response.send_message(
+                "❌ Kullanılabilir sunucu bulunamadı.", ephemeral=True,
+            )
+        embed = discord.Embed(
+            title="⚡ Gates Emoji Setup — Sunucu Seç",
+            description="Emojilerin yükleneceği sunucuyu seçin. Ardından tüm semboller sırayla sorulacak.",
+            color=discord.Color.purple(),
+        )
+        embed.set_footer(text="Vegas Casino | Gates Setup")
+        await interaction.response.send_message(
+            embed=embed,
+            view=_BotGuildPickView(guilds, "gates"),
+            ephemeral=True,
+        )
+
+
+class GatesRiggedModal(discord.ui.Modal):
+    def __init__(self, current_info: dict):
+        super().__init__(title="Gates — Rigged Chance", timeout=300)
+        if not isinstance(current_info, dict):
+            current_info = {}
+        self.rigged_chance_input = discord.ui.TextInput(
+            label="Rigged Chance (%) — negatif = oyuncu lehine",
+            placeholder="0.0",
+            default=str(current_info.get("rigged_chance", 0.0)),
+            required=True,
+            max_length=8,
+        )
+        self.add_item(self.rigged_chance_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            rigged = float(self.rigged_chance_input.value.replace(",", "."))
+            if rigged < -100 or rigged > 100:
+                raise ValueError
+        except (TypeError, ValueError):
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="❌ Invalid Input",
+                    description=RIGGED_RANGE_ERR,
+                    color=discord.Color.red(),
+                ),
+                ephemeral=True,
+            )
+        games_data = _ensure_gates_game_entry(get_data("server/games") or {})
+        gates = games_data.get("gates", {})
+        gates["rigged_chance"] = round(rigged, 4)
+        gates["last_modified"] = int(time.time())
+        games_data["gates"] = gates
+        await _persist_games_panel(games_data)
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Gates Rigged Chance Güncellendi",
+                description=f"🎲 Rigged Chance: **{rigged}%**",
+                color=discord.Color.green(),
+            ),
+            ephemeral=True,
+        )
+
+
+class _GatesRiggedButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🎲 Gates Rigged %", style=discord.ButtonStyle.danger, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        games_data = _ensure_gates_game_entry(get_data("server/games") or {})
+        await interaction.response.send_modal(GatesRiggedModal(games_data.get("gates", {})))
+
+
+async def launch_gates_setup_wizard(ctx: commands.Context) -> None:
+    """`.set gates` — sunucu seç → sembol emojileri sırayla."""
+    guilds = list(ctx.bot.guilds)
+    if not guilds:
+        return await ctx.send(
+            embed=discord.Embed(
+                title="❌ Sunucu yok",
+                description="Bot hiçbir sunucuda değil.",
+                color=discord.Color.red(),
+            )
+        )
+    embed = discord.Embed(
+        title="⚡ Gates Emoji Setup — Sunucu Seç",
+        description=(
+            "Emojilerin yükleneceği sunucuyu seçin.\n"
+            "Sonra **game + 9 sembol** için sırayla emoji seçeceksiniz."
+        ),
+        color=discord.Color.purple(),
+    )
+    embed.set_footer(text="Vegas Casino | Gates Setup")
+    await ctx.send(embed=embed, view=_BotGuildPickView(guilds, "gates"))
 
 
 class _SlotSetupButton(discord.ui.Button):
@@ -5125,6 +5310,9 @@ class GameDetailView(discord.ui.View):
             self.add_item(_TowersRiggedButton())
         elif game_id == "slot":
             self.add_item(_SlotSetupButton())
+        elif game_id == "gates":
+            self.add_item(_GatesSetupButton())
+            self.add_item(_GatesRiggedButton())
         elif game_id == "limbo":
             self.add_item(_LimboRiggedButton())
         elif game_id == "slide":

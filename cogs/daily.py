@@ -116,7 +116,8 @@ class Daily(commands.Cog):
                 "`.set moderation_log off` — disable audit log\n"
                 "`.set affiliate wager <percent> [min_deposit]` — affiliate wager % (default 0.5%, min 100)\n"
                 "`.set affiliate wager show` — show affiliate wager settings\n"
-                "`.set affiliate wager off` — disable wager commission",
+                "`.set affiliate wager off` — disable wager commission\n"
+                "`.set gates` — Gates of Olympus emoji setup wizard",
             )
         )
 
@@ -188,6 +189,14 @@ class Daily(commands.Cog):
                 + f"\n\n{cfg}"
             )
         )
+
+    @set_group.command(name="gates")
+    @panel_admin_only()
+    async def set_gates(self, ctx: commands.Context):
+        """`.set gates` — sunucu seç, ardından tüm Gates sembol emojilerini sırayla ayarla."""
+        from cogs.admin_panel import launch_gates_setup_wizard
+
+        await launch_gates_setup_wizard(ctx)
 
     @set_group.command(name="moderation_log", aliases=["modlog", "mod_log"])
     @panel_admin_only()
