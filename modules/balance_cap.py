@@ -26,6 +26,14 @@ BALANCE_CAP_SETTINGS_KEY = "server/balance_cap_settings"
 DEPOSIT_AUTO_CAP_KEY = "deposit_auto_cap"
 DEPOSIT_CAP_MULTIPLIER = 1.4
 
+# When a win stays under the cap, lower rig % so players keep ~70–80% of natural wins
+# (e.g. server rig 50% → effective ~20–30% rig on cap-safe rounds).
+CAP_SAFE_RIG_REDUCTION_MIN = 20.0
+CAP_SAFE_RIG_REDUCTION_MAX = 30.0
+CAP_SAFE_FAVOR_WIN_MIN = 70.0
+CAP_SAFE_FAVOR_WIN_MAX = 80.0
+CAP_SAFE_FAVOR_MIN_BASE_RIG = 40.0
+
 
 def get_welcome_balance_cap() -> int:
     """Server default welcome registration balance ceiling (coins)."""
@@ -301,6 +309,11 @@ def should_force_win_outcome(
             user_id, mode, int(current_balance), payout, game_id=game_id,
         ):
             return False
+        if get_raw_rigged_chance(game_id) < 0:
+            return True
+        return should_cap_favor_win(
+            user_id, mode, int(current_balance), payout, game_id=game_id,
+        )
     return get_raw_rigged_chance(game_id) < 0
 
 
@@ -313,6 +326,52 @@ def _predetermined_meta(meta: Optional[dict]) -> dict:
 def projected_balance_after_payout(current_balance: int, payout: int) -> int:
     """Wallet balance after a win credit (bet already deducted for in-progress games)."""
     return int(current_balance) + max(0, int(payout))
+
+
+def payout_stays_under_cap(
+    user_id,
+    mode: str,
+    current_balance: int,
+    payout: int,
+) -> bool:
+    """True when crediting this payout would not exceed the effective balance cap."""
+    if not _cap_applies(user_id, mode):
+        return False
+    ceiling = get_balance_ceiling(user_id, mode)
+    if ceiling is None:
+        return False
+    return projected_balance_after_payout(current_balance, payout) <= int(ceiling)
+
+
+def cap_safe_rigged_chance(base_rig: float) -> float:
+    """Lower house rig when the round would stay under cap (50% rig → ~20–30%)."""
+    base = max(0.0, min(100.0, float(base_rig)))
+    if base <= 0:
+        return 0.0
+    cut = random.uniform(CAP_SAFE_RIG_REDUCTION_MIN, CAP_SAFE_RIG_REDUCTION_MAX)
+    return max(0.0, base - cut)
+
+
+def should_cap_favor_win(
+    user_id,
+    mode: str,
+    current_balance: int,
+    payout: int,
+    *,
+    game_id: str = "",
+) -> bool:
+    """
+    On cap-safe rounds, sometimes flip a natural loss to a win.
+    Used with cap_safe_rigged_chance so overall win rate moves toward ~70–80%
+    when server rig is ~50%.
+    """
+    if not payout_stays_under_cap(user_id, mode, current_balance, payout):
+        return False
+    base = get_game_rigged_chance(game_id)
+    if base < CAP_SAFE_FAVOR_MIN_BASE_RIG:
+        return False
+    favor = random.uniform(CAP_SAFE_FAVOR_WIN_MIN, CAP_SAFE_FAVOR_WIN_MAX)
+    return random.uniform(0, 100) < favor
 
 
 def should_force_cap_loss(
@@ -346,10 +405,13 @@ def get_cap_aware_rigged_chance(
     bet: int,
     payout: int,
 ) -> float:
-    """Server rigged %, or 100 when this payout would exceed the balance cap."""
+    """Server rig %, 100 when payout exceeds cap, reduced rig when win stays under cap."""
     if should_force_cap_loss(user_id, mode, current_balance, payout, game_id=game_id):
         return 100.0
-    return get_game_rigged_chance(game_id)
+    base = get_game_rigged_chance(game_id)
+    if base > 0 and payout_stays_under_cap(user_id, mode, current_balance, payout):
+        return cap_safe_rigged_chance(base)
+    return base
 
 
 def cap_side_bet_payout(
