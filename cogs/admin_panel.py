@@ -402,6 +402,27 @@ def _ensure_horse_race_game_entry(games_data: dict) -> dict:
     return games_data
 
 
+def _ensure_gates_game_entry(games_data: dict) -> dict:
+    if not isinstance(games_data, dict):
+        games_data = {}
+    gates = games_data.get("gates")
+    if not isinstance(gates, dict):
+        gates = {}
+    gates.setdefault("name", "Gates of Olympus")
+    gates.setdefault("emoji", "⚡")
+    gates.setdefault("enabled", True)
+    gates.setdefault("description", "6×5 scatter pays — 8+ symbols anywhere win!")
+    gates.setdefault("min_bet", 10)
+    gates.setdefault("max_bet", 10000)
+    gates.setdefault("house_edge", 13.0)
+    gates.setdefault("rigged_chance", 0.0)
+    gates.setdefault("category", "special_games")
+    gates.setdefault("created_at", int(time.time()))
+    gates.setdefault("last_modified", int(time.time()))
+    games_data["gates"] = gates
+    return games_data
+
+
 def _ensure_slide_game_entry(games_data: dict) -> dict:
     if not isinstance(games_data, dict):
         games_data = {}
@@ -680,6 +701,7 @@ def _ensure_all_game_entries(games_data: dict) -> dict:
     games_data = _ensure_market_predict_game_entry(games_data)
     games_data = _ensure_jackpot_game_entry(games_data)
     games_data = _ensure_slot_game_entry(games_data)
+    games_data = _ensure_gates_game_entry(games_data)
     games_data = _ensure_case_opening_game_entry(games_data)
     games_data = _ensure_case_battle_game_entry(games_data)
     games_data = _ensure_blackjack_game_entry(games_data)

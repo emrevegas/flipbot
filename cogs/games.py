@@ -147,6 +147,10 @@ async def _resolve_ctx_bet(
                 "predict": "market_predict",
                 "slots": "slots",
                 "slot": "slots",
+                "gates": "gates",
+                "olympus": "gates",
+                "sweet": "gates",
+                "sweetbonanza": "gates",
                 "blackjack": "blackjack",
                 "bj": "blackjack",
                 "hilo": "hilo",
@@ -1926,6 +1930,18 @@ class Games(commands.Cog):
         from modules.slot_flow import start_slots
 
         await start_slots(ctx, bet)
+
+    @commands.command(name="gates", aliases=["olympus", "sweet", "sweetbonanza"])
+    async def gates(self, ctx: commands.Context, amount: str):
+        """6x5 scatter pays — Gates of Olympus style. .gates 100  •  .gates all"""
+        bet = await _resolve_ctx_bet(ctx, amount, game_id="gates")
+        if bet is None:
+            return
+        if not await _check_game(ctx, "gates", bet):
+            return
+        from modules.gates_slot_flow import start_gates
+
+        await start_gates(ctx, bet)
 
     # ── Blackjack ─────────────────────────────────────────────────────────────
 

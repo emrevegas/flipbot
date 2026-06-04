@@ -120,6 +120,7 @@ _GAME_DISPLAY = {
     "blackjack":    "🃏 Blackjack",
     "limbo":        "🚀 Limbo",
     "slots":        "🎰 Slots",
+    "gates":        "⚡ Gates of Olympus",
     "slide":        "🎯 Slide",
     "roulette":     "🎡 Roulette",
     "towers":       "🗼 Towers",
