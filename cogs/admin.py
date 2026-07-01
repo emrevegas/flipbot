@@ -8,10 +8,11 @@ import time
 import discord
 from discord.ext import commands
 
+import config
 from database import db
 from modules import flip_utils as utils
 from modules import moderation_log
-from modules.database import check_permission, is_super_admin
+from modules.database import check_permission, get_data, is_super_admin, set_data
 
 
 def admin_only():
@@ -43,6 +44,30 @@ def staff_mod_or_admin():
 class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @commands.command(name="admin")
+    async def claim_admin(self, ctx: commands.Context):
+        """Bot sahibi (.env OWNER_ID) kendine admin yetkisi verir."""
+        if ctx.author.id not in config.OWNER_IDS:
+            return await ctx.send(
+                embed=utils.error_embed("Bu komut yalnızca bot sahibi (OWNER_ID) için."),
+                delete_after=8,
+            )
+
+        uid = str(ctx.author.id)
+        if is_super_admin(ctx.author.id) or not check_permission(ctx.author.id, "admin"):
+            return await ctx.send(
+                embed=utils.success_embed("Zaten **admin** yetkisine sahipsin."),
+            )
+
+        admins = get_data("server/admins") or {}
+        admins[uid] = ["admin"]
+        set_data("server/admins", admins)
+        await ctx.send(
+            embed=utils.success_embed(
+                "**Admin** yetkisi verildi. `/panel` ve diğer admin komutlarını kullanabilirsin."
+            ),
+        )
 
     # ── Balance quick-ops ──────────────────────────────────────────────────────
 
